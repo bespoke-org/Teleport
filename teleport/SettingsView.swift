@@ -90,11 +90,13 @@ private struct GeneralSettingsView: View {
                             get: { viewModel.proxyEndpoint.httpPort },
                             set: { viewModel.setProxyEndpoint(httpPort: $0) }
                         ),
-                        format: .number
+                        format: .number.grouping(.never)
                     )
+                    .labelsHidden()
                     .multilineTextAlignment(.trailing)
                     .frame(width: 80)
                     .textFieldStyle(.roundedBorder)
+                    .disabled(viewModel.hasActiveConnectionSession)
                 }
 
                 HStack {
@@ -111,18 +113,19 @@ private struct GeneralSettingsView: View {
                             get: { viewModel.proxyEndpoint.socksPort },
                             set: { viewModel.setProxyEndpoint(socksPort: $0) }
                         ),
-                        format: .number
+                        format: .number.grouping(.never)
                     )
+                    .labelsHidden()
                     .multilineTextAlignment(.trailing)
                     .frame(width: 80)
                     .textFieldStyle(.roundedBorder)
+                    .disabled(viewModel.hasActiveConnectionSession)
                 }
             } header: {
                 Text("Local proxy ports")
             } footer: {
-                Text("Disconnect before changing ports. Teleport listens on 127.0.0.1.")
+                Text(proxyPortsFooter)
             }
-            .disabled(viewModel.hasActiveConnectionSession)
 
             Section {
                 Picker(
@@ -180,6 +183,16 @@ private struct GeneralSettingsView: View {
         .onAppear {
             viewModel.refreshStartsAtLoginStatus()
         }
+    }
+
+    private var proxyPortsFooter: String {
+        if viewModel.connectionPhase == .failed || viewModel.proxyPhase == .failed {
+            return "Ports are locked because the last connection attempt failed. Click Disconnect in the menu bar to clear the error, then change ports."
+        }
+        if viewModel.hasActiveConnectionSession {
+            return "Disconnect before changing ports. Teleport listens on 127.0.0.1."
+        }
+        return "Teleport listens on 127.0.0.1."
     }
 }
 
