@@ -186,12 +186,19 @@ struct ConnectionLinkParser {
 
         if authority.first == "[", let closingBracket = authority.firstIndex(of: "]") {
             let host = authority[authority.index(after: authority.startIndex) ..< closingBracket]
-            return host.isEmpty ? nil : String(host)
+            return host.isEmpty ? nil : decodedHost(host)
         }
 
         let hostEnd = authority.firstIndex(of: ":") ?? authority.endIndex
         let host = authority[..<hostEnd]
-        return host.isEmpty ? nil : String(host)
+        return host.isEmpty ? nil : decodedHost(host)
+    }
+
+    /// Percent-decodes the raw authority host so an encoded host (e.g.
+    /// `ex%61mple.com`) resolves to its real form, matching what URLComponents.host
+    /// would have returned, while still preserving the original case.
+    nonisolated private func decodedHost(_ host: Substring) -> String {
+        String(host).removingPercentEncoding ?? String(host)
     }
 
     nonisolated private func queryDictionary(from components: URLComponents) throws -> [String: String] {

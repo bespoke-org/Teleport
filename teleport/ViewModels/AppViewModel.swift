@@ -194,7 +194,7 @@ final class AppViewModel: ObservableObject {
     }
 
     var canDisconnect: Bool {
-        connectionPhase == .running || connectionPhase == .starting || proxyPhase == .enabled || proxyPhase == .enabling || connectionPhase == .failed
+        connectionPhase == .running || connectionPhase == .starting || proxyPhase == .enabled || proxyPhase == .enabling || connectionPhase == .failed || proxyPhase == .failed
     }
 
     var canChangeSelection: Bool {
@@ -792,14 +792,12 @@ final class AppViewModel: ObservableObject {
             let service = GeodataUpdateService()
             do {
                 let data = try service.download(kind: kind, from: url)
+                // Write on the background queue — the .dat files are tens of MB, so
+                // the atomic disk write must not run on the main actor.
+                let changed = try service.store(data, for: kind)
                 Task { @MainActor [weak self] in
                     guard self?.geodataUpdateTokens[kind] == token else { return }
-                    do {
-                        try service.store(data, for: kind)
-                        self?.applyGeodataUpdateResult(kind: kind, token: token, error: nil)
-                    } catch {
-                        self?.applyGeodataUpdateResult(kind: kind, token: token, error: error)
-                    }
+                    self?.applyGeodataUpdateResult(kind: kind, token: token, error: nil, changed: changed)
                 }
             } catch {
                 Task { @MainActor [weak self] in
@@ -875,13 +873,14 @@ final class AppViewModel: ObservableObject {
         guard let components = URLComponents(string: value),
               let scheme = components.scheme?.lowercased(),
               scheme == "http" || scheme == "https",
+              let host = components.host, !host.isEmpty,
               let url = components.url else {
             return nil
         }
         return url
     }
 
-    private func applyGeodataUpdateResult(kind: GeodataKind, token: UUID? = nil, error: Error?) {
+    private func applyGeodataUpdateResult(kind: GeodataKind, token: UUID? = nil, error: Error?, changed: Bool = true) {
         if let token, geodataUpdateTokens[kind] != token { return }
         geodataUpdateTokens[kind] = nil
         updatingGeodataKinds.remove(kind)
@@ -890,7 +889,10 @@ final class AppViewModel: ObservableObject {
             setGeodataLastUpdatedAt(kind: kind, date: Date())
         }
         schedulePersist()
-        if error == nil {
+        // Geodata only takes effect at Xray startup, so only bounce a live tunnel
+        // when the stored bytes actually changed — an identical scheduled
+        // re-download must not drop a connected user's session.
+        if error == nil, changed {
             applyGeodataLiveIfNeeded()
         }
     }
@@ -1012,9 +1014,11 @@ final class AppViewModel: ObservableObject {
                     splitTunnelRules: activeSplitTunnelRules
                 )
 
-                self?.appliedSplitTunnelRules = activeSplitTunnelRules
-
                 Task { @MainActor [weak self] in
+                    // Write the applied-rules cache on the main actor: it is read
+                    // there by applySplitTunnelRulesLiveIfNeeded, so mutating it
+                    // from this background queue would be a data race.
+                    self?.appliedSplitTunnelRules = activeSplitTunnelRules
                     self?.connectionPhase = .running
                     self?.proxyPhase = .enabled
                     self?.setStoredError(nil)
@@ -1045,9 +1049,11 @@ final class AppViewModel: ObservableObject {
             do {
                 try connectionBackend.start(configuration: configuration, endpoint: proxyEndpoint, splitTunnelRules: activeSplitTunnelRules)
 
-                self?.appliedSplitTunnelRules = activeSplitTunnelRules
-
                 Task { @MainActor [weak self] in
+                    // Write the applied-rules cache on the main actor: it is read
+                    // there by applySplitTunnelRulesLiveIfNeeded, so mutating it
+                    // from this background queue would be a data race.
+                    self?.appliedSplitTunnelRules = activeSplitTunnelRules
                     self?.connectionPhase = .running
                     self?.proxyPhase = .enabled
                     self?.setStoredError(nil)

@@ -5,6 +5,7 @@ struct VerifyCore {
     static func main() throws {
         try testValidVLESSParsingAndConfigGeneration()
         try testPunycodeHostParsingPreservesASCIIHost()
+        try testPercentEncodedHostIsDecoded()
         try testValidVLESSAdditionalTransports()
         try testValidTrojanParsingAndConfigGeneration()
         try testValidTrojanRealityParsingAndConfigGeneration()
@@ -49,6 +50,19 @@ struct VerifyCore {
 
         precondition(configuration.host == "xn--e1afmkfd.test")
         precondition(!configuration.host.contains("пример"))
+    }
+
+    private static func testPercentEncodedHostIsDecoded() throws {
+        // The raw-authority host extraction must percent-decode the host so an
+        // encoded authority resolves to the real hostname (matching what
+        // URLComponents.host would have returned) rather than a literal like
+        // `t%65st.example.com` leaking into the Xray outbound / protected route.
+        let parser = ConnectionLinkParser()
+        let link = "vless://123e4567-e89b-12d3-a456-426614174000@t%65st.example.com:443?security=tls&type=tcp&sni=test.example.com#Encoded"
+        let configuration = try parser.parse(link)
+
+        precondition(configuration.host == "test.example.com",
+                     "expected percent-encoded host to be decoded, got \(configuration.host)")
     }
 
     private static func testValidVLESSAdditionalTransports() throws {

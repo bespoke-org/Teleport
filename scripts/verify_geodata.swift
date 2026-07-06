@@ -7,7 +7,49 @@ struct VerifyGeodata {
         try testGeodataSettingsRoundTrip()
         try testGeodataKindFileNames()
         try testGeodataUpdateErrorDescriptionsAreNonEmpty()
+        try testStoreReportsWhetherBytesChanged()
         print("verify_geodata: all checks passed")
+    }
+
+    /// Redirects the Application Support base directory to a throwaway location so
+    /// GeodataUpdateService.store writes to a temp path instead of the developer's
+    /// real ~/Library/Application Support/teleport/geodata store.
+    private final class TempFileManager: FileManager {
+        let root: URL
+        init(root: URL) {
+            self.root = root
+            super.init()
+        }
+
+        override func urls(for directory: FileManager.SearchPathDirectory, in domainMask: FileManager.SearchPathDomainMask) -> [URL] {
+            if directory == .applicationSupportDirectory {
+                return [root]
+            }
+            return super.urls(for: directory, in: domainMask)
+        }
+    }
+
+    private static func testStoreReportsWhetherBytesChanged() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("teleport-verify-geodata-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let service = GeodataUpdateService(fileManager: TempFileManager(root: root))
+        let payloadA = Data(repeating: 0xAB, count: 8192)
+        let payloadB = Data(repeating: 0xCD, count: 8192)
+
+        let firstWrite = try service.store(payloadA, for: .geosite)
+        precondition(firstWrite, "expected the first write of a new file to report changed == true")
+
+        let identicalRewrite = try service.store(payloadA, for: .geosite)
+        precondition(!identicalRewrite, "expected rewriting identical bytes to report changed == false")
+
+        let changedRewrite = try service.store(payloadB, for: .geosite)
+        precondition(changedRewrite, "expected writing different bytes to report changed == true")
+
+        precondition(service.hasCustomGeodata(for: .geosite), "expected the stored custom file to exist")
+        precondition(!service.hasCustomGeodata(for: .geoip), "expected only the written kind to exist")
     }
 
     private static func testGeodataSettingsDefaultsWhenMissing() throws {

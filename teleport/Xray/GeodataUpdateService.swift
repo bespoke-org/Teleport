@@ -79,10 +79,16 @@ struct GeodataUpdateService {
         return data
     }
 
-    func store(_ data: Data, for kind: GeodataKind) throws {
+    /// Writes the downloaded payload to the custom store and reports whether it
+    /// differs from what was already there, so callers can skip an expensive
+    /// live-tunnel bounce when a (scheduled) re-download produced identical bytes.
+    @discardableResult
+    func store(_ data: Data, for kind: GeodataKind) throws -> Bool {
         try fileManager.createDirectory(at: customDirectoryURL, withIntermediateDirectories: true)
         let destination = customFileURL(for: kind)
+        let changed = (try? Data(contentsOf: destination)) != data
         try data.write(to: destination, options: .atomic)
+        return changed
     }
 
     func removeCustomGeodata(for kind: GeodataKind) throws {

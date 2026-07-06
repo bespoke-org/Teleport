@@ -13,6 +13,7 @@ struct VerifySplitTunneling {
         try testClassifiesGeodataTokens()
         try testMatcherSkipsGeodataRules()
         try testGeodataRulesGenerateRoutingRules()
+        try testDomainRuleEmitsDomainPrefixNotSubstring()
         try testGeneratedRoutingRulesMatchSharedMatcher()
         try testDisabledRuleExcludedFromGeneratedRouting()
         try testEmptyRuleListProducesNoSplitTunnelRouting()
@@ -169,6 +170,31 @@ struct VerifySplitTunneling {
         precondition(routingRules[1]["outboundTag"] as? String == "block")
     }
 
+    private static func testDomainRuleEmitsDomainPrefixNotSubstring() throws {
+        // A bare domain must be emitted with Xray's `domain:` prefix so Xray uses
+        // subdomain matching (matching the shared tester's suffix semantics) rather
+        // than substring matching, which would also hit hosts like `notexample.com`.
+        let bare = SplitTunnelRule(value: "example.com", kind: .domain, action: .direct)
+        let bareRoutingRules = try generatedSplitTunnelRoutingRules(for: [bare])
+        precondition(bareRoutingRules.count == 1)
+        precondition(bareRoutingRules[0]["domain"] as? [String] == ["domain:example.com"],
+                     "expected a bare domain to be emitted with the domain: prefix")
+
+        // A `full:`-prefixed exact rule already carries Xray's own exact-match
+        // prefix and must pass through unchanged (no double prefixing).
+        let exact = SplitTunnelRule(value: "full:api.example.com", kind: .domain, action: .block)
+        let exactRoutingRules = try generatedSplitTunnelRoutingRules(for: [exact])
+        precondition(exactRoutingRules[0]["domain"] as? [String] == ["full:api.example.com"],
+                     "expected a full: rule to be emitted unchanged")
+
+        // Lock in the tester semantics the emitted prefix is meant to agree with:
+        // subdomains match, unrelated substrings do not.
+        precondition(SplitTunnelRuleMatcher.firstMatch(for: "www.example.com", in: [bare])?.id == bare.id,
+                     "expected a subdomain to match the bare domain rule")
+        precondition(SplitTunnelRuleMatcher.firstMatch(for: "notexample.com", in: [bare]) == nil,
+                     "expected a substring-only host to NOT match the bare domain rule")
+    }
+
     private static func testGeneratedRoutingRulesMatchSharedMatcher() throws {
         let rules = [
             SplitTunnelRule(value: "example.com", kind: .domain, action: .direct),
@@ -185,9 +211,16 @@ struct VerifySplitTunneling {
             precondition(outboundTag == rule.action.rawValue, "expected outboundTag \(rule.action.rawValue) but got \(outboundTag ?? "nil")")
 
             switch rule.kind {
-            case .domain, .geosite:
+            case .domain:
+                // A bare domain is emitted with Xray's `domain:` prefix so its
+                // subdomain semantics match the shared tester's suffix match; a
+                // `full:` value already carries Xray's exact-match prefix.
                 let domains = routingRule["domain"] as? [String]
-                precondition(domains == [rule.value], "expected domain field to carry rule value as-is")
+                let expected = rule.value.hasPrefix("full:") ? rule.value : "domain:" + rule.value
+                precondition(domains == [expected], "expected domain field to carry \(expected)")
+            case .geosite:
+                let domains = routingRule["domain"] as? [String]
+                precondition(domains == [rule.value], "expected geosite token to be emitted as-is")
             case .ip, .geoip:
                 let ips = routingRule["ip"] as? [String]
                 precondition(ips == [rule.value], "expected ip field to carry rule value as-is")

@@ -223,7 +223,18 @@ struct XrayConfigurationWriter {
 
         switch rule.kind {
         case .domain:
-            routingRule["domain"] = [rule.value]
+            // A bare value in Xray's `domain` array is a *substring* matcher, so
+            // `example.com` would also match `notexample.com`/`example.com.evil.net`.
+            // The rule tester (SplitTunnelRuleMatcher) instead treats a bare value
+            // as a subdomain (suffix) match and a `full:`-prefixed value as exact.
+            // Emit the explicit `domain:` prefix so Xray uses subdomain semantics
+            // that agree with the tester; `full:` values already carry Xray's own
+            // exact-match prefix and pass through unchanged.
+            if rule.value.hasPrefix("full:") {
+                routingRule["domain"] = [rule.value]
+            } else {
+                routingRule["domain"] = ["domain:" + rule.value]
+            }
         case .geosite:
             // Xray accepts `geosite:<category>` entries inside the domain array.
             routingRule["domain"] = [rule.value]
