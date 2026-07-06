@@ -43,6 +43,10 @@ app-path configuration="Release":
 version: build-release
     @/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' '{{derived_data}}/Build/Products/Release/{{app_name}}.app/Contents/Info.plist'
 
+# Build and open the app. Usage: just run [Debug|Release]
+run configuration="Debug": (build configuration)
+    open "{{derived_data}}/Build/Products/{{configuration}}/{{app_name}}.app"
+
 # Build Release and create a versioned .app copy plus .dmg in build/dist
 package: build-release
     #!/usr/bin/env bash
