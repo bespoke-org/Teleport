@@ -7,8 +7,8 @@ enum SplitTunnelRuleValidationError: LocalizedError, Equatable {
 
     var errorDescription: String? {
         switch self {
-        case .emptyValue: return "Enter a domain or IP/CIDR value."
-        case .invalidValue: return "Enter a valid domain, IP address, or CIDR range."
+        case .emptyValue: return "Enter a domain, IP/CIDR, geosite, or geoip value."
+        case .invalidValue: return "Enter a valid domain, IP address, CIDR range, geosite:category, or geoip:category."
         }
     }
 }
@@ -17,6 +17,18 @@ enum SplitTunnelRuleClassifier {
     static func classify(_ rawValue: String) -> Result<(kind: SplitTunnelRuleKind, value: String), SplitTunnelRuleValidationError> {
         let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .failure(.emptyValue) }
+
+        if isGeodataToken(trimmed, prefix: "geosite:") {
+            // Categories are lowercase keys in geosite.dat; normalize so what we
+            // store, generate, and display all match Xray's lookup.
+            return .success((.geosite, trimmed.lowercased()))
+        }
+
+        if isGeodataToken(trimmed, prefix: "geoip:") {
+            // Categories are lowercase keys in geoip.dat; normalize so what we
+            // store, generate, and display all match Xray's lookup.
+            return .success((.geoip, trimmed.lowercased()))
+        }
 
         if isIPOrCIDR(trimmed) {
             return .success((.ip, trimmed))
@@ -29,6 +41,20 @@ enum SplitTunnelRuleClassifier {
         }
 
         return .failure(.invalidValue)
+    }
+
+    /// Matches `geosite:<category>`/`geoip:<category>` with optional `@attr`
+    /// suffixes, e.g. `geosite:google`, `geoip:private`, `geosite:google@ads`.
+    private static func isGeodataToken(_ value: String, prefix: String) -> Bool {
+        guard value.lowercased().hasPrefix(prefix) else { return false }
+        let category = value.dropFirst(prefix.count)
+        guard !category.isEmpty, category.count <= 128 else { return false }
+
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_@.")
+        guard category.unicodeScalars.allSatisfy({ allowed.contains($0) }) else { return false }
+        // Must start with an actual category name, not an attribute separator.
+        guard category.first != "@", category.first != "." else { return false }
+        return true
     }
 
     static func isIPLiteral(_ value: String) -> Bool {
@@ -85,9 +111,21 @@ enum SplitTunnelRuleMatcher {
                 if domainRuleMatches(rule.value, candidate: trimmed) { return rule }
             case .ip:
                 if ipRuleMatches(rule.value, candidate: trimmed) { return rule }
+            case .geosite, .geoip:
+                // geosite/geoip categories live in Xray geodata files and are
+                // resolved by Xray; they can't be evaluated here, so the tester
+                // never claims a match.
+                continue
             }
         }
         return nil
+    }
+
+    /// True when the list has an enabled geodata-backed rule that Xray could
+    /// match but the local tester cannot evaluate, so the UI can disclose that
+    /// its result may be incomplete rather than silently mislead.
+    static func hasUntestableGeodataRules(in rules: [SplitTunnelRule]) -> Bool {
+        rules.contains { $0.isEnabled && ($0.kind == .geosite || $0.kind == .geoip) }
     }
 
     private static func domainRuleMatches(_ ruleValue: String, candidate: String) -> Bool {

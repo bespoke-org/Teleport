@@ -29,7 +29,8 @@ struct PrivilegedHelperInstaller: Sendable {
         guard fileManager.isExecutableFile(atPath: PrivilegedHelperClient.installedToolPath),
               fileManager.isExecutableFile(atPath: PrivilegedHelperClient.installedXrayPath),
               fileManager.contentsEqual(atPath: helperURL.path, andPath: PrivilegedHelperClient.installedToolPath),
-              fileManager.contentsEqual(atPath: runtimeURL.path, andPath: PrivilegedHelperClient.installedXrayPath) else {
+              fileManager.contentsEqual(atPath: runtimeURL.path, andPath: PrivilegedHelperClient.installedXrayPath),
+              installedGeodataIsPresent() else {
             return false
         }
         guard let response = try? PrivilegedHelperClient().status(), response.success else {
@@ -38,9 +39,31 @@ struct PrivilegedHelperInstaller: Sendable {
         return response.version == PrivilegedHelperClient.expectedVersion
     }
 
+    private static let geodataFileNames = ["geosite.dat", "geoip.dat"]
+
+    private func bundledAssetDirectoryURL() -> URL? {
+        // Bundled geodata sits directly in the app's Resources dir, so resolve the
+        // directory from one of the .dat files rather than assuming a subfolder.
+        guard let geositeURL = bundle.url(forResource: "geosite", withExtension: "dat"),
+              bundle.url(forResource: "geoip", withExtension: "dat") != nil else {
+            return nil
+        }
+        return geositeURL.deletingLastPathComponent()
+    }
+
+    private func installedGeodataIsPresent() -> Bool {
+        let fileManager = FileManager.default
+        return Self.geodataFileNames.allSatisfy { name in
+            fileManager.fileExists(atPath: PrivilegedHelperConstants.installedAssetDirectoryPath + "/" + name)
+        }
+    }
+
     private func install(helperURL: URL, runtimeURL: URL) throws {
+        guard let assetDirectoryURL = bundledAssetDirectoryURL() else {
+            throw PrivilegedHelperInstallerError.installFailed("Bundled Xray geodata is missing from the app bundle. Rebuild or reinstall Teleport.")
+        }
         let plist = launchDaemonPlist()
-        let script = installScript(appBundleURL: bundle.bundleURL, helperURL: helperURL, runtimeURL: runtimeURL, plist: plist)
+        let script = installScript(appBundleURL: bundle.bundleURL, helperURL: helperURL, runtimeURL: runtimeURL, assetDirectoryURL: assetDirectoryURL, plist: plist)
         do {
             try shellRunner.runAdministratorShellScript(script, prompt: administratorPrompt)
         } catch {
@@ -133,19 +156,22 @@ struct PrivilegedHelperInstaller: Sendable {
         """
     }
 
-    private func installScript(appBundleURL: URL, helperURL: URL, runtimeURL: URL, plist: String) -> String {
+    private func installScript(appBundleURL: URL, helperURL: URL, runtimeURL: URL, assetDirectoryURL: URL, plist: String) -> String {
         let q = PrivilegedShellRunner.shellQuote
         return """
         set -eu
         APP_BUNDLE=\(q(appBundleURL.path))
         HELPER_SRC=\(q(helperURL.path))
         XRAY_SRC=\(q(runtimeURL.path))
+        ASSET_SRC=\(q(assetDirectoryURL.path))
         HELPER_DST=\(q(PrivilegedHelperClient.installedToolPath))
         XRAY_DST=\(q(PrivilegedHelperClient.installedXrayPath))
+        ASSET_DST=\(q(PrivilegedHelperConstants.installedAssetDirectoryPath))
         PLIST_DST=\(q(PrivilegedHelperClient.launchDaemonPlistPath))
         LABEL=\(q(PrivilegedHelperClient.label))
         REQUIREMENT=\(q(Self.codeSigningRequirement))
         EXPECTED_XRAY_SHA256=\(q(Self.bundledXraySHA256))
+        GEODATA_FILES=\(q(Self.geodataFileNames.joined(separator: " ")))
 
         verify_signature() {
             /usr/bin/codesign --verify --strict --requirement "$REQUIREMENT" "$1"
@@ -184,12 +210,26 @@ struct PrivilegedHelperInstaller: Sendable {
         verify_signature "$tmp_helper"
         verify_xray_hash "$tmp_xray"
 
+        tmp_assets="$tmp_dir/assets"
+        mkdir "$tmp_assets"
+        for geodata_file in $GEODATA_FILES; do
+            cp "$ASSET_SRC/$geodata_file" "$tmp_assets/$geodata_file"
+        done
+        chown root:wheel "$tmp_assets"
+        chmod 755 "$tmp_assets"
+        for geodata_file in $GEODATA_FILES; do
+            chown root:wheel "$tmp_assets/$geodata_file"
+            chmod 644 "$tmp_assets/$geodata_file"
+        done
+
         launchctl bootout "system/$LABEL" >/dev/null 2>&1 || true
         rm -f \(q(PrivilegedHelperClient.socketPath))
         mv -f "$tmp_helper" "$HELPER_DST"
         mv -f "$tmp_xray" "$XRAY_DST"
         chown root:wheel "$HELPER_DST" "$XRAY_DST"
         chmod 755 "$HELPER_DST" "$XRAY_DST"
+        rm -rf "$ASSET_DST"
+        mv -f "$tmp_assets" "$ASSET_DST"
         cat > "$PLIST_DST" <<'TELEPORT_HELPER_PLIST'
         \(plist)
         TELEPORT_HELPER_PLIST

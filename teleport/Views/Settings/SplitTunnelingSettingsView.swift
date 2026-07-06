@@ -35,7 +35,7 @@ struct SplitTunnelingSettingsView: View {
                 ContentUnavailableView(
                     "No split-tunnel rules",
                     systemImage: "point.3.connected.trianglepath.dotted",
-                    description: Text("Add a domain or IP/CIDR rule below.")
+                    description: Text("Add a domain, IP/CIDR, or geosite category rule below.")
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -97,6 +97,15 @@ struct SplitTunnelingSettingsView: View {
                     .foregroundStyle(.secondary)
                     .font(.caption)
                 }
+
+                if SplitTunnelRuleMatcher.hasUntestableGeodataRules(in: viewModel.splitTunnelRules) {
+                    Label(
+                        "Geosite/geoip category rules are resolved by Xray and can't be checked here.",
+                        systemImage: "info.circle"
+                    )
+                    .foregroundStyle(.secondary)
+                    .font(.caption)
+                }
             }
         }
         .padding(.vertical, 4)
@@ -116,7 +125,7 @@ struct SplitTunnelingSettingsView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(rule.value)
                     .font(.body.monospaced())
-                Text(rule.kind == .domain ? "Domain" : "IP/CIDR")
+                Text(kindLabel(rule.kind))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -156,7 +165,7 @@ struct SplitTunnelingSettingsView: View {
                 .font(.subheadline.weight(.medium))
 
             HStack(alignment: .top, spacing: 10) {
-                TextField("Domain, IP/CIDR, or geosite:category — paste a list to add several at once", text: $newRuleValue, axis: .vertical)
+                TextField("Domain, IP/CIDR, geosite:category, or geoip:category — paste a list to add several at once", text: $newRuleValue, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(1 ... 6)
                     .onSubmit(addRule)
@@ -181,14 +190,23 @@ struct SplitTunnelingSettingsView: View {
             }
 
             HStack(spacing: 4) {
-                Text("Want to match whole categories like geosite/geoip?")
+                Text("Match whole categories with geosite:name or geoip:name (e.g. geosite:google, geoip:private).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Button("Geodata", action: onOpenGeodata)
+                Button("Manage geodata", action: onOpenGeodata)
                     .buttonStyle(.link)
                     .font(.caption)
             }
             .padding(.top, 2)
+        }
+    }
+
+    private func kindLabel(_ kind: SplitTunnelRuleKind) -> String {
+        switch kind {
+        case .domain: return "Domain"
+        case .ip: return "IP/CIDR"
+        case .geosite: return "Geosite"
+        case .geoip: return "GeoIP"
         }
     }
 

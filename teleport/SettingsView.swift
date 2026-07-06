@@ -372,7 +372,7 @@ private struct GeodataSettingsView: View {
         ContentUnavailableView(
             "Coming soon",
             systemImage: "globe",
-            description: Text("Matching whole categories with bundled geosite/geoip data — and keeping that data up to date — will live here.")
+            description: Text("Geosite category rules already work in Split Tunneling. Browsing available categories and updating the bundled geosite/geoip data will live here.")
         )
         .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity)

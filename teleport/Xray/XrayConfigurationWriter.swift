@@ -154,6 +154,24 @@ struct XrayConfigurationWriter {
                             "tls"
                         ]
                     ]
+                ],
+                // VPN mode already routes all device traffic through the TUN, but
+                // also exposing local SOCKS/HTTP ports lets tools that expect an
+                // explicit proxy (rather than relying on the default route) point
+                // at Teleport directly, same as System Proxy mode's inbounds.
+                [
+                    "tag": "socks-in",
+                    "listen": proxyEndpoint.host,
+                    "port": proxyEndpoint.socksPort,
+                    "protocol": "socks",
+                    "settings": ["udp": true]
+                ],
+                [
+                    "tag": "http-in",
+                    "listen": proxyEndpoint.host,
+                    "port": proxyEndpoint.httpPort,
+                    "protocol": "http",
+                    "settings": [:]
                 ]
             ],
             "outbounds": [
@@ -206,6 +224,12 @@ struct XrayConfigurationWriter {
         switch rule.kind {
         case .domain:
             routingRule["domain"] = [rule.value]
+        case .geosite:
+            // Xray accepts `geosite:<category>` entries inside the domain array.
+            routingRule["domain"] = [rule.value]
+        case .geoip:
+            // Xray accepts `geoip:<category>` entries inside the ip array.
+            routingRule["ip"] = [rule.value]
         case .ip:
             routingRule["ip"] = [rule.value]
         }

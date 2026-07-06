@@ -10,10 +10,14 @@ struct VerifySplitTunneling {
         try testMatcherDomainRulesDoNotMatchIPLiterals()
         try testMatcherFullPrefixRequiresExactMatch()
         try testDomainValuesAreNormalizedToLowercase()
+        try testClassifiesGeodataTokens()
+        try testMatcherSkipsGeodataRules()
+        try testGeodataRulesGenerateRoutingRules()
         try testGeneratedRoutingRulesMatchSharedMatcher()
         try testDisabledRuleExcludedFromGeneratedRouting()
         try testEmptyRuleListProducesNoSplitTunnelRouting()
         try testDirectOutboundBindsToPhysicalInterface()
+        try testTunnelConfigExposesLocalSocksAndHTTPPorts()
         try testLegacySnapshotWithoutSplitTunnelFieldsDefaults()
         try testSnapshotRoundTripPreservesSplitTunnelState()
         print("verify_split_tunneling: all checks passed")
@@ -98,11 +102,77 @@ struct VerifySplitTunneling {
         precondition(SplitTunnelRuleMatcher.firstMatch(for: "API.Example.com", in: [rule]) != nil)
     }
 
+    private static func testClassifiesGeodataTokens() throws {
+        try expectClassified("geosite:google", kind: .geosite)
+        try expectClassified("geosite:category-ads-all", kind: .geosite)
+        try expectClassified("geosite:google@ads", kind: .geosite)
+        try expectClassified("geoip:private", kind: .geoip)
+        try expectClassified("geoip:cn", kind: .geoip)
+
+        switch SplitTunnelRuleClassifier.classify("GeoSite:Google") {
+        case let .success(classified):
+            precondition(classified.kind == .geosite)
+            precondition(classified.value == "geosite:google", "expected geosite token to be normalized to lowercase")
+        case .failure:
+            preconditionFailure("expected mixed-case geosite token to classify successfully")
+        }
+
+        switch SplitTunnelRuleClassifier.classify("GeoIP:Private") {
+        case let .success(classified):
+            precondition(classified.kind == .geoip)
+            precondition(classified.value == "geoip:private", "expected geoip token to be normalized to lowercase")
+        case .failure:
+            preconditionFailure("expected mixed-case geoip token to classify successfully")
+        }
+
+        for invalid in ["geosite:", "geosite:@ads", "geosite:.foo", "geosite:a b", "geoip:", "geoip:@cn", "geoip:.private", "geoip:a b"] {
+            switch SplitTunnelRuleClassifier.classify(invalid) {
+            case .success:
+                preconditionFailure("expected \"\(invalid)\" to be rejected")
+            case .failure:
+                break
+            }
+        }
+    }
+
+    private static func testMatcherSkipsGeodataRules() throws {
+        // Geodata-backed rules can't be evaluated locally, so the tester never
+        // claims a match for them and reports that untestable rules are present.
+        let geosite = SplitTunnelRule(value: "geosite:google", kind: .geosite, action: .direct)
+        let geoip = SplitTunnelRule(value: "geoip:private", kind: .geoip, action: .block)
+        precondition(SplitTunnelRuleMatcher.firstMatch(for: "www.google.com", in: [geosite]) == nil)
+        precondition(SplitTunnelRuleMatcher.firstMatch(for: "10.0.0.1", in: [geoip]) == nil)
+        precondition(SplitTunnelRuleMatcher.hasUntestableGeodataRules(in: [geosite, geoip]))
+
+        let disabled = SplitTunnelRule(value: "geosite:google", kind: .geosite, action: .direct, isEnabled: false)
+        precondition(!SplitTunnelRuleMatcher.hasUntestableGeodataRules(in: [disabled]))
+
+        // A domain rule sitting after a geodata-backed rule is still matched normally.
+        let domain = SplitTunnelRule(value: "example.com", kind: .domain, action: .block)
+        precondition(SplitTunnelRuleMatcher.firstMatch(for: "example.com", in: [geosite, domain])?.id == domain.id)
+    }
+
+    private static func testGeodataRulesGenerateRoutingRules() throws {
+        let rules = [
+            SplitTunnelRule(value: "geosite:google", kind: .geosite, action: .direct),
+            SplitTunnelRule(value: "geoip:private", kind: .geoip, action: .block)
+        ]
+        let routingRules = try generatedSplitTunnelRoutingRules(for: rules)
+        precondition(routingRules.count == 2)
+        let domains = routingRules[0]["domain"] as? [String]
+        precondition(domains == ["geosite:google"], "expected geosite token to be emitted in the domain array")
+        precondition(routingRules[0]["outboundTag"] as? String == "direct")
+        let ips = routingRules[1]["ip"] as? [String]
+        precondition(ips == ["geoip:private"], "expected geoip token to be emitted in the ip array")
+        precondition(routingRules[1]["outboundTag"] as? String == "block")
+    }
+
     private static func testGeneratedRoutingRulesMatchSharedMatcher() throws {
         let rules = [
             SplitTunnelRule(value: "example.com", kind: .domain, action: .direct),
             SplitTunnelRule(value: "10.0.0.0/8", kind: .ip, action: .block),
-            SplitTunnelRule(value: "full:api.internal.com", kind: .domain, action: .proxy)
+            SplitTunnelRule(value: "full:api.internal.com", kind: .domain, action: .proxy),
+            SplitTunnelRule(value: "geoip:private", kind: .geoip, action: .direct)
         ]
 
         let routingRules = try generatedSplitTunnelRoutingRules(for: rules)
@@ -113,10 +183,10 @@ struct VerifySplitTunneling {
             precondition(outboundTag == rule.action.rawValue, "expected outboundTag \(rule.action.rawValue) but got \(outboundTag ?? "nil")")
 
             switch rule.kind {
-            case .domain:
+            case .domain, .geosite:
                 let domains = routingRule["domain"] as? [String]
                 precondition(domains == [rule.value], "expected domain field to carry rule value as-is")
-            case .ip:
+            case .ip, .geoip:
                 let ips = routingRule["ip"] as? [String]
                 precondition(ips == [rule.value], "expected ip field to carry rule value as-is")
             }
@@ -186,6 +256,32 @@ struct VerifySplitTunneling {
         let autoData = try writer.tunnelConfigData(for: configuration, interfaceName: "utun9", outboundInterface: "auto")
         let autoDirect = try directOutbound(from: autoData)
         precondition(autoDirect["streamSettings"] == nil, "expected no interface binding when the interface is unknown")
+    }
+
+    private static func testTunnelConfigExposesLocalSocksAndHTTPPorts() throws {
+        let configuration = try ConnectionLinkParser().parse(sampleVLESSLink())
+        let endpoint = ProxyEndpoint(host: "127.0.0.1", httpPort: 8123, socksPort: 1234)
+        let writer = XrayConfigurationWriter(proxyEndpoint: endpoint)
+
+        let data = try writer.tunnelConfigData(for: configuration, interfaceName: "utun9")
+        let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let inbounds = (payload?["inbounds"] as? [[String: Any]]) ?? []
+
+        guard let socksInbound = inbounds.first(where: { $0["tag"] as? String == "socks-in" }) else {
+            preconditionFailure("expected a socks-in inbound alongside the tun inbound in VPN mode")
+        }
+        precondition(socksInbound["protocol"] as? String == "socks")
+        precondition(socksInbound["listen"] as? String == "127.0.0.1")
+        precondition(socksInbound["port"] as? Int == 1234)
+
+        guard let httpInbound = inbounds.first(where: { $0["tag"] as? String == "http-in" }) else {
+            preconditionFailure("expected an http-in inbound alongside the tun inbound in VPN mode")
+        }
+        precondition(httpInbound["protocol"] as? String == "http")
+        precondition(httpInbound["listen"] as? String == "127.0.0.1")
+        precondition(httpInbound["port"] as? Int == 8123)
+
+        precondition(inbounds.contains { $0["tag"] as? String == "tun" }, "expected the tun inbound to remain present")
     }
 
     private static func directOutbound(from data: Data) throws -> [String: Any] {

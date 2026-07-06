@@ -497,6 +497,8 @@ struct SubscriptionSource: Codable, Equatable, Identifiable {
 enum SplitTunnelRuleKind: String, Codable, Equatable {
     case domain
     case ip
+    case geosite
+    case geoip
 }
 
 enum SplitTunnelRuleAction: String, Codable, CaseIterable, Identifiable, Equatable {

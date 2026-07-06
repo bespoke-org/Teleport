@@ -601,6 +601,7 @@ final class XrayTunController {
         PROTECTED_DNS_FILE=\(q(protectedDNSFile))
         CONTROL_LOG_FILE=\(q(controlLogFile))
         XRAY=\(q(installedXrayPath))
+        XRAY_ASSET_DIR=\(q(PrivilegedHelperConstants.installedAssetDirectoryPath))
         CONFIG=\(q(configPath))
         PROTECTED_HOST=\(q(protectedHost))
         TUN_INTERFACE_NAME=\(q(tunnelInterfaceName))
@@ -642,6 +643,8 @@ final class XrayTunController {
         cd "$HELPER_STATE_DIR"
         (
             trap '' HUP
+            XRAY_LOCATION_ASSET="$XRAY_ASSET_DIR"
+            export XRAY_LOCATION_ASSET
             exec "$XRAY" run -c "$CONFIG"
         ) </dev/null >> "$LOG_FILE" 2>&1 &
         pid=$!
