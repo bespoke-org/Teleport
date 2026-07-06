@@ -56,6 +56,8 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var subscriptionConnectionSort: SubscriptionConnectionSort
     @Published private(set) var showsLatencyInMenuBarPicker: Bool
     @Published private(set) var animatesMenuBarIcon: Bool
+    @Published private(set) var splitTunnelRules: [SplitTunnelRule]
+    @Published private(set) var isSplitTunnelEnabled: Bool
     @Published private(set) var startsAtLogin: Bool
     @Published private(set) var refreshingSubscriptionIDs: Set<UUID> = []
     @Published private(set) var refreshingHealthConnectionIDs: Set<UUID> = []
@@ -87,6 +89,8 @@ final class AppViewModel: ObservableObject {
     )
     private var autoRefreshTimerCancellable: AnyCancellable?
     private var persistWorkItem: DispatchWorkItem?
+    private var splitTunnelApplyWorkItem: DispatchWorkItem?
+    private var appliedSplitTunnelRules: [SplitTunnelRule]?
     private var savedConnectionsByID: [UUID: SavedConnection] = [:]
     private var importedConnectionsBySourceID: [UUID: [SavedConnection]] = [:]
     private var importedConnectionCountsBySourceID: [UUID: Int] = [:]
@@ -125,6 +129,8 @@ final class AppViewModel: ObservableObject {
         subscriptionConnectionSort = snapshot.subscriptionConnectionSort
         showsLatencyInMenuBarPicker = snapshot.showsLatencyInMenuBarPicker
         animatesMenuBarIcon = snapshot.animatesMenuBarIcon
+        splitTunnelRules = snapshot.splitTunnelRules
+        isSplitTunnelEnabled = snapshot.isSplitTunnelEnabled
         startsAtLogin = loginItemService.isEnabled
         connectionBackend = connectionBackendFactory.makeBackend(for: snapshot.connectionMode)
         proxyEndpoint = snapshot.proxyEndpoint
@@ -201,6 +207,13 @@ final class AppViewModel: ObservableObject {
 
     var isConnected: Bool {
         connectionPhase == .running && proxyPhase == .enabled
+    }
+
+    /// The rules that actually reach Xray: only when the master toggle is on, and
+    /// only enabled rules, in list order. Used both to build the tunnel config and
+    /// to decide whether a live edit changed anything worth reconnecting for.
+    private var activeSplitTunnelRules: [SplitTunnelRule] {
+        isSplitTunnelEnabled ? splitTunnelRules.filter { $0.isEnabled } : []
     }
 
     var statusSummary: String {
@@ -552,6 +565,87 @@ final class AppViewModel: ObservableObject {
         schedulePersist()
     }
 
+    func setSplitTunnelEnabled(_ enabled: Bool) {
+        guard enabled != isSplitTunnelEnabled else { return }
+        isSplitTunnelEnabled = enabled
+        schedulePersist()
+        scheduleSplitTunnelLiveApply()
+    }
+
+    @discardableResult
+    func addSplitTunnelRule(value: String, action: SplitTunnelRuleAction) -> Result<SplitTunnelRule, SplitTunnelRuleValidationError> {
+        switch SplitTunnelRuleClassifier.classify(value) {
+        case let .success(classified):
+            let rule = SplitTunnelRule(value: classified.value, kind: classified.kind, action: action)
+            splitTunnelRules.append(rule)
+            schedulePersist()
+            scheduleSplitTunnelLiveApply()
+            return .success(rule)
+        case let .failure(error):
+            return .failure(error)
+        }
+    }
+
+    func removeSplitTunnelRule(id: UUID) {
+        guard splitTunnelRules.contains(where: { $0.id == id }) else { return }
+        splitTunnelRules.removeAll { $0.id == id }
+        schedulePersist()
+        scheduleSplitTunnelLiveApply()
+    }
+
+    func setSplitTunnelRuleEnabled(id: UUID, isEnabled: Bool) {
+        guard let index = splitTunnelRules.firstIndex(where: { $0.id == id }), splitTunnelRules[index].isEnabled != isEnabled else { return }
+        splitTunnelRules[index].isEnabled = isEnabled
+        schedulePersist()
+        scheduleSplitTunnelLiveApply()
+    }
+
+    func setSplitTunnelRuleAction(id: UUID, action: SplitTunnelRuleAction) {
+        guard let index = splitTunnelRules.firstIndex(where: { $0.id == id }), splitTunnelRules[index].action != action else { return }
+        splitTunnelRules[index].action = action
+        schedulePersist()
+        scheduleSplitTunnelLiveApply()
+    }
+
+    func moveSplitTunnelRules(fromOffsets offsets: IndexSet, toOffset destination: Int) {
+        let movedRules = offsets.map { splitTunnelRules[$0] }
+        var remainingRules = splitTunnelRules
+        for index in offsets.sorted(by: >) {
+            remainingRules.remove(at: index)
+        }
+        let adjustedDestination = destination - offsets.filter { $0 < destination }.count
+        remainingRules.insert(contentsOf: movedRules, at: max(0, min(adjustedDestination, remainingRules.count)))
+        splitTunnelRules = remainingRules
+        schedulePersist()
+        scheduleSplitTunnelLiveApply()
+    }
+
+    func matchingSplitTunnelRule(for candidate: String) -> SplitTunnelRule? {
+        SplitTunnelRuleMatcher.firstMatch(for: candidate, in: splitTunnelRules)
+    }
+
+    /// Coalesces rapid rule edits (typing, dragging to reorder, flipping several
+    /// toggles) into a single VPN reconnect once the user settles, instead of
+    /// tearing the tunnel down and back up on every individual change.
+    private func scheduleSplitTunnelLiveApply() {
+        guard connectionMode == .vpn, hasEstablishedConnection else { return }
+
+        splitTunnelApplyWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.applySplitTunnelRulesLiveIfNeeded()
+        }
+        splitTunnelApplyWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7, execute: workItem)
+    }
+
+    private func applySplitTunnelRulesLiveIfNeeded() {
+        guard connectionMode == .vpn, hasEstablishedConnection else { return }
+        // Only reconnect when the rules Xray would actually see have changed.
+        // Editing a disabled rule, or a no-op toggle, must not drop the tunnel.
+        guard activeSplitTunnelRules != appliedSplitTunnelRules else { return }
+        reconnectToSelectedConnection()
+    }
+
     func refreshStartsAtLoginStatus() {
         startsAtLogin = loginItemService.isEnabled
     }
@@ -628,6 +722,7 @@ final class AppViewModel: ObservableObject {
         let proxyEndpoint = proxyEndpoint
         let connectionBackend = connectionBackend
         let shouldDisableProxy = shouldManageSystemProxy
+        let activeSplitTunnelRules = activeSplitTunnelRules
 
         connectionPhase = .stopping
         proxyPhase = .disabling
@@ -645,8 +740,11 @@ final class AppViewModel: ObservableObject {
                 try connectionBackend.reconnect(
                     configuration: selectedConfiguration,
                     endpoint: proxyEndpoint,
-                    shouldDisableExistingProxy: shouldDisableProxy
+                    shouldDisableExistingProxy: shouldDisableProxy,
+                    splitTunnelRules: activeSplitTunnelRules
                 )
+
+                self?.appliedSplitTunnelRules = activeSplitTunnelRules
 
                 Task { @MainActor [weak self] in
                     self?.connectionPhase = .running
@@ -668,6 +766,7 @@ final class AppViewModel: ObservableObject {
     private func startConnection(using configuration: ConnectionConfiguration) {
         let proxyEndpoint = proxyEndpoint
         let connectionBackend = connectionBackend
+        let activeSplitTunnelRules = activeSplitTunnelRules
 
         connectionPhase = .starting
         proxyPhase = .enabling
@@ -676,7 +775,9 @@ final class AppViewModel: ObservableObject {
 
         operationQueue.async { [weak self] in
             do {
-                try connectionBackend.start(configuration: configuration, endpoint: proxyEndpoint)
+                try connectionBackend.start(configuration: configuration, endpoint: proxyEndpoint, splitTunnelRules: activeSplitTunnelRules)
+
+                self?.appliedSplitTunnelRules = activeSplitTunnelRules
 
                 Task { @MainActor [weak self] in
                     self?.connectionPhase = .running
@@ -1195,7 +1296,9 @@ final class AppViewModel: ObservableObject {
             connectionMode: connectionMode,
             subscriptionConnectionSort: subscriptionConnectionSort,
             showsLatencyInMenuBarPicker: showsLatencyInMenuBarPicker,
-            animatesMenuBarIcon: animatesMenuBarIcon
+            animatesMenuBarIcon: animatesMenuBarIcon,
+            splitTunnelRules: splitTunnelRules,
+            isSplitTunnelEnabled: isSplitTunnelEnabled
         )
     }
 

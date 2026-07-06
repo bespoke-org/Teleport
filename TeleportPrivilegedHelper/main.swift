@@ -696,20 +696,66 @@ final class XrayTunController {
 
         route delete -net 0.0.0.0/1 >/dev/null 2>&1 || true
         route delete -net 128.0.0.0/1 >/dev/null 2>&1 || true
-        route add -net 0.0.0.0/1 -interface "$tun_interface" >> "$CONTROL_LOG_FILE" 2>&1 || true
-        route add -net 128.0.0.0/1 -interface "$tun_interface" >> "$CONTROL_LOG_FILE" 2>&1 || true
+        if ! route add -net 0.0.0.0/1 -interface "$tun_interface" >> "$CONTROL_LOG_FILE" 2>&1; then
+            reason="Teleport VPN could not install the lower IPv4 default route through Teleport's TUN."
+            printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$reason" >> "$CONTROL_LOG_FILE"
+            printf '%s\n' "$reason" >&2
+            kill "$pid" 2>/dev/null || true
+            sleep 0.5
+            kill -9 "$pid" 2>/dev/null || true
+            route delete -net 0.0.0.0/1 >/dev/null 2>&1 || true
+            route delete -net 128.0.0.0/1 >/dev/null 2>&1 || true
+            delete_host_route "$PROTECTED_HOST"
+            cleanup_dns_routes
+            rm -f "$PID_FILE"
+            exit 1
+        fi
+        if ! route add -net 128.0.0.0/1 -interface "$tun_interface" >> "$CONTROL_LOG_FILE" 2>&1; then
+            reason="Teleport VPN could not install the upper IPv4 default route through Teleport's TUN."
+            printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$reason" >> "$CONTROL_LOG_FILE"
+            printf '%s\n' "$reason" >&2
+            kill "$pid" 2>/dev/null || true
+            sleep 0.5
+            kill -9 "$pid" 2>/dev/null || true
+            route delete -net 0.0.0.0/1 >/dev/null 2>&1 || true
+            route delete -net 128.0.0.0/1 >/dev/null 2>&1 || true
+            delete_host_route "$PROTECTED_HOST"
+            cleanup_dns_routes
+            rm -f "$PID_FILE"
+            exit 1
+        fi
 
         \(protectHostRouteCommands())
         protect_dns_routes
 
-        public_interface=$(route -n get 1.1.1.1 2>/dev/null | awk '/interface:/{print $2; exit}' || true)
+        public_interface_low=$(route -n get 1.1.1.1 2>/dev/null | awk '/interface:/{print $2; exit}' || true)
+        public_interface_high=$(route -n get 129.0.0.1 2>/dev/null | awk '/interface:/{print $2; exit}' || true)
         protected_interface=$(route -n get "$PROTECTED_HOST" 2>/dev/null | awk '/interface:/{print $2; exit}' || true)
-        printf '%s pid %s running, tun %s, public route %s, protected route %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$pid" "$tun_interface" "${public_interface:-unknown}" "${protected_interface:-unknown}" >> "$CONTROL_LOG_FILE"
+        printf '%s pid %s running, tun %s, public low route %s, public high route %s, protected route %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$pid" "$tun_interface" "${public_interface_low:-unknown}" "${public_interface_high:-unknown}" "${protected_interface:-unknown}" >> "$CONTROL_LOG_FILE"
 
-        case "$public_interface" in
+        case "$public_interface_low" in
             utun*) ;;
             *)
-                reason="Teleport VPN started Xray, but macOS did not route public traffic through Teleport's TUN. Disconnect other VPN apps and try again."
+                reason="Teleport VPN started Xray, but macOS did not route lower-half public traffic through Teleport's TUN. Disconnect other VPN apps and try again."
+                printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$reason" >> "$CONTROL_LOG_FILE"
+                netstat -rn -f inet >> "$CONTROL_LOG_FILE" 2>&1 || true
+                printf '%s\n' "$reason" >&2
+                kill "$pid" 2>/dev/null || true
+                sleep 0.5
+                kill -9 "$pid" 2>/dev/null || true
+                route delete -net 0.0.0.0/1 >/dev/null 2>&1 || true
+                route delete -net 128.0.0.0/1 >/dev/null 2>&1 || true
+                delete_host_route "$PROTECTED_HOST"
+                cleanup_dns_routes
+                rm -f "$PID_FILE"
+                exit 1
+                ;;
+        esac
+
+        case "$public_interface_high" in
+            utun*) ;;
+            *)
+                reason="Teleport VPN started Xray, but macOS did not route upper-half public traffic through Teleport's TUN. Disconnect other VPN apps and try again."
                 printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$reason" >> "$CONTROL_LOG_FILE"
                 netstat -rn -f inet >> "$CONTROL_LOG_FILE" 2>&1 || true
                 printf '%s\n' "$reason" >&2

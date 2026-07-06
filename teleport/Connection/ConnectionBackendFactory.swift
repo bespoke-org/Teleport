@@ -37,20 +37,26 @@ final class XrayTunConnectionBackend: ConnectionBackend {
 
     func restorePreviousState() throws {}
 
-    func start(configuration: ConnectionConfiguration, endpoint: ProxyEndpoint) throws {
-        _ = endpoint
+    func start(configuration: ConnectionConfiguration, endpoint: ProxyEndpoint, splitTunnelRules: [SplitTunnelRule]) throws {
         if let existingVPNInterface = routeInspector.existingVPNDefaultRouteInterface() {
             throw XrayTunConnectionError.existingVPNDetected(existingVPNInterface)
         }
 
         try systemProxyService.disableProxy()
 
-        let outboundInterface = routeInspector.outboundInterface(for: configuration.host) ?? "auto"
+        // Prefer the interface used to reach the proxy server; fall back to the
+        // current default-route interface so split-tunnel "direct" traffic can be
+        // bound to a real uplink on any host/network, not just when the per-host
+        // lookup happens to succeed.
+        let outboundInterface = routeInspector.outboundInterface(for: configuration.host)
+            ?? routeInspector.defaultRouteInterface()
+            ?? "auto"
         let tunnelInterfaceName = routeInspector.nextAvailableTunnelInterfaceName()
-        let configData = try XrayConfigurationWriter(proxyEndpoint: .default).tunnelConfigData(
+        let configData = try XrayConfigurationWriter(proxyEndpoint: endpoint).tunnelConfigData(
             for: configuration,
             interfaceName: tunnelInterfaceName,
-            outboundInterface: outboundInterface
+            outboundInterface: outboundInterface,
+            splitTunnelRules: splitTunnelRules
         )
         try runtimeManager.start(
             session: XrayTunLaunchSession(
@@ -66,10 +72,10 @@ final class XrayTunConnectionBackend: ConnectionBackend {
         }
     }
 
-    func reconnect(configuration: ConnectionConfiguration, endpoint: ProxyEndpoint, shouldDisableExistingProxy: Bool) throws {
+    func reconnect(configuration: ConnectionConfiguration, endpoint: ProxyEndpoint, shouldDisableExistingProxy: Bool, splitTunnelRules: [SplitTunnelRule]) throws {
         _ = shouldDisableExistingProxy
         try stop(shouldDisableProxy: false)
-        try start(configuration: configuration, endpoint: endpoint)
+        try start(configuration: configuration, endpoint: endpoint, splitTunnelRules: splitTunnelRules)
     }
 
     func stop(shouldDisableProxy: Bool) throws {

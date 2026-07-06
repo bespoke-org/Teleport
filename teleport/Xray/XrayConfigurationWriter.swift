@@ -24,7 +24,7 @@ struct XrayConfigurationWriter {
         try writePayload(makePayload(configuration: configuration), to: outputURL)
     }
 
-    func writeTunnelConfig(for configuration: ConnectionConfiguration, interfaceName: String, outboundInterface: String = "auto") throws -> URL {
+    func writeTunnelConfig(for configuration: ConnectionConfiguration, interfaceName: String, outboundInterface: String = "auto", splitTunnelRules: [SplitTunnelRule] = []) throws -> URL {
         let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
             .appendingPathComponent("teleport", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -33,16 +33,17 @@ struct XrayConfigurationWriter {
             for: configuration,
             interfaceName: interfaceName,
             outboundInterface: outboundInterface,
+            splitTunnelRules: splitTunnelRules,
             to: directory.appendingPathComponent("xray-tun-config.json")
         )
     }
 
-    func writeTunnelConfig(for configuration: ConnectionConfiguration, interfaceName: String, outboundInterface: String = "auto", to outputURL: URL) throws -> URL {
-        try writePayload(makeTunnelPayload(configuration: configuration, interfaceName: interfaceName, outboundInterface: outboundInterface), to: outputURL)
+    func writeTunnelConfig(for configuration: ConnectionConfiguration, interfaceName: String, outboundInterface: String = "auto", splitTunnelRules: [SplitTunnelRule] = [], to outputURL: URL) throws -> URL {
+        try writePayload(makeTunnelPayload(configuration: configuration, interfaceName: interfaceName, outboundInterface: outboundInterface, splitTunnelRules: splitTunnelRules), to: outputURL)
     }
 
-    func tunnelConfigData(for configuration: ConnectionConfiguration, interfaceName: String, outboundInterface: String = "auto") throws -> Data {
-        try encodePayload(makeTunnelPayload(configuration: configuration, interfaceName: interfaceName, outboundInterface: outboundInterface))
+    func tunnelConfigData(for configuration: ConnectionConfiguration, interfaceName: String, outboundInterface: String = "auto", splitTunnelRules: [SplitTunnelRule] = []) throws -> Data {
+        try encodePayload(makeTunnelPayload(configuration: configuration, interfaceName: interfaceName, outboundInterface: outboundInterface, splitTunnelRules: splitTunnelRules))
     }
 
     private func writePayload(_ payload: [String: Any], to outputURL: URL) throws -> URL {
@@ -107,8 +108,25 @@ struct XrayConfigurationWriter {
         ]
     }
 
-    private func makeTunnelPayload(configuration: ConnectionConfiguration, interfaceName: String, outboundInterface: String) -> [String: Any] {
+    private func makeTunnelPayload(configuration: ConnectionConfiguration, interfaceName: String, outboundInterface: String, splitTunnelRules: [SplitTunnelRule] = []) -> [String: Any] {
         let streamSettings = makeStreamSettings(configuration: configuration)
+        let splitTunnelRoutingRules = splitTunnelRules
+            .filter { $0.isEnabled }
+            .map { makeSplitTunnelRoutingRule(for: $0) }
+
+        // The default routes point every destination at the TUN, so a plain freedom
+        // outbound would loop split-tunnel "direct" traffic straight back into Xray.
+        // Bind it to the physical interface so those sockets egress outside the tunnel.
+        var directOutbound: [String: Any] = [
+            "tag": "direct",
+            "protocol": "freedom",
+            "settings": [:]
+        ]
+        if outboundInterface != "auto", !outboundInterface.isEmpty {
+            directOutbound["streamSettings"] = [
+                "sockopt": ["interface": outboundInterface]
+            ]
+        }
 
         return [
             "log": [
@@ -145,11 +163,7 @@ struct XrayConfigurationWriter {
                     "settings": makeOutboundSettings(configuration: configuration),
                     "streamSettings": streamSettings
                 ],
-                [
-                    "tag": "direct",
-                    "protocol": "freedom",
-                    "settings": [:]
-                ],
+                directOutbound,
                 [
                     "tag": "block",
                     "protocol": "blackhole",
@@ -171,7 +185,8 @@ struct XrayConfigurationWriter {
                             "224.0.0.0/3"
                         ],
                         "outboundTag": "block"
-                    ],
+                    ]
+                ] + splitTunnelRoutingRules + [
                     [
                         "type": "field",
                         "outboundTag": "proxy",
@@ -180,6 +195,22 @@ struct XrayConfigurationWriter {
                 ]
             ]
         ]
+    }
+
+    private func makeSplitTunnelRoutingRule(for rule: SplitTunnelRule) -> [String: Any] {
+        var routingRule: [String: Any] = [
+            "type": "field",
+            "outboundTag": rule.action.rawValue
+        ]
+
+        switch rule.kind {
+        case .domain:
+            routingRule["domain"] = [rule.value]
+        case .ip:
+            routingRule["ip"] = [rule.value]
+        }
+
+        return routingRule
     }
 
     private func makeOutboundSettings(configuration: ConnectionConfiguration) -> [String: Any] {

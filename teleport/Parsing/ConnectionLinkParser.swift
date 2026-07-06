@@ -160,7 +160,7 @@ struct ConnectionLinkParser {
     }
 
     nonisolated private func parseBase(_ rawLink: String, components: URLComponents) throws -> (host: String, port: Int, remarks: String?) {
-        guard let host = components.host, !host.isEmpty else {
+        guard let parsedHost = components.host, !parsedHost.isEmpty else {
             throw ConfigurationError.missingHost
         }
 
@@ -169,8 +169,29 @@ struct ConnectionLinkParser {
         }
 
         let remarks = components.fragment?.removingPercentEncoding
-        _ = rawLink
+        let host = rawAuthorityHost(from: rawLink) ?? parsedHost
         return (host, port, remarks)
+    }
+
+    nonisolated private func rawAuthorityHost(from rawLink: String) -> String? {
+        guard let schemeRange = rawLink.range(of: "://") else { return nil }
+        let authorityStart = schemeRange.upperBound
+        let authorityEnd = rawLink[authorityStart...]
+            .firstIndex { $0 == "/" || $0 == "?" || $0 == "#" }
+            ?? rawLink.endIndex
+        var authority = rawLink[authorityStart ..< authorityEnd]
+        if let userInfoEnd = authority.lastIndex(of: "@") {
+            authority = authority[authority.index(after: userInfoEnd)...]
+        }
+
+        if authority.first == "[", let closingBracket = authority.firstIndex(of: "]") {
+            let host = authority[authority.index(after: authority.startIndex) ..< closingBracket]
+            return host.isEmpty ? nil : String(host)
+        }
+
+        let hostEnd = authority.firstIndex(of: ":") ?? authority.endIndex
+        let host = authority[..<hostEnd]
+        return host.isEmpty ? nil : String(host)
     }
 
     nonisolated private func queryDictionary(from components: URLComponents) throws -> [String: String] {

@@ -5,6 +5,13 @@ struct XrayTunRouteInspector: Sendable {
         routeInterface(for: host)
     }
 
+    /// The physical interface carrying the default route right now, before the
+    /// tunnel is installed. Used as a robust fallback so split-tunnel "direct"
+    /// traffic can always be bound to a real uplink instead of looping into the TUN.
+    func defaultRouteInterface() -> String? {
+        routeInterface(for: "default")
+    }
+
     func existingVPNDefaultRouteInterface() -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/sbin/netstat")

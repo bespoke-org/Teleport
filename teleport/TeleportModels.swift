@@ -494,6 +494,66 @@ struct SubscriptionSource: Codable, Equatable, Identifiable {
     }
 }
 
+enum SplitTunnelRuleKind: String, Codable, Equatable {
+    case domain
+    case ip
+}
+
+enum SplitTunnelRuleAction: String, Codable, CaseIterable, Identifiable, Equatable {
+    case direct
+    case proxy
+    case block
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .direct: return "Direct"
+        case .proxy: return "Proxy"
+        case .block: return "Block"
+        }
+    }
+}
+
+struct SplitTunnelRule: Codable, Equatable, Identifiable {
+    let id: UUID
+    var value: String
+    var kind: SplitTunnelRuleKind
+    var action: SplitTunnelRuleAction
+    var isEnabled: Bool
+
+    init(
+        id: UUID = UUID(),
+        value: String,
+        kind: SplitTunnelRuleKind,
+        action: SplitTunnelRuleAction,
+        isEnabled: Bool = true
+    ) {
+        self.id = id
+        self.value = value
+        self.kind = kind
+        self.action = action
+        self.isEnabled = isEnabled
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case value
+        case kind
+        case action
+        case isEnabled
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        value = try container.decode(String.self, forKey: .value)
+        kind = try container.decode(SplitTunnelRuleKind.self, forKey: .kind)
+        action = try container.decodeIfPresent(SplitTunnelRuleAction.self, forKey: .action) ?? .direct
+        isEnabled = try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
+    }
+}
+
 struct AppSnapshot: Codable, Equatable {
     var savedConnections: [SavedConnection]
     var subscriptionSources: [SubscriptionSource]
@@ -503,6 +563,8 @@ struct AppSnapshot: Codable, Equatable {
     var subscriptionConnectionSort: SubscriptionConnectionSort
     var showsLatencyInMenuBarPicker: Bool
     var animatesMenuBarIcon: Bool
+    var splitTunnelRules: [SplitTunnelRule]
+    var isSplitTunnelEnabled: Bool
 
     init(
         savedConnections: [SavedConnection],
@@ -512,7 +574,9 @@ struct AppSnapshot: Codable, Equatable {
         connectionMode: ConnectionMode = .vpn,
         subscriptionConnectionSort: SubscriptionConnectionSort = .name,
         showsLatencyInMenuBarPicker: Bool = true,
-        animatesMenuBarIcon: Bool = true
+        animatesMenuBarIcon: Bool = true,
+        splitTunnelRules: [SplitTunnelRule] = [],
+        isSplitTunnelEnabled: Bool = false
     ) {
         self.savedConnections = savedConnections
         self.subscriptionSources = subscriptionSources
@@ -522,6 +586,8 @@ struct AppSnapshot: Codable, Equatable {
         self.subscriptionConnectionSort = subscriptionConnectionSort
         self.showsLatencyInMenuBarPicker = showsLatencyInMenuBarPicker
         self.animatesMenuBarIcon = animatesMenuBarIcon
+        self.splitTunnelRules = splitTunnelRules
+        self.isSplitTunnelEnabled = isSplitTunnelEnabled
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -533,6 +599,8 @@ struct AppSnapshot: Codable, Equatable {
         case subscriptionConnectionSort
         case showsLatencyInMenuBarPicker
         case animatesMenuBarIcon
+        case splitTunnelRules
+        case isSplitTunnelEnabled
     }
 
     init(from decoder: Decoder) throws {
@@ -545,6 +613,8 @@ struct AppSnapshot: Codable, Equatable {
         subscriptionConnectionSort = try container.decodeIfPresent(SubscriptionConnectionSort.self, forKey: .subscriptionConnectionSort) ?? .name
         showsLatencyInMenuBarPicker = try container.decodeIfPresent(Bool.self, forKey: .showsLatencyInMenuBarPicker) ?? true
         animatesMenuBarIcon = try container.decodeIfPresent(Bool.self, forKey: .animatesMenuBarIcon) ?? true
+        splitTunnelRules = try container.decodeIfPresent([SplitTunnelRule].self, forKey: .splitTunnelRules) ?? []
+        isSplitTunnelEnabled = try container.decodeIfPresent(Bool.self, forKey: .isSplitTunnelEnabled) ?? false
     }
 }
 

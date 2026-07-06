@@ -4,6 +4,7 @@ import Foundation
 struct VerifyCore {
     static func main() throws {
         try testValidVLESSParsingAndConfigGeneration()
+        try testPunycodeHostParsingPreservesASCIIHost()
         try testValidVLESSAdditionalTransports()
         try testValidTrojanParsingAndConfigGeneration()
         try testValidTrojanRealityParsingAndConfigGeneration()
@@ -39,6 +40,15 @@ struct VerifyCore {
         let realityConfigURL = try XrayConfigurationWriter(proxyEndpoint: .default).writeConfig(for: realityConfiguration, to: temporaryConfigURL())
         let realityContent = try String(contentsOf: realityConfigURL, encoding: .utf8)
         precondition(realityContent.contains("xtls-rprx-vision"))
+    }
+
+    private static func testPunycodeHostParsingPreservesASCIIHost() throws {
+        let parser = ConnectionLinkParser()
+        let link = "vless://123e4567-e89b-12d3-a456-426614174000@xn--e1afmkfd.test:8443?security=tls&type=tcp&sni=xn--e1afmkfd.test#IDN"
+        let configuration = try parser.parse(link)
+
+        precondition(configuration.host == "xn--e1afmkfd.test")
+        precondition(!configuration.host.contains("пример"))
     }
 
     private static func testValidVLESSAdditionalTransports() throws {

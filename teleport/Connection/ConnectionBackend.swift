@@ -4,8 +4,8 @@ protocol ConnectionBackend: AnyObject {
     func hasRestorableState() -> Bool
     func hasActiveRuntimeSession() -> Bool
     func restorePreviousState() throws
-    func start(configuration: ConnectionConfiguration, endpoint: ProxyEndpoint) throws
-    func reconnect(configuration: ConnectionConfiguration, endpoint: ProxyEndpoint, shouldDisableExistingProxy: Bool) throws
+    func start(configuration: ConnectionConfiguration, endpoint: ProxyEndpoint, splitTunnelRules: [SplitTunnelRule]) throws
+    func reconnect(configuration: ConnectionConfiguration, endpoint: ProxyEndpoint, shouldDisableExistingProxy: Bool, splitTunnelRules: [SplitTunnelRule]) throws
     func stop(shouldDisableProxy: Bool) throws
     func teardown()
 }
@@ -37,7 +37,8 @@ final class SystemProxyConnectionBackend: ConnectionBackend {
         try proxyService.restoreSavedProxyState()
     }
 
-    func start(configuration: ConnectionConfiguration, endpoint: ProxyEndpoint) throws {
+    func start(configuration: ConnectionConfiguration, endpoint: ProxyEndpoint, splitTunnelRules: [SplitTunnelRule]) throws {
+        _ = splitTunnelRules
         do {
             vpnRuntimeManager?.cleanupIfHelperAvailable(protectedHost: configuration.host)
             try startRuntime(configuration: configuration, endpoint: endpoint)
@@ -49,7 +50,8 @@ final class SystemProxyConnectionBackend: ConnectionBackend {
         }
     }
 
-    func reconnect(configuration: ConnectionConfiguration, endpoint: ProxyEndpoint, shouldDisableExistingProxy: Bool) throws {
+    func reconnect(configuration: ConnectionConfiguration, endpoint: ProxyEndpoint, shouldDisableExistingProxy: Bool, splitTunnelRules: [SplitTunnelRule]) throws {
+        _ = splitTunnelRules
         do {
             if shouldDisableExistingProxy {
                 try proxyService.disableProxy()

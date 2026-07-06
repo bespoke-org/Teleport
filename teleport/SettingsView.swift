@@ -41,8 +41,10 @@ struct SettingsView: View {
             GeneralSettingsView(viewModel: viewModel)
         case .connections:
             ConnectionsSettingsView(viewModel: viewModel)
-        case .routing:
-            RoutingSettingsView()
+        case .splitTunneling:
+            SplitTunnelingSettingsView(viewModel: viewModel, onOpenGeodata: { selectedSection = .geodata })
+        case .geodata:
+            GeodataSettingsView()
         case .nerdShit:
             NerdShitSettingsView(viewModel: viewModel)
         case .about:
@@ -365,12 +367,12 @@ private enum NerdLogFile: String, CaseIterable, Identifiable, Hashable {
     }
 }
 
-private struct RoutingSettingsView: View {
+private struct GeodataSettingsView: View {
     var body: some View {
         ContentUnavailableView(
-            "Comming soon",
-            systemImage: "point.topleft.down.curvedto.point.bottomright.up",
-            description: Text("Routing controls will live here.")
+            "Coming soon",
+            systemImage: "globe",
+            description: Text("Matching whole categories with bundled geosite/geoip data — and keeping that data up to date — will live here.")
         )
         .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -380,7 +382,8 @@ private struct RoutingSettingsView: View {
 private enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
     case general
     case connections
-    case routing
+    case splitTunneling
+    case geodata
     case nerdShit
     case about
 
@@ -392,8 +395,10 @@ private enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
             return "General"
         case .connections:
             return "Connections"
-        case .routing:
-            return "Routing"
+        case .splitTunneling:
+            return "Split Tunneling"
+        case .geodata:
+            return "Geodata"
         case .nerdShit:
             return "Nerd shit"
         case .about:
@@ -407,8 +412,10 @@ private enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
             return "gearshape"
         case .connections:
             return "link"
-        case .routing:
+        case .splitTunneling:
             return "point.topleft.down.curvedto.point.bottomright.up"
+        case .geodata:
+            return "globe"
         case .nerdShit:
             return "terminal"
         case .about:

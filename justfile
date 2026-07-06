@@ -143,7 +143,7 @@ package-open: package
     open {{dist_dir}}
 
 # Run all verification scripts
-verify: verify-core verify-subscription-support verify-connection-health
+verify: verify-core verify-subscription-support verify-connection-health verify-split-tunneling
 
 # Run core parser/config verification
 verify-core:
@@ -159,3 +159,8 @@ verify-subscription-support:
 verify-connection-health:
     swiftc {{verify_sources}} scripts/verify_connection_health.swift -o /tmp/teleport-verify-connection-health
     /tmp/teleport-verify-connection-health
+
+# Run split-tunnel rule classification/matching/routing verification
+verify-split-tunneling:
+    swiftc {{verify_sources}} scripts/verify_split_tunneling.swift -o /tmp/teleport-verify-split-tunneling
+    /tmp/teleport-verify-split-tunneling
