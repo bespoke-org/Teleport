@@ -76,6 +76,55 @@ private struct GeneralSettingsView: View {
             }
 
             Section {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("HTTP/HTTPS proxy port")
+                        Text("Used for macOS Web Proxy and Secure Web Proxy settings.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    TextField(
+                        "8080",
+                        value: Binding(
+                            get: { viewModel.proxyEndpoint.httpPort },
+                            set: { viewModel.setProxyEndpoint(httpPort: $0) }
+                        ),
+                        format: .number
+                    )
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 80)
+                    .textFieldStyle(.roundedBorder)
+                }
+
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("SOCKS5 proxy port")
+                        Text("Used for local SOCKS proxy clients and macOS SOCKS settings.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    TextField(
+                        "1080",
+                        value: Binding(
+                            get: { viewModel.proxyEndpoint.socksPort },
+                            set: { viewModel.setProxyEndpoint(socksPort: $0) }
+                        ),
+                        format: .number
+                    )
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 80)
+                    .textFieldStyle(.roundedBorder)
+                }
+            } header: {
+                Text("Local proxy ports")
+            } footer: {
+                Text("Disconnect before changing ports. Teleport listens on 127.0.0.1.")
+            }
+            .disabled(viewModel.hasActiveConnectionSession)
+
+            Section {
                 Picker(
                     selection: Binding(
                         get: { viewModel.subscriptionConnectionSort },

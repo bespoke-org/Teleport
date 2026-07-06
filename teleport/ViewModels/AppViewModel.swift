@@ -588,6 +588,25 @@ final class AppViewModel: ObservableObject {
         schedulePersist()
     }
 
+    func setProxyEndpoint(httpPort: Int? = nil, socksPort: Int? = nil) {
+        let nextHTTPPort = httpPort ?? proxyEndpoint.httpPort
+        let nextSOCKSPort = socksPort ?? proxyEndpoint.socksPort
+        guard nextHTTPPort != proxyEndpoint.httpPort || nextSOCKSPort != proxyEndpoint.socksPort else { return }
+
+        guard !hasActiveConnectionSession else {
+            setStoredError("Disconnect before changing local proxy ports")
+            return
+        }
+        guard Self.isValidProxyPort(nextHTTPPort), Self.isValidProxyPort(nextSOCKSPort), nextHTTPPort != nextSOCKSPort else {
+            setStoredError("Proxy ports must be different values between 1 and 65535")
+            return
+        }
+
+        proxyEndpoint = ProxyEndpoint(host: proxyEndpoint.host, httpPort: nextHTTPPort, socksPort: nextSOCKSPort)
+        setStoredError(nil)
+        schedulePersist()
+    }
+
     func setSplitTunnelEnabled(_ enabled: Bool) {
         guard enabled != isSplitTunnelEnabled else { return }
         isSplitTunnelEnabled = enabled
@@ -846,6 +865,10 @@ final class AppViewModel: ObservableObject {
     private func normalizedURLString(_ value: String?) -> String? {
         let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
         return (trimmed?.isEmpty ?? true) ? nil : trimmed
+    }
+
+    private static func isValidProxyPort(_ port: Int) -> Bool {
+        (1 ... 65_535).contains(port)
     }
 
     private func validatedGeodataURL(_ value: String) -> URL? {
