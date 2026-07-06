@@ -7,6 +7,7 @@ struct SplitTunnelingSettingsView: View {
     @State private var newRuleAction: SplitTunnelRuleAction = .direct
     @State private var addRuleErrorMessage: String?
     @State private var testerValue = ""
+    @State private var isShowingProfilesSheet = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -28,6 +29,8 @@ struct SplitTunnelingSettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.orange)
             }
+
+            profileSection
 
             testerSection
 
@@ -55,6 +58,42 @@ struct SplitTunnelingSettingsView: View {
         .padding(.horizontal, 16)
         .padding(.bottom, 16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .sheet(isPresented: $isShowingProfilesSheet) {
+            SplitTunnelProfilesSheet(viewModel: viewModel)
+        }
+    }
+
+    private var profileSection: some View {
+        HStack(spacing: 10) {
+            Text("Profile")
+                .font(.subheadline.weight(.medium))
+
+            Picker(
+                "",
+                selection: Binding(
+                    get: { viewModel.selectedSplitTunnelProfileID ?? viewModel.splitTunnelProfiles.first?.id },
+                    set: { newID in
+                        if let newID {
+                            viewModel.selectSplitTunnelProfile(id: newID)
+                        }
+                    }
+                )
+            ) {
+                ForEach(viewModel.splitTunnelProfiles) { profile in
+                    Text(profile.name).tag(Optional(profile.id))
+                }
+            }
+            .labelsHidden()
+            .frame(maxWidth: 220)
+
+            Button("Manage Profiles…") {
+                isShowingProfilesSheet = true
+            }
+            .buttonStyle(.link)
+            .font(.caption)
+
+            Spacer()
+        }
     }
 
     private var testerSection: some View {

@@ -556,6 +556,80 @@ struct SplitTunnelRule: Codable, Equatable, Identifiable {
     }
 }
 
+struct SplitTunnelProfile: Codable, Equatable, Identifiable {
+    let id: UUID
+    var name: String
+    var rules: [SplitTunnelRule]
+
+    init(id: UUID = UUID(), name: String, rules: [SplitTunnelRule] = []) {
+        self.id = id
+        self.name = name
+        self.rules = rules
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case rules
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decodeIfPresent(String.self, forKey: .name) ?? "Profile"
+        rules = try container.decodeIfPresent([SplitTunnelRule].self, forKey: .rules) ?? []
+    }
+}
+
+struct GeodataSourceSettings: Codable, Equatable {
+    var geositeURLString: String?
+    var geoipURLString: String?
+    var autoUpdateIntervalMinutes: Int?
+    var geositeLastUpdatedAt: Date?
+    var geoipLastUpdatedAt: Date?
+    var geositeLastError: String?
+    var geoipLastError: String?
+
+    init(
+        geositeURLString: String? = nil,
+        geoipURLString: String? = nil,
+        autoUpdateIntervalMinutes: Int? = nil,
+        geositeLastUpdatedAt: Date? = nil,
+        geoipLastUpdatedAt: Date? = nil,
+        geositeLastError: String? = nil,
+        geoipLastError: String? = nil
+    ) {
+        self.geositeURLString = geositeURLString
+        self.geoipURLString = geoipURLString
+        self.autoUpdateIntervalMinutes = autoUpdateIntervalMinutes
+        self.geositeLastUpdatedAt = geositeLastUpdatedAt
+        self.geoipLastUpdatedAt = geoipLastUpdatedAt
+        self.geositeLastError = geositeLastError
+        self.geoipLastError = geoipLastError
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case geositeURLString
+        case geoipURLString
+        case autoUpdateIntervalMinutes
+        case geositeLastUpdatedAt
+        case geoipLastUpdatedAt
+        case geositeLastError
+        case geoipLastError
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        geositeURLString = try container.decodeIfPresent(String.self, forKey: .geositeURLString)
+        geoipURLString = try container.decodeIfPresent(String.self, forKey: .geoipURLString)
+        autoUpdateIntervalMinutes = try container.decodeIfPresent(Int.self, forKey: .autoUpdateIntervalMinutes)
+        geositeLastUpdatedAt = try container.decodeIfPresent(Date.self, forKey: .geositeLastUpdatedAt)
+        geoipLastUpdatedAt = try container.decodeIfPresent(Date.self, forKey: .geoipLastUpdatedAt)
+        geositeLastError = try container.decodeIfPresent(String.self, forKey: .geositeLastError)
+        geoipLastError = try container.decodeIfPresent(String.self, forKey: .geoipLastError)
+    }
+}
+
 struct AppSnapshot: Codable, Equatable {
     var savedConnections: [SavedConnection]
     var subscriptionSources: [SubscriptionSource]
@@ -565,8 +639,10 @@ struct AppSnapshot: Codable, Equatable {
     var subscriptionConnectionSort: SubscriptionConnectionSort
     var showsLatencyInMenuBarPicker: Bool
     var animatesMenuBarIcon: Bool
-    var splitTunnelRules: [SplitTunnelRule]
+    var splitTunnelProfiles: [SplitTunnelProfile]
+    var selectedSplitTunnelProfileID: UUID?
     var isSplitTunnelEnabled: Bool
+    var geodataSettings: GeodataSourceSettings
 
     init(
         savedConnections: [SavedConnection],
@@ -577,8 +653,10 @@ struct AppSnapshot: Codable, Equatable {
         subscriptionConnectionSort: SubscriptionConnectionSort = .name,
         showsLatencyInMenuBarPicker: Bool = true,
         animatesMenuBarIcon: Bool = true,
-        splitTunnelRules: [SplitTunnelRule] = [],
-        isSplitTunnelEnabled: Bool = false
+        splitTunnelProfiles: [SplitTunnelProfile] = [SplitTunnelProfile(name: "Default")],
+        selectedSplitTunnelProfileID: UUID? = nil,
+        isSplitTunnelEnabled: Bool = false,
+        geodataSettings: GeodataSourceSettings = GeodataSourceSettings()
     ) {
         self.savedConnections = savedConnections
         self.subscriptionSources = subscriptionSources
@@ -588,8 +666,10 @@ struct AppSnapshot: Codable, Equatable {
         self.subscriptionConnectionSort = subscriptionConnectionSort
         self.showsLatencyInMenuBarPicker = showsLatencyInMenuBarPicker
         self.animatesMenuBarIcon = animatesMenuBarIcon
-        self.splitTunnelRules = splitTunnelRules
+        self.splitTunnelProfiles = splitTunnelProfiles
+        self.selectedSplitTunnelProfileID = selectedSplitTunnelProfileID ?? splitTunnelProfiles.first?.id
         self.isSplitTunnelEnabled = isSplitTunnelEnabled
+        self.geodataSettings = geodataSettings
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -601,12 +681,22 @@ struct AppSnapshot: Codable, Equatable {
         case subscriptionConnectionSort
         case showsLatencyInMenuBarPicker
         case animatesMenuBarIcon
-        case splitTunnelRules
+        case splitTunnelProfiles
+        case selectedSplitTunnelProfileID
         case isSplitTunnelEnabled
+        case geodataSettings
+    }
+
+    // Legacy (pre-profiles) key: a flat rule list with no profile grouping. Kept
+    // in a separate enum (rather than a CodingKeys case) so it doesn't need a
+    // matching stored property for Encodable synthesis.
+    private enum LegacyCodingKeys: String, CodingKey {
+        case splitTunnelRules
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let legacyContainer = try decoder.container(keyedBy: LegacyCodingKeys.self)
         savedConnections = try container.decodeIfPresent([SavedConnection].self, forKey: .savedConnections) ?? []
         subscriptionSources = try container.decodeIfPresent([SubscriptionSource].self, forKey: .subscriptionSources) ?? []
         selectedConnectionID = try container.decodeIfPresent(UUID.self, forKey: .selectedConnectionID)
@@ -615,8 +705,27 @@ struct AppSnapshot: Codable, Equatable {
         subscriptionConnectionSort = try container.decodeIfPresent(SubscriptionConnectionSort.self, forKey: .subscriptionConnectionSort) ?? .name
         showsLatencyInMenuBarPicker = try container.decodeIfPresent(Bool.self, forKey: .showsLatencyInMenuBarPicker) ?? true
         animatesMenuBarIcon = try container.decodeIfPresent(Bool.self, forKey: .animatesMenuBarIcon) ?? true
-        splitTunnelRules = try container.decodeIfPresent([SplitTunnelRule].self, forKey: .splitTunnelRules) ?? []
+
+        if let profiles = try container.decodeIfPresent([SplitTunnelProfile].self, forKey: .splitTunnelProfiles), !profiles.isEmpty {
+            splitTunnelProfiles = profiles
+        } else if let legacyRules = try legacyContainer.decodeIfPresent([SplitTunnelRule].self, forKey: .splitTunnelRules) {
+            // Upgrading from the pre-profiles single rule list: preserve the user's
+            // existing rules as their first profile instead of discarding them.
+            splitTunnelProfiles = [SplitTunnelProfile(name: "Default", rules: legacyRules)]
+        } else {
+            splitTunnelProfiles = [SplitTunnelProfile(name: "Default")]
+        }
+
+        let decodedSelectedProfileID = try container.decodeIfPresent(UUID.self, forKey: .selectedSplitTunnelProfileID)
+        let profileIDs = Set(splitTunnelProfiles.map(\.id))
+        if let decodedSelectedProfileID, profileIDs.contains(decodedSelectedProfileID) {
+            selectedSplitTunnelProfileID = decodedSelectedProfileID
+        } else {
+            selectedSplitTunnelProfileID = splitTunnelProfiles.first?.id
+        }
+
         isSplitTunnelEnabled = try container.decodeIfPresent(Bool.self, forKey: .isSplitTunnelEnabled) ?? false
+        geodataSettings = try container.decodeIfPresent(GeodataSourceSettings.self, forKey: .geodataSettings) ?? GeodataSourceSettings()
     }
 }
 

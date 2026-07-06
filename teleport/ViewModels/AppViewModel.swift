@@ -56,8 +56,11 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var subscriptionConnectionSort: SubscriptionConnectionSort
     @Published private(set) var showsLatencyInMenuBarPicker: Bool
     @Published private(set) var animatesMenuBarIcon: Bool
-    @Published private(set) var splitTunnelRules: [SplitTunnelRule]
+    @Published private(set) var splitTunnelProfiles: [SplitTunnelProfile]
+    @Published private(set) var selectedSplitTunnelProfileID: UUID?
     @Published private(set) var isSplitTunnelEnabled: Bool
+    @Published private(set) var geodataSettings: GeodataSourceSettings
+    @Published private(set) var isUpdatingGeodata = false
     @Published private(set) var startsAtLogin: Bool
     @Published private(set) var refreshingSubscriptionIDs: Set<UUID> = []
     @Published private(set) var refreshingHealthConnectionIDs: Set<UUID> = []
@@ -129,8 +132,10 @@ final class AppViewModel: ObservableObject {
         subscriptionConnectionSort = snapshot.subscriptionConnectionSort
         showsLatencyInMenuBarPicker = snapshot.showsLatencyInMenuBarPicker
         animatesMenuBarIcon = snapshot.animatesMenuBarIcon
-        splitTunnelRules = snapshot.splitTunnelRules
+        splitTunnelProfiles = snapshot.splitTunnelProfiles
+        selectedSplitTunnelProfileID = snapshot.selectedSplitTunnelProfileID
         isSplitTunnelEnabled = snapshot.isSplitTunnelEnabled
+        geodataSettings = snapshot.geodataSettings
         startsAtLogin = loginItemService.isEnabled
         connectionBackend = connectionBackendFactory.makeBackend(for: snapshot.connectionMode)
         proxyEndpoint = snapshot.proxyEndpoint
@@ -209,9 +214,25 @@ final class AppViewModel: ObservableObject {
         connectionPhase == .running && proxyPhase == .enabled
     }
 
+    var selectedSplitTunnelProfile: SplitTunnelProfile? {
+        guard let selectedSplitTunnelProfileID else { return splitTunnelProfiles.first }
+        return splitTunnelProfiles.first { $0.id == selectedSplitTunnelProfileID } ?? splitTunnelProfiles.first
+    }
+
+    /// Rules belonging to the currently selected split-tunnel profile.
+    var splitTunnelRules: [SplitTunnelRule] {
+        selectedSplitTunnelProfile?.rules ?? []
+    }
+
+    private var selectedSplitTunnelProfileIndex: Int? {
+        guard let selectedSplitTunnelProfileID else { return splitTunnelProfiles.indices.first }
+        return splitTunnelProfiles.firstIndex { $0.id == selectedSplitTunnelProfileID } ?? splitTunnelProfiles.indices.first
+    }
+
     /// The rules that actually reach Xray: only when the master toggle is on, and
-    /// only enabled rules, in list order. Used both to build the tunnel config and
-    /// to decide whether a live edit changed anything worth reconnecting for.
+    /// only enabled rules from the selected profile, in list order. Used both to
+    /// build the tunnel config and to decide whether a live edit changed anything
+    /// worth reconnecting for.
     private var activeSplitTunnelRules: [SplitTunnelRule] {
         isSplitTunnelEnabled ? splitTunnelRules.filter { $0.isEnabled } : []
     }
@@ -577,9 +598,14 @@ final class AppViewModel: ObservableObject {
         switch SplitTunnelRuleClassifier.classify(value) {
         case let .success(classified):
             let rule = SplitTunnelRule(value: classified.value, kind: classified.kind, action: action)
-            splitTunnelRules.append(rule)
-            schedulePersist()
-            scheduleSplitTunnelLiveApply()
+            // splitTunnelProfiles always has at least one profile (enforced by
+            // removeSplitTunnelProfile and the AppSnapshot default), so this index
+            // is always valid in practice.
+            if let index = selectedSplitTunnelProfileIndex {
+                splitTunnelProfiles[index].rules.append(rule)
+                schedulePersist()
+                scheduleSplitTunnelLiveApply()
+            }
             return .success(rule)
         case let .failure(error):
             return .failure(error)
@@ -587,41 +613,89 @@ final class AppViewModel: ObservableObject {
     }
 
     func removeSplitTunnelRule(id: UUID) {
-        guard splitTunnelRules.contains(where: { $0.id == id }) else { return }
-        splitTunnelRules.removeAll { $0.id == id }
+        guard let index = selectedSplitTunnelProfileIndex,
+              splitTunnelProfiles[index].rules.contains(where: { $0.id == id }) else { return }
+        splitTunnelProfiles[index].rules.removeAll { $0.id == id }
         schedulePersist()
         scheduleSplitTunnelLiveApply()
     }
 
     func setSplitTunnelRuleEnabled(id: UUID, isEnabled: Bool) {
-        guard let index = splitTunnelRules.firstIndex(where: { $0.id == id }), splitTunnelRules[index].isEnabled != isEnabled else { return }
-        splitTunnelRules[index].isEnabled = isEnabled
+        guard let profileIndex = selectedSplitTunnelProfileIndex,
+              let ruleIndex = splitTunnelProfiles[profileIndex].rules.firstIndex(where: { $0.id == id }),
+              splitTunnelProfiles[profileIndex].rules[ruleIndex].isEnabled != isEnabled else { return }
+        splitTunnelProfiles[profileIndex].rules[ruleIndex].isEnabled = isEnabled
         schedulePersist()
         scheduleSplitTunnelLiveApply()
     }
 
     func setSplitTunnelRuleAction(id: UUID, action: SplitTunnelRuleAction) {
-        guard let index = splitTunnelRules.firstIndex(where: { $0.id == id }), splitTunnelRules[index].action != action else { return }
-        splitTunnelRules[index].action = action
+        guard let profileIndex = selectedSplitTunnelProfileIndex,
+              let ruleIndex = splitTunnelProfiles[profileIndex].rules.firstIndex(where: { $0.id == id }),
+              splitTunnelProfiles[profileIndex].rules[ruleIndex].action != action else { return }
+        splitTunnelProfiles[profileIndex].rules[ruleIndex].action = action
         schedulePersist()
         scheduleSplitTunnelLiveApply()
     }
 
     func moveSplitTunnelRules(fromOffsets offsets: IndexSet, toOffset destination: Int) {
-        let movedRules = offsets.map { splitTunnelRules[$0] }
-        var remainingRules = splitTunnelRules
-        for index in offsets.sorted(by: >) {
-            remainingRules.remove(at: index)
+        guard let index = selectedSplitTunnelProfileIndex else { return }
+        let rules = splitTunnelProfiles[index].rules
+        let movedRules = offsets.map { rules[$0] }
+        var remainingRules = rules
+        for offset in offsets.sorted(by: >) {
+            remainingRules.remove(at: offset)
         }
         let adjustedDestination = destination - offsets.filter { $0 < destination }.count
         remainingRules.insert(contentsOf: movedRules, at: max(0, min(adjustedDestination, remainingRules.count)))
-        splitTunnelRules = remainingRules
+        splitTunnelProfiles[index].rules = remainingRules
         schedulePersist()
         scheduleSplitTunnelLiveApply()
     }
 
     func matchingSplitTunnelRule(for candidate: String) -> SplitTunnelRule? {
         SplitTunnelRuleMatcher.firstMatch(for: candidate, in: splitTunnelRules)
+    }
+
+    // MARK: - Split-tunnel profiles
+
+    @discardableResult
+    func addSplitTunnelProfile(name: String) -> UUID {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let profile = SplitTunnelProfile(name: trimmedName.isEmpty ? "New Profile" : trimmedName)
+        splitTunnelProfiles.append(profile)
+        selectedSplitTunnelProfileID = profile.id
+        schedulePersist()
+        scheduleSplitTunnelLiveApply()
+        return profile.id
+    }
+
+    func renameSplitTunnelProfile(id: UUID, name: String) {
+        guard let index = splitTunnelProfiles.firstIndex(where: { $0.id == id }) else { return }
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty, splitTunnelProfiles[index].name != trimmedName else { return }
+        splitTunnelProfiles[index].name = trimmedName
+        schedulePersist()
+    }
+
+    /// Removes a profile. At least one profile must always exist, so the last
+    /// remaining profile cannot be deleted (mirrors "can't disable the only mode").
+    func removeSplitTunnelProfile(id: UUID) {
+        guard splitTunnelProfiles.count > 1, let index = splitTunnelProfiles.firstIndex(where: { $0.id == id }) else { return }
+        let wasSelected = selectedSplitTunnelProfileID == id
+        splitTunnelProfiles.remove(at: index)
+        if wasSelected {
+            selectedSplitTunnelProfileID = splitTunnelProfiles.first?.id
+        }
+        schedulePersist()
+        scheduleSplitTunnelLiveApply()
+    }
+
+    func selectSplitTunnelProfile(id: UUID) {
+        guard id != selectedSplitTunnelProfileID, splitTunnelProfiles.contains(where: { $0.id == id }) else { return }
+        selectedSplitTunnelProfileID = id
+        schedulePersist()
+        scheduleSplitTunnelLiveApply()
     }
 
     /// Coalesces rapid rule edits (typing, dragging to reorder, flipping several
@@ -1297,8 +1371,10 @@ final class AppViewModel: ObservableObject {
             subscriptionConnectionSort: subscriptionConnectionSort,
             showsLatencyInMenuBarPicker: showsLatencyInMenuBarPicker,
             animatesMenuBarIcon: animatesMenuBarIcon,
-            splitTunnelRules: splitTunnelRules,
-            isSplitTunnelEnabled: isSplitTunnelEnabled
+            splitTunnelProfiles: splitTunnelProfiles,
+            selectedSplitTunnelProfileID: selectedSplitTunnelProfileID,
+            isSplitTunnelEnabled: isSplitTunnelEnabled,
+            geodataSettings: geodataSettings
         )
     }
 
