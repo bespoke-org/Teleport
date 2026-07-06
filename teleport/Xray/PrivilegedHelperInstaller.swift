@@ -16,21 +16,31 @@ struct PrivilegedHelperInstaller: Sendable {
         guard let helperURL = bundledHelperURL() else {
             throw PrivilegedHelperInstallerError.bundledHelperMissing
         }
-        if isInstalledAndRunning(helperURL: helperURL, runtimeURL: runtimeURL) {
+
+        let assetDirectoryURL: URL
+        do {
+            // Resolves to custom (user-downloaded) geodata when present, falling
+            // back to Teleport's bundled defaults per file.
+            assetDirectoryURL = try GeodataUpdateService().resolvedAssetDirectoryURL(bundle: bundle)
+        } catch {
+            throw PrivilegedHelperInstallerError.installFailed((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+        }
+
+        if isInstalledAndRunning(helperURL: helperURL, runtimeURL: runtimeURL, assetDirectoryURL: assetDirectoryURL) {
             return
         }
         try verifyBundleArtifacts(helperURL: helperURL, runtimeURL: runtimeURL)
-        try install(helperURL: helperURL, runtimeURL: runtimeURL)
+        try install(helperURL: helperURL, runtimeURL: runtimeURL, assetDirectoryURL: assetDirectoryURL)
         try waitUntilRunning()
     }
 
-    private func isInstalledAndRunning(helperURL: URL, runtimeURL: URL) -> Bool {
+    private func isInstalledAndRunning(helperURL: URL, runtimeURL: URL, assetDirectoryURL: URL) -> Bool {
         let fileManager = FileManager.default
         guard fileManager.isExecutableFile(atPath: PrivilegedHelperClient.installedToolPath),
               fileManager.isExecutableFile(atPath: PrivilegedHelperClient.installedXrayPath),
               fileManager.contentsEqual(atPath: helperURL.path, andPath: PrivilegedHelperClient.installedToolPath),
               fileManager.contentsEqual(atPath: runtimeURL.path, andPath: PrivilegedHelperClient.installedXrayPath),
-              installedGeodataIsPresent() else {
+              installedGeodataMatches(assetDirectoryURL) else {
             return false
         }
         guard let response = try? PrivilegedHelperClient().status(), response.success else {
@@ -39,29 +49,20 @@ struct PrivilegedHelperInstaller: Sendable {
         return response.version == PrivilegedHelperClient.expectedVersion
     }
 
-    private static let geodataFileNames = ["geosite.dat", "geoip.dat"]
-
-    private func bundledAssetDirectoryURL() -> URL? {
-        // Bundled geodata sits directly in the app's Resources dir, so resolve the
-        // directory from one of the .dat files rather than assuming a subfolder.
-        guard let geositeURL = bundle.url(forResource: "geosite", withExtension: "dat"),
-              bundle.url(forResource: "geoip", withExtension: "dat") != nil else {
-            return nil
-        }
-        return geositeURL.deletingLastPathComponent()
-    }
-
-    private func installedGeodataIsPresent() -> Bool {
+    /// Compares installed geodata by content, not just presence, so switching to
+    /// (or updating) a custom geosite/geoip source triggers a reinstall the next
+    /// time VPN mode connects, picking up the new data on Xray's next launch.
+    private func installedGeodataMatches(_ assetDirectoryURL: URL) -> Bool {
         let fileManager = FileManager.default
-        return Self.geodataFileNames.allSatisfy { name in
-            fileManager.fileExists(atPath: PrivilegedHelperConstants.installedAssetDirectoryPath + "/" + name)
+        return GeodataKind.allCases.allSatisfy { kind in
+            let sourcePath = assetDirectoryURL.appendingPathComponent(kind.fileName).path
+            let installedPath = PrivilegedHelperConstants.installedAssetDirectoryPath + "/" + kind.fileName
+            return fileManager.fileExists(atPath: installedPath)
+                && fileManager.contentsEqual(atPath: sourcePath, andPath: installedPath)
         }
     }
 
-    private func install(helperURL: URL, runtimeURL: URL) throws {
-        guard let assetDirectoryURL = bundledAssetDirectoryURL() else {
-            throw PrivilegedHelperInstallerError.installFailed("Bundled Xray geodata is missing from the app bundle. Rebuild or reinstall Teleport.")
-        }
+    private func install(helperURL: URL, runtimeURL: URL, assetDirectoryURL: URL) throws {
         let plist = launchDaemonPlist()
         let script = installScript(appBundleURL: bundle.bundleURL, helperURL: helperURL, runtimeURL: runtimeURL, assetDirectoryURL: assetDirectoryURL, plist: plist)
         do {
@@ -171,7 +172,7 @@ struct PrivilegedHelperInstaller: Sendable {
         LABEL=\(q(PrivilegedHelperClient.label))
         REQUIREMENT=\(q(Self.codeSigningRequirement))
         EXPECTED_XRAY_SHA256=\(q(Self.bundledXraySHA256))
-        GEODATA_FILES=\(q(Self.geodataFileNames.joined(separator: " ")))
+        GEODATA_FILES=\(q(GeodataKind.allCases.map(\.fileName).joined(separator: " ")))
 
         verify_signature() {
             /usr/bin/codesign --verify --strict --requirement "$REQUIREMENT" "$1"

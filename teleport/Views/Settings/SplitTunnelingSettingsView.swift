@@ -32,13 +32,13 @@ struct SplitTunnelingSettingsView: View {
 
             profileSection
 
-            testerSection
+            addRuleSection
 
             if viewModel.splitTunnelRules.isEmpty {
                 ContentUnavailableView(
                     "No split-tunnel rules",
                     systemImage: "point.3.connected.trianglepath.dotted",
-                    description: Text("Add a domain, IP/CIDR, or geosite category rule below.")
+                    description: Text("Add a domain, IP/CIDR, or geosite category rule above.")
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -53,7 +53,7 @@ struct SplitTunnelingSettingsView: View {
                 .listStyle(.inset)
             }
 
-            addRuleSection
+            testerSection
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 16)
@@ -86,11 +86,9 @@ struct SplitTunnelingSettingsView: View {
             .labelsHidden()
             .frame(maxWidth: 220)
 
-            Button("Manage Profiles…") {
+            Button("Manage Profiles…", systemImage: "gearshape") {
                 isShowingProfilesSheet = true
             }
-            .buttonStyle(.link)
-            .font(.caption)
 
             Spacer()
         }

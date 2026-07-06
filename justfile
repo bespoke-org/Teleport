@@ -142,8 +142,9 @@ package: build-release
 package-open: package
     open {{dist_dir}}
 
-# Run all verification scripts
-verify: verify-core verify-subscription-support verify-connection-health verify-split-tunneling
+# Run all verification scripts after an Xcode build, so the privileged helper target
+# and app copy/sign phases are checked alongside the lightweight Swift scripts.
+verify: build-debug verify-core verify-subscription-support verify-connection-health verify-split-tunneling verify-geodata
 
 # Run core parser/config verification
 verify-core:
@@ -164,3 +165,8 @@ verify-connection-health:
 verify-split-tunneling:
     swiftc {{verify_sources}} scripts/verify_split_tunneling.swift -o /tmp/teleport-verify-split-tunneling
     /tmp/teleport-verify-split-tunneling
+
+# Run geodata settings/model verification
+verify-geodata:
+    swiftc {{verify_sources}} scripts/verify_geodata.swift -o /tmp/teleport-verify-geodata
+    /tmp/teleport-verify-geodata

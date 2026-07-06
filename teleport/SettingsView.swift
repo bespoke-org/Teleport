@@ -44,7 +44,7 @@ struct SettingsView: View {
         case .splitTunneling:
             SplitTunnelingSettingsView(viewModel: viewModel, onOpenGeodata: { selectedSection = .geodata })
         case .geodata:
-            GeodataSettingsView()
+            GeodataSettingsView(viewModel: viewModel)
         case .nerdShit:
             NerdShitSettingsView(viewModel: viewModel)
         case .about:
@@ -364,18 +364,6 @@ private enum NerdLogFile: String, CaseIterable, Identifiable, Hashable {
 
     static var helperStateDirectoryURL: URL {
         URL(fileURLWithPath: PrivilegedHelperConstants.helperStateDirectoryPath, isDirectory: true)
-    }
-}
-
-private struct GeodataSettingsView: View {
-    var body: some View {
-        ContentUnavailableView(
-            "Coming soon",
-            systemImage: "globe",
-            description: Text("Geosite category rules already work in Split Tunneling. Browsing available categories and updating the bundled geosite/geoip data will live here.")
-        )
-        .padding(16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

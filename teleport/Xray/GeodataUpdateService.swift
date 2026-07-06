@@ -1,0 +1,175 @@
+import Foundation
+
+enum GeodataKind: String, CaseIterable {
+    case geosite
+    case geoip
+
+    var fileName: String { "\(rawValue).dat" }
+
+    var displayName: String {
+        switch self {
+        case .geosite: return "Geosite"
+        case .geoip: return "GeoIP"
+        }
+    }
+}
+
+enum GeodataUpdateError: LocalizedError {
+    case invalidURL
+    case networkFailure(String)
+    case invalidResponse
+    case emptyPayload
+    case tooSmall
+    case bundledDefaultMissing
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidURL:
+            return "Enter a valid http:// or https:// URL."
+        case let .networkFailure(message):
+            return message
+        case .invalidResponse:
+            return "The server did not return a valid response."
+        case .emptyPayload:
+            return "The downloaded file was empty."
+        case .tooSmall:
+            return "The downloaded file is too small to be valid geodata. Check the URL."
+        case .bundledDefaultMissing:
+            return "Teleport's bundled geodata is missing. Reinstall Teleport."
+        }
+    }
+}
+
+/// Downloads, stores, and resolves geosite.dat/geoip.dat. Custom files a user
+/// supplies by URL are kept separately from Teleport's bundled defaults; the
+/// "resolved" directory always contains exactly one usable file per kind
+/// (custom override if present, otherwise the bundled default) and is what
+/// gets delivered to the privileged helper for VPN mode.
+struct GeodataUpdateService {
+    /// Real geosite.dat/geoip.dat files are several megabytes; this is a floor
+    /// well below that meant only to catch obviously-wrong downloads (HTML
+    /// error pages, truncated transfers), not to validate the format itself.
+    private static let minimumPlausibleByteCount = 4096
+
+    private let fileManager: FileManager
+
+    init(fileManager: FileManager = .default) {
+        self.fileManager = fileManager
+    }
+
+    func customFileURL(for kind: GeodataKind) -> URL {
+        customDirectoryURL.appendingPathComponent(kind.fileName)
+    }
+
+    func hasCustomGeodata(for kind: GeodataKind) -> Bool {
+        fileManager.fileExists(atPath: customFileURL(for: kind).path)
+    }
+
+    @discardableResult
+    func downloadAndStore(kind: GeodataKind, from url: URL) throws -> Int {
+        let data = try download(kind: kind, from: url)
+        try store(data, for: kind)
+        return data.count
+    }
+
+    func download(kind: GeodataKind, from url: URL) throws -> Data {
+        let data = try downloadData(from: url)
+        guard !data.isEmpty else { throw GeodataUpdateError.emptyPayload }
+        guard data.count >= Self.minimumPlausibleByteCount else { throw GeodataUpdateError.tooSmall }
+        return data
+    }
+
+    func store(_ data: Data, for kind: GeodataKind) throws {
+        try fileManager.createDirectory(at: customDirectoryURL, withIntermediateDirectories: true)
+        let destination = customFileURL(for: kind)
+        try data.write(to: destination, options: .atomic)
+    }
+
+    func removeCustomGeodata(for kind: GeodataKind) throws {
+        let file = customFileURL(for: kind)
+        guard fileManager.fileExists(atPath: file.path) else { return }
+        try fileManager.removeItem(at: file)
+    }
+
+    /// Ensures a directory exists containing exactly one geosite.dat and one
+    /// geoip.dat, preferring custom downloads over the bundled defaults, and
+    /// returns it. Only rewrites a resolved file when its source changed, so
+    /// this is cheap to call on every connect.
+    func resolvedAssetDirectoryURL(bundle: Bundle = .main) throws -> URL {
+        let resolvedDirectoryURL = applicationSupportDirectoryURL.appendingPathComponent("geodata-resolved", isDirectory: true)
+        try fileManager.createDirectory(at: resolvedDirectoryURL, withIntermediateDirectories: true)
+
+        for kind in GeodataKind.allCases {
+            let sourceURL = try resolvedSourceURL(for: kind, bundle: bundle)
+            let destinationURL = resolvedDirectoryURL.appendingPathComponent(kind.fileName)
+
+            if fileManager.fileExists(atPath: destinationURL.path),
+               fileManager.contentsEqual(atPath: sourceURL.path, andPath: destinationURL.path) {
+                continue
+            }
+            try? fileManager.removeItem(at: destinationURL)
+            try fileManager.copyItem(at: sourceURL, to: destinationURL)
+        }
+
+        return resolvedDirectoryURL
+    }
+
+    private func resolvedSourceURL(for kind: GeodataKind, bundle: Bundle) throws -> URL {
+        let customURL = customFileURL(for: kind)
+        if fileManager.fileExists(atPath: customURL.path) {
+            return customURL
+        }
+        guard let bundledURL = bundle.url(forResource: kind.rawValue, withExtension: "dat") else {
+            throw GeodataUpdateError.bundledDefaultMissing
+        }
+        return bundledURL
+    }
+
+    private func downloadData(from url: URL) throws -> Data {
+        let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 60)
+        let session = URLSession(configuration: .ephemeral)
+        let semaphore = DispatchSemaphore(value: 0)
+
+        var responseData: Data?
+        var response: URLResponse?
+        var responseError: Error?
+
+        let task = session.dataTask(with: request) { data, urlResponse, error in
+            responseData = data
+            response = urlResponse
+            responseError = error
+            semaphore.signal()
+        }
+
+        task.resume()
+        semaphore.wait()
+        session.finishTasksAndInvalidate()
+
+        if let responseError {
+            throw GeodataUpdateError.networkFailure(responseError.localizedDescription)
+        }
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw GeodataUpdateError.invalidResponse
+        }
+
+        guard (200 ... 299).contains(httpResponse.statusCode) else {
+            throw GeodataUpdateError.networkFailure("Download failed with status \(httpResponse.statusCode)")
+        }
+
+        guard let responseData, !responseData.isEmpty else {
+            throw GeodataUpdateError.emptyPayload
+        }
+
+        return responseData
+    }
+
+    private var customDirectoryURL: URL {
+        applicationSupportDirectoryURL.appendingPathComponent("geodata", isDirectory: true)
+    }
+
+    private var applicationSupportDirectoryURL: URL {
+        fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("teleport", isDirectory: true)
+    }
+}

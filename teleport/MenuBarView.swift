@@ -86,7 +86,13 @@ struct MenuBarView: View {
             onSelect: { id in viewModel.selectConnection(id: id) },
             onOpenSettings: {
                 NSApplication.shared.activate(ignoringOtherApps: true)
-                openWindow(id: "settings")
+                // As an accessory (menu-bar-only) app, activation doesn't always
+                // finish before openWindow tries to bring the window forward,
+                // which can leave it unfocused until a second click. Deferring to
+                // the next run loop turn lets activation land first.
+                DispatchQueue.main.async {
+                    openWindow(id: "settings")
+                }
             }
         )
         .equatable()
@@ -122,7 +128,9 @@ struct MenuBarView: View {
 
                 Button("Settings") {
                     NSApplication.shared.activate(ignoringOtherApps: true)
-                    openWindow(id: "settings")
+                    DispatchQueue.main.async {
+                        openWindow(id: "settings")
+                    }
                 }
 
                 Spacer()

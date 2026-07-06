@@ -60,7 +60,7 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var selectedSplitTunnelProfileID: UUID?
     @Published private(set) var isSplitTunnelEnabled: Bool
     @Published private(set) var geodataSettings: GeodataSourceSettings
-    @Published private(set) var isUpdatingGeodata = false
+    @Published private(set) var updatingGeodataKinds: Set<GeodataKind> = []
     @Published private(set) var startsAtLogin: Bool
     @Published private(set) var refreshingSubscriptionIDs: Set<UUID> = []
     @Published private(set) var refreshingHealthConnectionIDs: Set<UUID> = []
@@ -74,6 +74,7 @@ final class AppViewModel: ObservableObject {
     private let healthProbeService: ConnectionHealthProbeService
     private let loginItemService = LoginItemService()
     private let operationQueue = DispatchQueue(label: "dev.x.teleport.connection-operations", qos: .userInitiated)
+    private let geodataQueue = DispatchQueue(label: "dev.x.teleport.geodata-updates", qos: .utility, attributes: .concurrent)
     private let persistenceQueue = DispatchQueue(label: "dev.x.teleport.persistence", qos: .utility)
     private lazy var healthProbeQueue = ConnectionHealthProbeQueue(
         healthProbeService: healthProbeService,
@@ -94,6 +95,7 @@ final class AppViewModel: ObservableObject {
     private var persistWorkItem: DispatchWorkItem?
     private var splitTunnelApplyWorkItem: DispatchWorkItem?
     private var appliedSplitTunnelRules: [SplitTunnelRule]?
+    private var geodataUpdateTokens: [GeodataKind: UUID] = [:]
     private var savedConnectionsByID: [UUID: SavedConnection] = [:]
     private var importedConnectionsBySourceID: [UUID: [SavedConnection]] = [:]
     private var importedConnectionCountsBySourceID: [UUID: Int] = [:]
@@ -720,6 +722,175 @@ final class AppViewModel: ObservableObject {
         reconnectToSelectedConnection()
     }
 
+    // MARK: - Geodata (geosite/geoip)
+
+    func setGeositeURL(_ urlString: String?) {
+        let normalized = normalizedURLString(urlString)
+        guard normalized != geodataSettings.geositeURLString else { return }
+        geodataSettings.geositeURLString = normalized
+        schedulePersist()
+    }
+
+    func setGeoipURL(_ urlString: String?) {
+        let normalized = normalizedURLString(urlString)
+        guard normalized != geodataSettings.geoipURLString else { return }
+        geodataSettings.geoipURLString = normalized
+        schedulePersist()
+    }
+
+    func setGeodataAutoUpdateIntervalMinutes(_ minutes: Int?) {
+        guard minutes != geodataSettings.autoUpdateIntervalMinutes else { return }
+        geodataSettings.autoUpdateIntervalMinutes = minutes
+        schedulePersist()
+    }
+
+    func cancelGeodataUpdate(kind: GeodataKind) {
+        guard updatingGeodataKinds.contains(kind) else { return }
+        geodataUpdateTokens[kind] = UUID()
+        updatingGeodataKinds.remove(kind)
+    }
+
+    func cancelGeodataUpdates() {
+        for kind in updatingGeodataKinds {
+            geodataUpdateTokens[kind] = UUID()
+        }
+        updatingGeodataKinds.removeAll()
+    }
+
+    func updateGeodataNow(kind: GeodataKind) {
+        cancelGeodataUpdate(kind: kind)
+
+        guard let urlString = geodataURLString(for: kind), let url = validatedGeodataURL(urlString) else {
+            applyGeodataUpdateResult(kind: kind, error: GeodataUpdateError.invalidURL)
+            return
+        }
+
+        let token = UUID()
+        geodataUpdateTokens[kind] = token
+        updatingGeodataKinds.insert(kind)
+
+        geodataQueue.async { [weak self] in
+            let service = GeodataUpdateService()
+            do {
+                let data = try service.download(kind: kind, from: url)
+                Task { @MainActor [weak self] in
+                    guard self?.geodataUpdateTokens[kind] == token else { return }
+                    do {
+                        try service.store(data, for: kind)
+                        self?.applyGeodataUpdateResult(kind: kind, token: token, error: nil)
+                    } catch {
+                        self?.applyGeodataUpdateResult(kind: kind, token: token, error: error)
+                    }
+                }
+            } catch {
+                Task { @MainActor [weak self] in
+                    guard self?.geodataUpdateTokens[kind] == token else { return }
+                    self?.applyGeodataUpdateResult(kind: kind, token: token, error: error)
+                }
+            }
+        }
+    }
+
+    /// Deletes a downloaded custom override so VPN mode falls back to Teleport's
+    /// bundled default for that kind on the next connect.
+    func resetGeodataToBundled(kind: GeodataKind) {
+        guard !updatingGeodataKinds.contains(kind) else { return }
+        try? GeodataUpdateService().removeCustomGeodata(for: kind)
+        clearGeodataURL(kind: kind)
+        setGeodataError(kind: kind, error: nil)
+        setGeodataLastUpdatedAt(kind: kind, date: nil)
+        schedulePersist()
+        applyGeodataLiveIfNeeded()
+    }
+
+    func hasCustomGeodata(kind: GeodataKind) -> Bool {
+        GeodataUpdateService().hasCustomGeodata(for: kind)
+    }
+
+    private func geodataURLString(for kind: GeodataKind) -> String? {
+        switch kind {
+        case .geosite: return geodataSettings.geositeURLString
+        case .geoip: return geodataSettings.geoipURLString
+        }
+    }
+
+    private func geodataLastUpdatedAt(for kind: GeodataKind) -> Date? {
+        switch kind {
+        case .geosite: return geodataSettings.geositeLastUpdatedAt
+        case .geoip: return geodataSettings.geoipLastUpdatedAt
+        }
+    }
+
+    private func setGeodataError(kind: GeodataKind, error: Error?) {
+        let message = (error as? LocalizedError)?.errorDescription ?? error?.localizedDescription
+        switch kind {
+        case .geosite: geodataSettings.geositeLastError = message
+        case .geoip: geodataSettings.geoipLastError = message
+        }
+    }
+
+    private func setGeodataLastUpdatedAt(kind: GeodataKind, date: Date?) {
+        switch kind {
+        case .geosite: geodataSettings.geositeLastUpdatedAt = date
+        case .geoip: geodataSettings.geoipLastUpdatedAt = date
+        }
+    }
+
+    private func clearGeodataURL(kind: GeodataKind) {
+        switch kind {
+        case .geosite: geodataSettings.geositeURLString = nil
+        case .geoip: geodataSettings.geoipURLString = nil
+        }
+    }
+
+    private func normalizedURLString(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (trimmed?.isEmpty ?? true) ? nil : trimmed
+    }
+
+    private func validatedGeodataURL(_ value: String) -> URL? {
+        guard let components = URLComponents(string: value),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let url = components.url else {
+            return nil
+        }
+        return url
+    }
+
+    private func applyGeodataUpdateResult(kind: GeodataKind, token: UUID? = nil, error: Error?) {
+        if let token, geodataUpdateTokens[kind] != token { return }
+        geodataUpdateTokens[kind] = nil
+        updatingGeodataKinds.remove(kind)
+        setGeodataError(kind: kind, error: error)
+        if error == nil {
+            setGeodataLastUpdatedAt(kind: kind, date: Date())
+        }
+        schedulePersist()
+        if error == nil {
+            applyGeodataLiveIfNeeded()
+        }
+    }
+
+    /// Geodata is read by Xray at process startup, so an update only takes
+    /// effect after a restart; reuse the normal reconnect path immediately if
+    /// VPN mode is already connected instead of waiting for the user to notice.
+    private func applyGeodataLiveIfNeeded() {
+        guard connectionMode == .vpn, hasEstablishedConnection else { return }
+        reconnectToSelectedConnection()
+    }
+
+    private func performScheduledGeodataUpdateIfNeeded() {
+        guard let intervalMinutes = geodataSettings.autoUpdateIntervalMinutes, intervalMinutes > 0 else { return }
+
+        for kind in GeodataKind.allCases {
+            guard !updatingGeodataKinds.contains(kind), geodataURLString(for: kind) != nil else { continue }
+            let referenceDate = geodataLastUpdatedAt(for: kind) ?? .distantPast
+            guard Date().timeIntervalSince(referenceDate) >= TimeInterval(intervalMinutes * 60) else { continue }
+            updateGeodataNow(kind: kind)
+        }
+    }
+
     func refreshStartsAtLoginStatus() {
         startsAtLogin = loginItemService.isEnabled
     }
@@ -1140,6 +1311,7 @@ final class AppViewModel: ObservableObject {
             .autoconnect()
             .sink { [weak self] _ in
                 self?.performScheduledSubscriptionRefreshes()
+                self?.performScheduledGeodataUpdateIfNeeded()
             }
     }
 
