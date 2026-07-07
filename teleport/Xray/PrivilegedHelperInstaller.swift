@@ -2,7 +2,7 @@ import Foundation
 
 struct PrivilegedHelperInstaller: Sendable {
     private static let codeSigningRequirement = "identifier \"dev.x.teleport\" and anchor apple generic and certificate leaf[subject.OU] = \"ZTB359LSTB\""
-    private static let bundledXraySHA256 = "95984ec72638f96f0c576246e91ad2fff978557cf8e37e3e6111ee595030b2f7"
+    private static let bundledXraySHA256 = "650e6edf792ce808554e94f891db5271c77a7c2e80188beaafbf24883b3b84a0"
 
     private let bundle: Bundle
     private let shellRunner: PrivilegedShellRunner
