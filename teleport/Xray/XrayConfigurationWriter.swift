@@ -158,7 +158,15 @@ struct XrayConfigurationWriter {
                             "http",
                             "tls",
                             "quic"
-                        ]
+                        ],
+                        // Use the sniffed domain for the routing decision only, and
+                        // keep the original destination IP for the actual dial.
+                        // Without this the sniffed domain replaces the destination,
+                        // so the "direct" freedom outbound has to re-resolve it; that
+                        // lookup egresses via the default route back into the TUN and
+                        // loops (TLS never completes). routeOnly keeps domain/geosite
+                        // rules working while letting direct traffic reach the real IP.
+                        "routeOnly": true
                     ]
                 ],
                 // VPN mode already routes all device traffic through the TUN, but
