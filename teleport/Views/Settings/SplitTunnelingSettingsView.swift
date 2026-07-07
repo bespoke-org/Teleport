@@ -10,68 +10,53 @@ struct SplitTunnelingSettingsView: View {
     @State private var isShowingProfilesSheet = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Toggle(
-                isOn: Binding(
-                    get: { viewModel.isSplitTunnelEnabled },
-                    set: { viewModel.setSplitTunnelEnabled($0) }
-                )
-            ) {
-                Text("Split tunneling")
+        // A grouped Form is the idiomatic container for a NavigationSplitView
+        // detail pane (see the General/Geodata tabs). A raw VStack wrapping a
+        // greedy List reports an unbounded ideal width that makes the balanced
+        // split view collapse the sidebar, so everything here lives in Form
+        // sections instead — including the reorderable rules list.
+        Form {
+            Section {
+                Toggle(
+                    isOn: Binding(
+                        get: { viewModel.isSplitTunnelEnabled },
+                        set: { viewModel.setSplitTunnelEnabled($0) }
+                    )
+                ) {
+                    Text("Split tunneling")
                     Text("Route specific domains or IP/CIDR ranges directly, through the proxy, or block them, while VPN mode is active. This matches destinations, not individual apps — macOS has no supported per-app VPN routing outside managed (MDM) configurations.")
-            }
+                }
 
-            if viewModel.connectionMode != .vpn {
-                Label(
-                    "Split tunneling is configured here but only applies in VPN mode. System Proxy mode ignores these rules.",
-                    systemImage: "exclamationmark.triangle.fill"
-                )
-                .font(.caption)
-                .foregroundStyle(.orange)
+                if viewModel.connectionMode != .vpn {
+                    Label(
+                        "Split tunneling is configured here but only applies in VPN mode. System Proxy mode ignores these rules.",
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                }
             }
 
             profileSection
-
             defaultActionSection
-
             addRuleSection
-
-            if viewModel.splitTunnelRules.isEmpty {
-                ContentUnavailableView(
-                    "No split-tunnel rules",
-                    systemImage: "point.3.connected.trianglepath.dotted",
-                    description: Text("Add a domain, IP/CIDR, or geosite category rule above.")
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                List {
-                    ForEach(viewModel.splitTunnelRules) { rule in
-                        ruleRow(rule)
-                    }
-                    .onMove { offsets, destination in
-                        viewModel.moveSplitTunnelRules(fromOffsets: offsets, toOffset: destination)
-                    }
-                }
-                .listStyle(.inset)
-            }
-
+            rulesSection
             testerSection
         }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .formStyle(.grouped)
+        .padding(.top, -20)
+        .padding(.leading, -8)
+        .padding(.trailing, -6)
+        .navigationTitle("Split Tunneling")
         .sheet(isPresented: $isShowingProfilesSheet) {
             SplitTunnelProfilesSheet(viewModel: viewModel)
         }
     }
 
     private var profileSection: some View {
-        HStack(spacing: 10) {
-            Text("Profile")
-                .font(.subheadline.weight(.medium))
-
+        Section {
             Picker(
-                "",
+                "Profile",
                 selection: Binding(
                     get: { viewModel.selectedSplitTunnelProfileID ?? viewModel.splitTunnelProfiles.first?.id },
                     set: { newID in
@@ -85,57 +70,92 @@ struct SplitTunnelingSettingsView: View {
                     Text(profile.name).tag(Optional(profile.id))
                 }
             }
-            .labelsHidden()
-            .frame(maxWidth: 220)
 
             Button("Manage Profiles…", systemImage: "gearshape") {
                 isShowingProfilesSheet = true
             }
-
-            Spacer()
         }
     }
 
     private var defaultActionSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 10) {
+        Section {
+            Picker(
+                selection: Binding(
+                    get: { viewModel.splitTunnelDefaultAction == .direct ? SplitTunnelRuleAction.direct : .proxy },
+                    set: { viewModel.setSplitTunnelDefaultAction($0) }
+                )
+            ) {
+                Text(SplitTunnelRuleAction.proxy.displayName).tag(SplitTunnelRuleAction.proxy)
+                Text(SplitTunnelRuleAction.direct.displayName).tag(SplitTunnelRuleAction.direct)
+            } label: {
                 Text("Unmatched traffic")
-                    .font(.subheadline.weight(.medium))
+                Text(viewModel.splitTunnelDefaultAction == .direct
+                    ? "Whitelist mode: only destinations matched below use the proxy; everything else stays direct."
+                    : "Everything not matched below goes through the proxy; add rules to send specific destinations direct.")
+            }
+        }
+    }
 
-                Spacer()
+    private var addRuleSection: some View {
+        Section {
+            TextField(
+                "Domain, IP/CIDR, geosite:category, or geoip:category — paste a list to add several at once",
+                text: $newRuleValue,
+                axis: .vertical
+            )
+            .lineLimit(1 ... 6)
+            .onSubmit(addRule)
 
-                Picker(
-                    "",
-                    selection: Binding(
-                        get: { viewModel.splitTunnelDefaultAction == .direct ? SplitTunnelRuleAction.direct : .proxy },
-                        set: { viewModel.setSplitTunnelDefaultAction($0) }
-                    )
-                ) {
-                    Text(SplitTunnelRuleAction.proxy.displayName).tag(SplitTunnelRuleAction.proxy)
-                    Text(SplitTunnelRuleAction.direct.displayName).tag(SplitTunnelRuleAction.direct)
+            Picker("Action", selection: $newRuleAction) {
+                ForEach(SplitTunnelRuleAction.allCases) { action in
+                    Text(action.displayName).tag(action)
                 }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .frame(width: 180)
+            }
+            .pickerStyle(.segmented)
+
+            if let addRuleErrorMessage {
+                Text(addRuleErrorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
             }
 
-            Text(viewModel.splitTunnelDefaultAction == .direct
-                ? "Whitelist mode: only destinations matched above use the proxy; everything else stays direct."
-                : "Everything not matched above goes through the proxy; add rules to send specific destinations direct.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack {
+                Button("Manage geodata", action: onOpenGeodata)
+                    .buttonStyle(.link)
+                Spacer()
+                Button("Add", action: addRule)
+                    .disabled(newRuleValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        } header: {
+            Text("Add rule")
+        } footer: {
+            Text("Match whole categories with geosite:name or geoip:name (e.g. geosite:google, geoip:private).")
+        }
+    }
+
+    private var rulesSection: some View {
+        Section {
+            if viewModel.splitTunnelRules.isEmpty {
+                Text("No rules yet — add a domain, IP/CIDR, or geosite category above.")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(viewModel.splitTunnelRules) { rule in
+                    ruleRow(rule)
+                }
+                .onMove { offsets, destination in
+                    viewModel.moveSplitTunnelRules(fromOffsets: offsets, toOffset: destination)
+                }
+            }
+        } header: {
+            Text("Rules")
+        } footer: {
+            Text("Rules are evaluated top to bottom; the first match wins. Drag to reorder.")
         }
     }
 
     private var testerSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Test a domain or IP")
-                .font(.subheadline.weight(.medium))
-
+        Section {
             TextField("e.g. maps.google.com or 10.0.0.5", text: $testerValue)
-                .textFieldStyle(.roundedBorder)
 
             if !testerValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 if let match = viewModel.matchingSplitTunnelRule(for: testerValue) {
@@ -179,8 +199,9 @@ struct SplitTunnelingSettingsView: View {
                     .font(.caption)
                 }
             }
+        } header: {
+            Text("Test a domain or IP")
         }
-        .padding(.vertical, 4)
     }
 
     private func ruleRow(_ rule: SplitTunnelRule) -> some View {
@@ -197,6 +218,8 @@ struct SplitTunnelingSettingsView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(rule.value)
                     .font(.body.monospaced())
+                    .lineLimit(1)
+                    .truncationMode(.middle)
                 Text(kindLabel(rule.kind))
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -227,49 +250,6 @@ struct SplitTunnelingSettingsView: View {
                 Image(systemName: "trash")
             }
             .buttonStyle(.borderless)
-        }
-        .padding(.vertical, 2)
-    }
-
-    private var addRuleSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Add new rule")
-                .font(.subheadline.weight(.medium))
-
-            HStack(alignment: .top, spacing: 10) {
-                TextField("Domain, IP/CIDR, geosite:category, or geoip:category — paste a list to add several at once", text: $newRuleValue, axis: .vertical)
-                    .textFieldStyle(.roundedBorder)
-                    .lineLimit(1 ... 6)
-                    .onSubmit(addRule)
-
-                Picker("", selection: $newRuleAction) {
-                    ForEach(SplitTunnelRuleAction.allCases) { action in
-                        Text(action.displayName).tag(action)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .frame(width: 180)
-
-                Button("Add", action: addRule)
-                    .disabled(newRuleValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-
-            if let addRuleErrorMessage {
-                Text(addRuleErrorMessage)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            }
-
-            HStack(spacing: 4) {
-                Text("Match whole categories with geosite:name or geoip:name (e.g. geosite:google, geoip:private).")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Button("Manage geodata", action: onOpenGeodata)
-                    .buttonStyle(.link)
-                    .font(.caption)
-            }
-            .padding(.top, 2)
         }
     }
 
