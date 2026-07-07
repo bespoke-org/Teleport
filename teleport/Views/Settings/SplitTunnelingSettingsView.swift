@@ -103,6 +103,7 @@ struct SplitTunnelingSettingsView: View {
                 text: $newRuleValue,
                 axis: .vertical
             )
+            .textFieldStyle(.roundedBorder)
             .lineLimit(1 ... 6)
             .onSubmit(addRule)
 
@@ -120,16 +121,19 @@ struct SplitTunnelingSettingsView: View {
             }
 
             HStack {
-                Button("Manage geodata", action: onOpenGeodata)
-                    .buttonStyle(.link)
                 Spacer()
                 Button("Add", action: addRule)
+                    .keyboardShortcut(.defaultAction)
                     .disabled(newRuleValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         } header: {
             Text("Add rule")
         } footer: {
-            Text("Match whole categories with geosite:name or geoip:name (e.g. geosite:google, geoip:private).")
+            HStack(spacing: 4) {
+                Text("Match whole categories with geosite:name or geoip:name (e.g. geosite:google, geoip:private).")
+                Button("Manage geodata", action: onOpenGeodata)
+                    .buttonStyle(.link)
+            }
         }
     }
 
