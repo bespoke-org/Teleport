@@ -149,9 +149,14 @@ struct XrayConfigurationWriter {
                     ],
                     "sniffing": [
                         "enabled": true,
+                        // Include "quic" so HTTP/3 (UDP/443) flows have their SNI
+                        // sniffed too. Without it, QUIC packets carry no recovered
+                        // domain, so domain/geosite split-tunnel rules silently skip
+                        // them and modern browser traffic bypasses split routing.
                         "destOverride": [
                             "http",
-                            "tls"
+                            "tls",
+                            "quic"
                         ]
                     ]
                 ],
