@@ -95,6 +95,7 @@ final class AppViewModel: ObservableObject {
     private var persistWorkItem: DispatchWorkItem?
     private var splitTunnelApplyWorkItem: DispatchWorkItem?
     private var appliedSplitTunnelRules: [SplitTunnelRule]?
+    private var appliedSplitTunnelDefaultAction: SplitTunnelRuleAction?
     private var geodataUpdateTokens: [GeodataKind: UUID] = [:]
     private var savedConnectionsByID: [UUID: SavedConnection] = [:]
     private var importedConnectionsBySourceID: [UUID: [SavedConnection]] = [:]
@@ -237,6 +238,18 @@ final class AppViewModel: ObservableObject {
     /// worth reconnecting for.
     private var activeSplitTunnelRules: [SplitTunnelRule] {
         isSplitTunnelEnabled ? splitTunnelRules.filter { $0.isEnabled } : []
+    }
+
+    /// Default action of the selected profile, exposed for the settings picker.
+    var splitTunnelDefaultAction: SplitTunnelRuleAction {
+        selectedSplitTunnelProfile?.defaultAction ?? .proxy
+    }
+
+    /// The catch-all outbound that actually reaches Xray. When split tunneling is
+    /// off we keep the classic full-tunnel behavior (everything proxied) so the
+    /// profile's default only takes effect while the feature is enabled.
+    private var activeSplitTunnelDefaultAction: SplitTunnelRuleAction {
+        isSplitTunnelEnabled ? splitTunnelDefaultAction : .proxy
     }
 
     var statusSummary: String {
@@ -659,6 +672,14 @@ final class AppViewModel: ObservableObject {
         scheduleSplitTunnelLiveApply()
     }
 
+    func setSplitTunnelDefaultAction(_ action: SplitTunnelRuleAction) {
+        guard let profileIndex = selectedSplitTunnelProfileIndex,
+              splitTunnelProfiles[profileIndex].defaultAction != action else { return }
+        splitTunnelProfiles[profileIndex].defaultAction = action
+        schedulePersist()
+        scheduleSplitTunnelLiveApply()
+    }
+
     func moveSplitTunnelRules(fromOffsets offsets: IndexSet, toOffset destination: Int) {
         guard let index = selectedSplitTunnelProfileIndex else { return }
         let rules = splitTunnelProfiles[index].rules
@@ -735,9 +756,11 @@ final class AppViewModel: ObservableObject {
 
     private func applySplitTunnelRulesLiveIfNeeded() {
         guard connectionMode == .vpn, hasEstablishedConnection else { return }
-        // Only reconnect when the rules Xray would actually see have changed.
-        // Editing a disabled rule, or a no-op toggle, must not drop the tunnel.
-        guard activeSplitTunnelRules != appliedSplitTunnelRules else { return }
+        // Only reconnect when what Xray would actually see has changed. Editing a
+        // disabled rule, or a no-op toggle, must not drop the tunnel; but a change
+        // to the default (catch-all) action must, since it rewrites the config.
+        guard activeSplitTunnelRules != appliedSplitTunnelRules
+            || activeSplitTunnelDefaultAction != appliedSplitTunnelDefaultAction else { return }
         reconnectToSelectedConnection()
     }
 
@@ -993,6 +1016,7 @@ final class AppViewModel: ObservableObject {
         let connectionBackend = connectionBackend
         let shouldDisableProxy = shouldManageSystemProxy
         let activeSplitTunnelRules = activeSplitTunnelRules
+        let activeSplitTunnelDefaultAction = activeSplitTunnelDefaultAction
 
         connectionPhase = .stopping
         proxyPhase = .disabling
@@ -1011,7 +1035,8 @@ final class AppViewModel: ObservableObject {
                     configuration: selectedConfiguration,
                     endpoint: proxyEndpoint,
                     shouldDisableExistingProxy: shouldDisableProxy,
-                    splitTunnelRules: activeSplitTunnelRules
+                    splitTunnelRules: activeSplitTunnelRules,
+                    splitTunnelDefaultAction: activeSplitTunnelDefaultAction
                 )
 
                 Task { @MainActor [weak self] in
@@ -1019,6 +1044,7 @@ final class AppViewModel: ObservableObject {
                     // there by applySplitTunnelRulesLiveIfNeeded, so mutating it
                     // from this background queue would be a data race.
                     self?.appliedSplitTunnelRules = activeSplitTunnelRules
+                    self?.appliedSplitTunnelDefaultAction = activeSplitTunnelDefaultAction
                     self?.connectionPhase = .running
                     self?.proxyPhase = .enabled
                     self?.setStoredError(nil)
@@ -1039,6 +1065,7 @@ final class AppViewModel: ObservableObject {
         let proxyEndpoint = proxyEndpoint
         let connectionBackend = connectionBackend
         let activeSplitTunnelRules = activeSplitTunnelRules
+        let activeSplitTunnelDefaultAction = activeSplitTunnelDefaultAction
 
         connectionPhase = .starting
         proxyPhase = .enabling
@@ -1047,13 +1074,14 @@ final class AppViewModel: ObservableObject {
 
         operationQueue.async { [weak self] in
             do {
-                try connectionBackend.start(configuration: configuration, endpoint: proxyEndpoint, splitTunnelRules: activeSplitTunnelRules)
+                try connectionBackend.start(configuration: configuration, endpoint: proxyEndpoint, splitTunnelRules: activeSplitTunnelRules, splitTunnelDefaultAction: activeSplitTunnelDefaultAction)
 
                 Task { @MainActor [weak self] in
                     // Write the applied-rules cache on the main actor: it is read
                     // there by applySplitTunnelRulesLiveIfNeeded, so mutating it
                     // from this background queue would be a data race.
                     self?.appliedSplitTunnelRules = activeSplitTunnelRules
+                    self?.appliedSplitTunnelDefaultAction = activeSplitTunnelDefaultAction
                     self?.connectionPhase = .running
                     self?.proxyPhase = .enabled
                     self?.setStoredError(nil)

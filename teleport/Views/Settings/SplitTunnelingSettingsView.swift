@@ -32,6 +32,8 @@ struct SplitTunnelingSettingsView: View {
 
             profileSection
 
+            defaultActionSection
+
             addRuleSection
 
             if viewModel.splitTunnelRules.isEmpty {
@@ -94,6 +96,39 @@ struct SplitTunnelingSettingsView: View {
         }
     }
 
+    private var defaultActionSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                Text("Unmatched traffic")
+                    .font(.subheadline.weight(.medium))
+
+                Spacer()
+
+                Picker(
+                    "",
+                    selection: Binding(
+                        get: { viewModel.splitTunnelDefaultAction == .direct ? SplitTunnelRuleAction.direct : .proxy },
+                        set: { viewModel.setSplitTunnelDefaultAction($0) }
+                    )
+                ) {
+                    Text(SplitTunnelRuleAction.proxy.displayName).tag(SplitTunnelRuleAction.proxy)
+                    Text(SplitTunnelRuleAction.direct.displayName).tag(SplitTunnelRuleAction.direct)
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: 180)
+            }
+
+            Text(viewModel.splitTunnelDefaultAction == .direct
+                ? "Whitelist mode: only destinations matched above use the proxy; everything else stays direct."
+                : "Everything not matched above goes through the proxy; add rules to send specific destinations direct.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
     private var testerSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Test a domain or IP")
@@ -128,7 +163,7 @@ struct SplitTunnelingSettingsView: View {
                     }
                 } else {
                     Label(
-                        "No rule matches — uses default proxy behavior",
+                        "No rule matches — uses default: \(viewModel.splitTunnelDefaultAction.displayName)",
                         systemImage: "arrow.triangle.branch"
                     )
                     .foregroundStyle(.secondary)

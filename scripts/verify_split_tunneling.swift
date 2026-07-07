@@ -17,6 +17,7 @@ struct VerifySplitTunneling {
         try testGeneratedRoutingRulesMatchSharedMatcher()
         try testDisabledRuleExcludedFromGeneratedRouting()
         try testEmptyRuleListProducesNoSplitTunnelRouting()
+        try testDefaultActionSetsCatchAllOutbound()
         try testDirectOutboundBindsToPhysicalInterface()
         try testTunnelConfigExposesLocalSocksAndHTTPPorts()
         try testLegacySnapshotWithoutSplitTunnelFieldsDefaults()
@@ -363,6 +364,34 @@ struct VerifySplitTunneling {
         precondition(httpInbound["port"] as? Int == 8123)
 
         precondition(inbounds.contains { $0["tag"] as? String == "tun" }, "expected the tun inbound to remain present")
+    }
+
+    private static func testDefaultActionSetsCatchAllOutbound() throws {
+        let configuration = try ConnectionLinkParser().parse(sampleVLESSLink())
+        let writer = XrayConfigurationWriter(proxyEndpoint: .default)
+
+        // The catch-all is always the last routing rule and covers all tcp/udp.
+        func catchAll(_ action: SplitTunnelRuleAction?) throws -> [String: Any] {
+            let data: Data
+            if let action {
+                data = try writer.tunnelConfigData(for: configuration, interfaceName: "utun9", defaultAction: action)
+            } else {
+                data = try writer.tunnelConfigData(for: configuration, interfaceName: "utun9")
+            }
+            let rules = try routingRulesArray(from: data)
+            guard let last = rules.last else { preconditionFailure("expected routing rules") }
+            precondition(last["network"] as? String == "tcp,udp", "expected the last rule to be the tcp/udp catch-all")
+            return last
+        }
+
+        // Default (unspecified) keeps the classic full-tunnel behavior.
+        let defaultTag = try catchAll(nil)["outboundTag"] as? String
+        precondition(defaultTag == "proxy", "expected the default catch-all to proxy everything")
+        let proxyTag = try catchAll(.proxy)["outboundTag"] as? String
+        precondition(proxyTag == "proxy")
+        // Whitelist mode: unmatched traffic goes direct without a hand-written rule.
+        let directTag = try catchAll(.direct)["outboundTag"] as? String
+        precondition(directTag == "direct", "expected defaultAction .direct to flip the catch-all to direct")
     }
 
     private static func directOutbound(from data: Data) throws -> [String: Any] {

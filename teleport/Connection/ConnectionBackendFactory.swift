@@ -37,7 +37,7 @@ final class XrayTunConnectionBackend: ConnectionBackend {
 
     func restorePreviousState() throws {}
 
-    func start(configuration: ConnectionConfiguration, endpoint: ProxyEndpoint, splitTunnelRules: [SplitTunnelRule]) throws {
+    func start(configuration: ConnectionConfiguration, endpoint: ProxyEndpoint, splitTunnelRules: [SplitTunnelRule], splitTunnelDefaultAction: SplitTunnelRuleAction) throws {
         if let existingVPNInterface = routeInspector.existingVPNDefaultRouteInterface() {
             throw XrayTunConnectionError.existingVPNDetected(existingVPNInterface)
         }
@@ -56,7 +56,8 @@ final class XrayTunConnectionBackend: ConnectionBackend {
             for: configuration,
             interfaceName: tunnelInterfaceName,
             outboundInterface: outboundInterface,
-            splitTunnelRules: splitTunnelRules
+            splitTunnelRules: splitTunnelRules,
+            defaultAction: splitTunnelDefaultAction
         )
         try runtimeManager.start(
             session: XrayTunLaunchSession(
@@ -72,10 +73,10 @@ final class XrayTunConnectionBackend: ConnectionBackend {
         }
     }
 
-    func reconnect(configuration: ConnectionConfiguration, endpoint: ProxyEndpoint, shouldDisableExistingProxy: Bool, splitTunnelRules: [SplitTunnelRule]) throws {
+    func reconnect(configuration: ConnectionConfiguration, endpoint: ProxyEndpoint, shouldDisableExistingProxy: Bool, splitTunnelRules: [SplitTunnelRule], splitTunnelDefaultAction: SplitTunnelRuleAction) throws {
         _ = shouldDisableExistingProxy
         try stop(shouldDisableProxy: false)
-        try start(configuration: configuration, endpoint: endpoint, splitTunnelRules: splitTunnelRules)
+        try start(configuration: configuration, endpoint: endpoint, splitTunnelRules: splitTunnelRules, splitTunnelDefaultAction: splitTunnelDefaultAction)
     }
 
     func stop(shouldDisableProxy: Bool) throws {

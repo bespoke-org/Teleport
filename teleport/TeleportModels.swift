@@ -560,17 +560,24 @@ struct SplitTunnelProfile: Codable, Equatable, Identifiable {
     let id: UUID
     var name: String
     var rules: [SplitTunnelRule]
+    /// Outbound for traffic no rule matches. `.proxy` (the default) is the classic
+    /// full-tunnel-with-exceptions behavior; `.direct` turns the profile into a
+    /// whitelist (only matched destinations use the proxy) without hand-writing a
+    /// catch-all rule.
+    var defaultAction: SplitTunnelRuleAction
 
-    init(id: UUID = UUID(), name: String, rules: [SplitTunnelRule] = []) {
+    init(id: UUID = UUID(), name: String, rules: [SplitTunnelRule] = [], defaultAction: SplitTunnelRuleAction = .proxy) {
         self.id = id
         self.name = name
         self.rules = rules
+        self.defaultAction = defaultAction
     }
 
     private enum CodingKeys: String, CodingKey {
         case id
         case name
         case rules
+        case defaultAction
     }
 
     init(from decoder: Decoder) throws {
@@ -578,6 +585,7 @@ struct SplitTunnelProfile: Codable, Equatable, Identifiable {
         id = try container.decode(UUID.self, forKey: .id)
         name = try container.decodeIfPresent(String.self, forKey: .name) ?? "Profile"
         rules = try container.decodeIfPresent([SplitTunnelRule].self, forKey: .rules) ?? []
+        defaultAction = try container.decodeIfPresent(SplitTunnelRuleAction.self, forKey: .defaultAction) ?? .proxy
     }
 }
 
