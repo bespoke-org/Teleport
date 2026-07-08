@@ -60,6 +60,7 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var selectedSplitTunnelProfileID: UUID?
     @Published private(set) var isSplitTunnelEnabled: Bool
     @Published private(set) var geodataSettings: GeodataSourceSettings
+    @Published private(set) var isSplitTunnelGeodataReady = false
     @Published private(set) var updatingGeodataKinds: Set<GeodataKind> = []
     @Published private(set) var startsAtLogin: Bool
     @Published private(set) var refreshingSubscriptionIDs: Set<UUID> = []
@@ -72,6 +73,7 @@ final class AppViewModel: ObservableObject {
     private var connectionBackend: ConnectionBackend
     private let subscriptionClient: SubscriptionClient
     private let healthProbeService: ConnectionHealthProbeService
+    private let splitTunnelGeodataMatcher = SplitTunnelGeodataMatcher()
     private let loginItemService = LoginItemService()
     private let operationQueue = DispatchQueue(label: "dev.x.teleport.connection-operations", qos: .userInitiated)
     private let geodataQueue = DispatchQueue(label: "dev.x.teleport.geodata-updates", qos: .utility, attributes: .concurrent)
@@ -94,6 +96,7 @@ final class AppViewModel: ObservableObject {
     private var autoRefreshTimerCancellable: AnyCancellable?
     private var persistWorkItem: DispatchWorkItem?
     private var splitTunnelApplyWorkItem: DispatchWorkItem?
+    private var pendingSplitTunnelLiveApply = false
     private var appliedSplitTunnelRules: [SplitTunnelRule]?
     private var appliedSplitTunnelDefaultAction: SplitTunnelRuleAction?
     private var geodataUpdateTokens: [GeodataKind: UUID] = [:]
@@ -165,6 +168,7 @@ final class AppViewModel: ObservableObject {
         rebuildSubscriptionSourceIndexes()
         normalizeSelection()
         connectionPhase = savedConnections.isEmpty ? .unconfigured : .stopped
+        prepareSplitTunnelGeodataMatcher()
         detectActiveRuntimeSessionFromPreviousRunIfNeeded()
         startAutoRefreshTimer()
         updateMenuBarAnimation()
@@ -696,7 +700,14 @@ final class AppViewModel: ObservableObject {
     }
 
     func matchingSplitTunnelRule(for candidate: String) -> SplitTunnelRule? {
-        SplitTunnelRuleMatcher.firstMatch(for: candidate, in: splitTunnelRules)
+        if !splitTunnelGeodataMatcher.isReady {
+            prepareSplitTunnelGeodataMatcher()
+        }
+        return SplitTunnelRuleMatcher.firstMatch(for: candidate, in: splitTunnelRules, geodataMatcher: splitTunnelGeodataMatcher)
+    }
+
+    var hasEnabledSplitTunnelGeodataRules: Bool {
+        splitTunnelRules.contains { $0.isEnabled && ($0.kind == .geosite || $0.kind == .geoip) }
     }
 
     // MARK: - Split-tunnel profiles
@@ -744,7 +755,11 @@ final class AppViewModel: ObservableObject {
     /// toggles) into a single VPN reconnect once the user settles, instead of
     /// tearing the tunnel down and back up on every individual change.
     private func scheduleSplitTunnelLiveApply() {
-        guard connectionMode == .vpn, hasEstablishedConnection else { return }
+        guard connectionMode == .vpn, hasActiveConnectionSession else { return }
+        guard hasEstablishedConnection else {
+            pendingSplitTunnelLiveApply = true
+            return
+        }
 
         splitTunnelApplyWorkItem?.cancel()
         let workItem = DispatchWorkItem { [weak self] in
@@ -756,12 +771,21 @@ final class AppViewModel: ObservableObject {
 
     private func applySplitTunnelRulesLiveIfNeeded() {
         guard connectionMode == .vpn, hasEstablishedConnection else { return }
+        pendingSplitTunnelLiveApply = false
         // Only reconnect when what Xray would actually see has changed. Editing a
         // disabled rule, or a no-op toggle, must not drop the tunnel; but a change
         // to the default (catch-all) action must, since it rewrites the config.
         guard activeSplitTunnelRules != appliedSplitTunnelRules
             || activeSplitTunnelDefaultAction != appliedSplitTunnelDefaultAction else { return }
         reconnectToSelectedConnection()
+    }
+
+    private func applyDeferredSplitTunnelRulesLiveIfNeeded() {
+        guard connectionMode == .vpn, hasEstablishedConnection else { return }
+        guard pendingSplitTunnelLiveApply
+            || activeSplitTunnelRules != appliedSplitTunnelRules
+            || activeSplitTunnelDefaultAction != appliedSplitTunnelDefaultAction else { return }
+        applySplitTunnelRulesLiveIfNeeded()
     }
 
     // MARK: - Geodata (geosite/geoip)
@@ -836,6 +860,9 @@ final class AppViewModel: ObservableObject {
     func resetGeodataToBundled(kind: GeodataKind) {
         guard !updatingGeodataKinds.contains(kind) else { return }
         try? GeodataUpdateService().removeCustomGeodata(for: kind)
+        splitTunnelGeodataMatcher.resetCache()
+        isSplitTunnelGeodataReady = false
+        prepareSplitTunnelGeodataMatcher()
         clearGeodataURL(kind: kind)
         setGeodataError(kind: kind, error: nil)
         setGeodataLastUpdatedAt(kind: kind, date: nil)
@@ -909,6 +936,9 @@ final class AppViewModel: ObservableObject {
         updatingGeodataKinds.remove(kind)
         setGeodataError(kind: kind, error: error)
         if error == nil {
+            splitTunnelGeodataMatcher.resetCache()
+            isSplitTunnelGeodataReady = false
+            prepareSplitTunnelGeodataMatcher()
             setGeodataLastUpdatedAt(kind: kind, date: Date())
         }
         schedulePersist()
@@ -926,6 +956,16 @@ final class AppViewModel: ObservableObject {
     private func applyGeodataLiveIfNeeded() {
         guard connectionMode == .vpn, hasEstablishedConnection else { return }
         reconnectToSelectedConnection()
+    }
+
+    private func prepareSplitTunnelGeodataMatcher() {
+        guard !splitTunnelGeodataMatcher.isReady else {
+            isSplitTunnelGeodataReady = true
+            return
+        }
+        splitTunnelGeodataMatcher.prepare { [weak self] in
+            self?.isSplitTunnelGeodataReady = self?.splitTunnelGeodataMatcher.isReady == true
+        }
     }
 
     private func performScheduledGeodataUpdateIfNeeded() {
@@ -1049,6 +1089,7 @@ final class AppViewModel: ObservableObject {
                     self?.proxyPhase = .enabled
                     self?.setStoredError(nil)
                     self?.updateMenuBarAnimation()
+                    self?.applyDeferredSplitTunnelRulesLiveIfNeeded()
                 }
             } catch {
                 Task { @MainActor [weak self] in
@@ -1091,6 +1132,7 @@ final class AppViewModel: ObservableObject {
                     self?.proxyPhase = .enabled
                     self?.setStoredError(nil)
                     self?.updateMenuBarAnimation()
+                    self?.applyDeferredSplitTunnelRulesLiveIfNeeded()
                 }
             } catch {
                 Task { @MainActor [weak self] in

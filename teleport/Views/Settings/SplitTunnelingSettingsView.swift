@@ -162,6 +162,15 @@ struct SplitTunnelingSettingsView: View {
             TextField("e.g. maps.google.com or 10.0.0.5", text: $testerValue)
 
             if !testerValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if viewModel.hasEnabledSplitTunnelGeodataRules, !viewModel.isSplitTunnelGeodataReady {
+                    Label(
+                        "Loading geosite/geoip data for the tester…",
+                        systemImage: "hourglass"
+                    )
+                    .foregroundStyle(.secondary)
+                    .font(.caption)
+                }
+
                 if let match = viewModel.matchingSplitTunnelRule(for: testerValue) {
                     if viewModel.connectionMode != .vpn {
                         Label(
@@ -189,15 +198,6 @@ struct SplitTunnelingSettingsView: View {
                     Label(
                         "No rule matches — uses default: \(viewModel.splitTunnelDefaultAction.displayName)",
                         systemImage: "arrow.triangle.branch"
-                    )
-                    .foregroundStyle(.secondary)
-                    .font(.caption)
-                }
-
-                if SplitTunnelRuleMatcher.hasUntestableGeodataRules(in: viewModel.splitTunnelRules) {
-                    Label(
-                        "Geosite/geoip category rules are resolved by Xray and can't be checked here.",
-                        systemImage: "info.circle"
                     )
                     .foregroundStyle(.secondary)
                     .font(.caption)

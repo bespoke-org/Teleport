@@ -11,7 +11,7 @@ struct VerifySplitTunneling {
         try testMatcherFullPrefixRequiresExactMatch()
         try testDomainValuesAreNormalizedToLowercase()
         try testClassifiesGeodataTokens()
-        try testMatcherSkipsGeodataRules()
+        try testMatcherChecksGeodataRules()
         try testGeodataRulesGenerateRoutingRules()
         try testDomainRuleEmitsDomainPrefixNotSubstring()
         try testGeneratedRoutingRulesMatchSharedMatcher()
@@ -142,21 +142,34 @@ struct VerifySplitTunneling {
         }
     }
 
-    private static func testMatcherSkipsGeodataRules() throws {
-        // Geodata-backed rules can't be evaluated locally, so the tester never
-        // claims a match for them and reports that untestable rules are present.
+    private static func testMatcherChecksGeodataRules() throws {
+        let temporaryRoot = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("teleport-geodata-test-")
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        let fileManager = TemporaryApplicationSupportFileManager(rootURL: temporaryRoot)
+        let service = GeodataUpdateService(fileManager: fileManager)
+        try service.store(sampleGeositeData(), for: .geosite)
+        try service.store(sampleGeoIPData(), for: .geoip)
+        let geodataMatcher = SplitTunnelGeodataMatcher(service: service)
+        try geodataMatcher.prepareSynchronously()
+
         let geosite = SplitTunnelRule(value: "geosite:google", kind: .geosite, action: .direct)
         let geoip = SplitTunnelRule(value: "geoip:private", kind: .geoip, action: .block)
-        precondition(SplitTunnelRuleMatcher.firstMatch(for: "www.google.com", in: [geosite]) == nil)
-        precondition(SplitTunnelRuleMatcher.firstMatch(for: "10.0.0.1", in: [geoip]) == nil)
-        precondition(SplitTunnelRuleMatcher.hasUntestableGeodataRules(in: [geosite, geoip]))
+        precondition(SplitTunnelRuleMatcher.firstMatch(for: "www.google.com", in: [geosite], geodataMatcher: geodataMatcher)?.id == geosite.id)
+        precondition(SplitTunnelRuleMatcher.firstMatch(for: "10.0.0.1", in: [geoip], geodataMatcher: geodataMatcher)?.id == geoip.id)
 
         let disabled = SplitTunnelRule(value: "geosite:google", kind: .geosite, action: .direct, isEnabled: false)
-        precondition(!SplitTunnelRuleMatcher.hasUntestableGeodataRules(in: [disabled]))
+        precondition(SplitTunnelRuleMatcher.firstMatch(for: "www.google.com", in: [disabled], geodataMatcher: geodataMatcher) == nil)
 
-        // A domain rule sitting after a geodata-backed rule is still matched normally.
+        // A domain rule sitting after a non-matching geodata-backed rule is still matched normally.
         let domain = SplitTunnelRule(value: "example.com", kind: .domain, action: .block)
-        precondition(SplitTunnelRuleMatcher.firstMatch(for: "example.com", in: [geosite, domain])?.id == domain.id)
+        precondition(SplitTunnelRuleMatcher.firstMatch(for: "example.com", in: [geosite, domain], geodataMatcher: geodataMatcher)?.id == domain.id)
+
+        let attrRule = SplitTunnelRule(value: "geosite:google@ads", kind: .geosite, action: .block)
+        precondition(SplitTunnelRuleMatcher.firstMatch(for: "ads.google.com", in: [attrRule], geodataMatcher: geodataMatcher)?.id == attrRule.id)
+        precondition(SplitTunnelRuleMatcher.firstMatch(for: "www.google.com", in: [attrRule], geodataMatcher: geodataMatcher) == nil)
     }
 
     private static func testGeodataRulesGenerateRoutingRules() throws {
@@ -475,5 +488,56 @@ struct VerifySplitTunneling {
 
     private static func sampleVLESSLink() -> String {
         "vless://11111111-2222-3333-4444-555555555555@example.com:443?security=tls&type=tcp#Sample"
+    }
+
+    private final class TemporaryApplicationSupportFileManager: FileManager {
+        let rootURL: URL
+
+        init(rootURL: URL) {
+            self.rootURL = rootURL
+            super.init()
+        }
+
+        override func urls(for directory: FileManager.SearchPathDirectory, in domainMask: FileManager.SearchPathDomainMask) -> [URL] {
+            if directory == .applicationSupportDirectory {
+                return [rootURL]
+            }
+            return super.urls(for: directory, in: domainMask)
+        }
+    }
+
+    private static func sampleGeositeData() -> Data {
+        let googleDomains = [
+            protoVarintField(1, 2) + protoMessage(2, Data("google.com".utf8)),
+            protoVarintField(1, 3) + protoMessage(2, Data("ads.google.com".utf8)) + protoMessage(3, protoMessage(1, Data("ads".utf8)))
+        ]
+        let googleSite = protoMessage(1, Data("google".utf8)) + googleDomains.map { protoMessage(2, $0) }.reduce(Data(), +)
+        return protoMessage(1, googleSite)
+    }
+
+    private static func sampleGeoIPData() -> Data {
+        let cidr = protoMessage(1, Data([10, 0, 0, 0])) + protoVarintField(2, 8)
+        let privateEntry = protoMessage(1, Data("private".utf8)) + protoMessage(2, cidr)
+        return protoMessage(1, privateEntry)
+    }
+
+    private static func protoMessage(_ fieldNumber: Int, _ value: Data) -> Data {
+        protoVarint(UInt64(fieldNumber << 3 | 2)) + protoVarint(UInt64(value.count)) + value
+    }
+
+    private static func protoVarintField(_ fieldNumber: Int, _ value: UInt64) -> Data {
+        protoVarint(UInt64(fieldNumber << 3)) + protoVarint(value)
+    }
+
+    private static func protoVarint(_ value: UInt64) -> Data {
+        var value = value
+        var bytes: [UInt8] = []
+        repeat {
+            var byte = UInt8(value & 0x7F)
+            value >>= 7
+            if value != 0 { byte |= 0x80 }
+            bytes.append(byte)
+        } while value != 0
+        return Data(bytes)
     }
 }

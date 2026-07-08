@@ -101,7 +101,7 @@ enum SplitTunnelRuleClassifier {
 /// Shared first-match-wins evaluator used by both tunnel routing-rule generation
 /// and the Settings rule tester, so the two can never disagree about a result.
 enum SplitTunnelRuleMatcher {
-    static func firstMatch(for candidate: String, in rules: [SplitTunnelRule]) -> SplitTunnelRule? {
+    static func firstMatch(for candidate: String, in rules: [SplitTunnelRule], geodataMatcher: SplitTunnelGeodataMatcher? = nil) -> SplitTunnelRule? {
         let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
@@ -111,21 +111,13 @@ enum SplitTunnelRuleMatcher {
                 if domainRuleMatches(rule.value, candidate: trimmed) { return rule }
             case .ip:
                 if ipRuleMatches(rule.value, candidate: trimmed) { return rule }
-            case .geosite, .geoip:
-                // geosite/geoip categories live in Xray geodata files and are
-                // resolved by Xray; they can't be evaluated here, so the tester
-                // never claims a match.
-                continue
+            case .geosite:
+                if geodataMatcher?.geositeRuleMatches(rule.value, candidate: trimmed) == true { return rule }
+            case .geoip:
+                if geodataMatcher?.geoipRuleMatches(rule.value, candidate: trimmed) == true { return rule }
             }
         }
         return nil
-    }
-
-    /// True when the list has an enabled geodata-backed rule that Xray could
-    /// match but the local tester cannot evaluate, so the UI can disclose that
-    /// its result may be incomplete rather than silently mislead.
-    static func hasUntestableGeodataRules(in rules: [SplitTunnelRule]) -> Bool {
-        rules.contains { $0.isEnabled && ($0.kind == .geosite || $0.kind == .geoip) }
     }
 
     private static func domainRuleMatches(_ ruleValue: String, candidate: String) -> Bool {
