@@ -140,7 +140,7 @@ final class HelperServer {
         }
 
         var requirement: SecRequirement?
-        let requirementText = "identifier \"dev.x.teleport\" and anchor apple generic and certificate leaf[subject.OU] = \"ZTB359LSTB\""
+        let requirementText = "identifier \"dev.x.teleport\" and anchor apple generic and certificate leaf[subject.OU] = \"6RXJJA7GCX\""
         status = SecRequirementCreateWithString(requirementText as CFString, SecCSFlags(), &requirement)
         guard status == errSecSuccess, let requirement else {
             throw HelperError("Could not create Teleport signature requirement: OSStatus \(status)")
@@ -426,7 +426,7 @@ final class XrayTunController {
 
     private func validatedLogName(_ value: String?) throws -> String {
         switch value {
-        case "xray-tun.log", "xray-tun-control.log":
+        case "xray-tun.log", "xray-tun-control.log", "xray-tun-config.json":
             return value!
         default:
             throw HelperError("Rejected invalid logName")
@@ -609,6 +609,7 @@ final class XrayTunController {
 
         \(deleteHostRouteFunction())
         \(dnsRouteFunctions())
+        \(directRouteFunctions())
 
         for helper_file in "$PID_FILE" "$LOG_FILE" "$PROTECTED_HOST_FILE" "$PROTECTED_DNS_FILE" "$CONTROL_LOG_FILE"; do
             [ ! -L "$helper_file" ] || rm -f "$helper_file"
@@ -625,6 +626,7 @@ final class XrayTunController {
             fi
         fi
         cleanup_dns_routes
+        cleanup_direct_routes
 
         route delete -net 0.0.0.0/1 >/dev/null 2>&1 || true
         route delete -net 128.0.0.0/1 >/dev/null 2>&1 || true
@@ -638,6 +640,7 @@ final class XrayTunController {
         delete_host_route "$PROTECTED_HOST"
         gateway=$(route -n get "$PROTECTED_HOST" 2>/dev/null | awk '/gateway:/{print $2; exit}')
         \(protectHostRouteCommands())
+        protect_direct_routes "$gateway"
         protect_dns_routes
 
         cd "$HELPER_STATE_DIR"
@@ -665,6 +668,7 @@ final class XrayTunController {
                 printf '%s pid %s exited during readiness wait\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$pid" >> "$CONTROL_LOG_FILE"
                 delete_host_route "$PROTECTED_HOST"
                 cleanup_dns_routes
+                cleanup_direct_routes
                 rm -f "$PID_FILE"
                 cat "$LOG_FILE" >&2 || true
                 exit 1
@@ -693,6 +697,7 @@ final class XrayTunController {
             kill -9 "$pid" 2>/dev/null || true
             delete_host_route "$PROTECTED_HOST"
             cleanup_dns_routes
+            cleanup_direct_routes
             rm -f "$PID_FILE"
             exit 1
         fi
@@ -710,6 +715,7 @@ final class XrayTunController {
             route delete -net 128.0.0.0/1 >/dev/null 2>&1 || true
             delete_host_route "$PROTECTED_HOST"
             cleanup_dns_routes
+            cleanup_direct_routes
             rm -f "$PID_FILE"
             exit 1
         fi
@@ -724,11 +730,13 @@ final class XrayTunController {
             route delete -net 128.0.0.0/1 >/dev/null 2>&1 || true
             delete_host_route "$PROTECTED_HOST"
             cleanup_dns_routes
+            cleanup_direct_routes
             rm -f "$PID_FILE"
             exit 1
         fi
 
         \(protectHostRouteCommands())
+        protect_direct_routes "$gateway"
         protect_dns_routes
 
         public_interface_low=$(route -n get 1.1.1.1 2>/dev/null | awk '/interface:/{print $2; exit}' || true)
@@ -750,6 +758,7 @@ final class XrayTunController {
                 route delete -net 128.0.0.0/1 >/dev/null 2>&1 || true
                 delete_host_route "$PROTECTED_HOST"
                 cleanup_dns_routes
+                cleanup_direct_routes
                 rm -f "$PID_FILE"
                 exit 1
                 ;;
@@ -769,6 +778,7 @@ final class XrayTunController {
                 route delete -net 128.0.0.0/1 >/dev/null 2>&1 || true
                 delete_host_route "$PROTECTED_HOST"
                 cleanup_dns_routes
+                cleanup_direct_routes
                 rm -f "$PID_FILE"
                 exit 1
                 ;;
@@ -786,6 +796,7 @@ final class XrayTunController {
                 route delete -net 128.0.0.0/1 >/dev/null 2>&1 || true
                 delete_host_route "$PROTECTED_HOST"
                 cleanup_dns_routes
+                cleanup_direct_routes
                 rm -f "$PID_FILE"
                 exit 1
                 ;;
@@ -810,6 +821,7 @@ final class XrayTunController {
         commands.append("CONTROL_LOG_FILE=\(q(controlLogFile))")
         commands.append(deleteHostRouteFunction())
         commands.append(dnsRouteFunctions())
+        commands.append(directRouteFunctions())
         commands.append("for helper_file in \(q(pidFile)) \(q(protectedHostFile)) \(q(protectedDNSFile)) \(q(controlLogFile)); do [ ! -L \"$helper_file\" ] || rm -f \"$helper_file\"; done")
         commands.append("touch \(q(controlLogFile)); chmod 600 \(q(controlLogFile))")
         commands.append("printf '%s helper stop requested\\n' \"$(date '+%Y-%m-%d %H:%M:%S')\" >> \(q(controlLogFile))")
@@ -819,6 +831,7 @@ final class XrayTunController {
             commands.append("if [ -f \(q(protectedHostFile)) ]; then protected_host=$(cat \(q(protectedHostFile)) 2>/dev/null || true); if [ -n \"$protected_host\" ]; then delete_host_route \"$protected_host\"; fi; fi")
         }
         commands.append("cleanup_dns_routes")
+        commands.append("cleanup_direct_routes")
         commands.append("route delete -net 0.0.0.0/1 >/dev/null 2>&1 || true")
         commands.append("route delete -net 128.0.0.0/1 >/dev/null 2>&1 || true")
         commands.append("rm -f \(q(pidFile))")
@@ -899,6 +912,29 @@ final class XrayTunController {
                     printf '%s\n' "$dns_server" >> "$PROTECTED_DNS_FILE"
                 fi
             done
+        }
+        """
+    }
+
+    private func directRouteFunctions() -> String {
+        """
+        cleanup_direct_routes() {
+            [ -n "${OUTBOUND_INTERFACE:-}" ] || return 0
+            route delete -net 0.0.0.0/1 -ifscope "$OUTBOUND_INTERFACE" >/dev/null 2>&1 || true
+            route delete -net 128.0.0.0/1 -ifscope "$OUTBOUND_INTERFACE" >/dev/null 2>&1 || true
+        }
+
+        protect_direct_routes() {
+            direct_gateway="$1"
+            [ -n "${OUTBOUND_INTERFACE:-}" ] || return 0
+            [ "$OUTBOUND_INTERFACE" != "auto" ] || return 0
+            [ -n "$direct_gateway" ] || return 0
+
+            cleanup_direct_routes
+            route add -net 0.0.0.0/1 "$direct_gateway" -ifscope "$OUTBOUND_INTERFACE" >> "$CONTROL_LOG_FILE" 2>&1 || \
+                route change -net 0.0.0.0/1 "$direct_gateway" -ifscope "$OUTBOUND_INTERFACE" >> "$CONTROL_LOG_FILE" 2>&1 || true
+            route add -net 128.0.0.0/1 "$direct_gateway" -ifscope "$OUTBOUND_INTERFACE" >> "$CONTROL_LOG_FILE" 2>&1 || \
+                route change -net 128.0.0.0/1 "$direct_gateway" -ifscope "$OUTBOUND_INTERFACE" >> "$CONTROL_LOG_FILE" 2>&1 || true
         }
         """
     }

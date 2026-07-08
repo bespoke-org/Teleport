@@ -51,11 +51,13 @@ final class XrayTunConnectionBackend: ConnectionBackend {
         let outboundInterface = routeInspector.outboundInterface(for: configuration.host)
             ?? routeInspector.defaultRouteInterface()
             ?? "auto"
+        let directSendThrough = routeInspector.ipv4Address(for: outboundInterface)
         let tunnelInterfaceName = routeInspector.nextAvailableTunnelInterfaceName()
         let configData = try XrayConfigurationWriter(proxyEndpoint: endpoint).tunnelConfigData(
             for: configuration,
             interfaceName: tunnelInterfaceName,
             outboundInterface: outboundInterface,
+            directSendThrough: directSendThrough,
             splitTunnelRules: splitTunnelRules,
             defaultAction: splitTunnelDefaultAction
         )

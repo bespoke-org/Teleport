@@ -1074,7 +1074,12 @@ final class AppViewModel: ObservableObject {
 
         operationQueue.async { [weak self] in
             do {
-                try connectionBackend.start(configuration: configuration, endpoint: proxyEndpoint, splitTunnelRules: activeSplitTunnelRules, splitTunnelDefaultAction: activeSplitTunnelDefaultAction)
+                try connectionBackend.start(
+                    configuration: configuration,
+                    endpoint: proxyEndpoint,
+                    splitTunnelRules: activeSplitTunnelRules,
+                    splitTunnelDefaultAction: activeSplitTunnelDefaultAction
+                )
 
                 Task { @MainActor [weak self] in
                     // Write the applied-rules cache on the main actor: it is read

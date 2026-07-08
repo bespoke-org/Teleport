@@ -66,6 +66,35 @@ struct XrayTunRouteInspector: Sendable {
             .map(String.init)
     }
 
+    func ipv4Address(for interfaceName: String) -> String? {
+        guard !interfaceName.isEmpty, interfaceName != "auto" else { return nil }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/sbin/ifconfig")
+        process.arguments = [interfaceName]
+
+        let outputPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return nil
+        }
+
+        guard process.terminationStatus == 0 else { return nil }
+        let output = String(decoding: outputPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        return output
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { $0.hasPrefix("inet ") }?
+            .split(separator: " ")
+            .dropFirst()
+            .first
+            .map(String.init)
+    }
+
     func nextAvailableTunnelInterfaceName() -> String {
         let existingIndexes = existingTunnelInterfaceIndexes()
         let startIndex = 10

@@ -222,7 +222,7 @@ private struct NerdShitSettingsView: View {
 
     private var logSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Xray logs")
+            Text("Xray diagnostics")
                 .font(.headline)
 
             HStack(spacing: 10) {
@@ -240,7 +240,7 @@ private struct NerdShitSettingsView: View {
                     refreshLog()
                 }
 
-                Button("Copy Log", systemImage: "doc.on.doc") {
+                Button("Copy Output", systemImage: "doc.on.doc") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(logText, forType: .string)
                 }
@@ -381,6 +381,7 @@ private struct LogTextViewer: NSViewRepresentable {
 
 private enum NerdLogFile: String, CaseIterable, Identifiable, Hashable {
     case systemProxy
+    case vpnConfig
     case vpn
     case vpnControl
 
@@ -390,6 +391,8 @@ private enum NerdLogFile: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .systemProxy:
             return "System Proxy"
+        case .vpnConfig:
+            return "VPN Config"
         case .vpn:
             return "VPN"
         case .vpnControl:
@@ -401,6 +404,8 @@ private enum NerdLogFile: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .systemProxy:
             return nil
+        case .vpnConfig:
+            return "xray-tun-config.json"
         case .vpn:
             return "xray-tun.log"
         case .vpnControl:
@@ -412,6 +417,8 @@ private enum NerdLogFile: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .systemProxy:
             return Self.applicationSupportDirectoryURL.appendingPathComponent("xray.log")
+        case .vpnConfig:
+            return Self.helperStateDirectoryURL.appendingPathComponent("xray-tun-config.json")
         case .vpn:
             return Self.helperStateDirectoryURL.appendingPathComponent("xray-tun.log")
         case .vpnControl:

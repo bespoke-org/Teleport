@@ -19,6 +19,9 @@ struct VerifySplitTunneling {
         try testEmptyRuleListProducesNoSplitTunnelRouting()
         try testDefaultActionSetsCatchAllOutbound()
         try testDirectOutboundBindsToPhysicalInterface()
+        try testDirectOutboundCanBindSourceAddress()
+        try testHelperAddsScopedDirectRoutes()
+        try testTunnelSniffingIncludesQUIC()
         try testTunnelConfigExposesLocalSocksAndHTTPPorts()
         try testLegacySnapshotWithoutSplitTunnelFieldsDefaults()
         try testPreProfilesSnapshotMigratesFlatRulesIntoDefaultProfile()
@@ -283,7 +286,7 @@ struct VerifySplitTunneling {
 
     private static func testSnapshotRoundTripPreservesSplitTunnelProfiles() throws {
         let rule = SplitTunnelRule(value: "example.com", kind: .domain, action: .proxy, isEnabled: false)
-        let profileA = SplitTunnelProfile(name: "Work", rules: [rule])
+        let profileA = SplitTunnelProfile(name: "Work", rules: [rule], defaultAction: .direct)
         let profileB = SplitTunnelProfile(name: "Home", rules: [])
         let snapshot = AppSnapshot(
             savedConnections: [],
@@ -307,6 +310,7 @@ struct VerifySplitTunneling {
         precondition(decodedProfileA?.rules[0].value == "example.com")
         precondition(decodedProfileA?.rules[0].action == .proxy)
         precondition(decodedProfileA?.rules[0].isEnabled == false)
+        precondition(decodedProfileA?.defaultAction == .direct)
     }
 
     private static func testSelectingUnknownProfileIDFallsBackToFirstProfile() throws {
@@ -338,6 +342,45 @@ struct VerifySplitTunneling {
         let autoData = try writer.tunnelConfigData(for: configuration, interfaceName: "utun9", outboundInterface: "auto")
         let autoDirect = try directOutbound(from: autoData)
         precondition(autoDirect["streamSettings"] == nil, "expected no interface binding when the interface is unknown")
+    }
+
+    private static func testDirectOutboundCanBindSourceAddress() throws {
+        let configuration = try ConnectionLinkParser().parse(sampleVLESSLink())
+        let writer = XrayConfigurationWriter(proxyEndpoint: .default)
+        let data = try writer.tunnelConfigData(
+            for: configuration,
+            interfaceName: "utun9",
+            outboundInterface: "en0",
+            directSendThrough: "192.168.0.19",
+            defaultAction: .direct
+        )
+        let direct = try directOutbound(from: data)
+        precondition(direct["sendThrough"] as? String == "192.168.0.19", "expected direct outbound to bind a physical-interface source address")
+    }
+
+    private static func testTunnelSniffingIncludesQUIC() throws {
+        let configuration = try ConnectionLinkParser().parse(sampleVLESSLink())
+        let writer = XrayConfigurationWriter(proxyEndpoint: .default)
+        let data = try writer.tunnelConfigData(for: configuration, interfaceName: "utun9", outboundInterface: "en0", defaultAction: .direct)
+        let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let inbounds = (payload?["inbounds"] as? [[String: Any]]) ?? []
+        guard let tun = inbounds.first(where: { $0["tag"] as? String == "tun" }),
+              let sniffing = tun["sniffing"] as? [String: Any] else {
+            preconditionFailure("expected tun sniffing config")
+        }
+
+        precondition(sniffing["routeOnly"] == nil, "expected sniffing to keep Xray's default destination handling")
+        let overrides = sniffing["destOverride"] as? [String]
+        precondition(overrides == ["http", "tls", "quic"], "expected sniffing to include HTTP, TLS, and QUIC")
+    }
+
+    private static func testHelperAddsScopedDirectRoutes() throws {
+        let helperSource = try String(contentsOfFile: "TeleportPrivilegedHelper/main.swift", encoding: .utf8)
+        precondition(helperSource.contains("cleanup_direct_routes"), "expected helper to clean up scoped direct routes")
+        precondition(helperSource.contains("protect_direct_routes"), "expected helper to install scoped direct routes")
+        precondition(helperSource.contains("-ifscope \"$OUTBOUND_INTERFACE\""), "expected direct routes to be scoped to the physical interface")
+        precondition(helperSource.contains("route add -net 0.0.0.0/1 \"$direct_gateway\" -ifscope"), "expected lower IPv4 direct route through the physical gateway")
+        precondition(helperSource.contains("route add -net 128.0.0.0/1 \"$direct_gateway\" -ifscope"), "expected upper IPv4 direct route through the physical gateway")
     }
 
     private static func testTunnelConfigExposesLocalSocksAndHTTPPorts() throws {
