@@ -382,7 +382,7 @@ struct VerifySplitTunneling {
             preconditionFailure("expected tun sniffing config")
         }
 
-        precondition(sniffing["routeOnly"] == nil, "expected sniffing to keep Xray's default destination handling")
+        precondition(sniffing["routeOnly"] as? Bool == true, "expected sniffing to use routeOnly for split-tunnel routing")
         let overrides = sniffing["destOverride"] as? [String]
         precondition(overrides == ["http", "tls", "quic"], "expected sniffing to include HTTP, TLS, and QUIC")
     }
