@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 let dispatcher = HelperCommandDispatcher(executor: XrayTunController())
@@ -8,3 +9,5 @@ listener.resume()
 withExtendedLifetime(delegate) {
     RunLoop.current.run()
 }
+fputs("\(helperLabel): XPC listener run loop exited unexpectedly\n", stderr)
+exit(1)

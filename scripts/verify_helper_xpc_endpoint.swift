@@ -71,6 +71,12 @@ struct VerifyHelperXPCEndpoint {
 
         precondition(mainSource.contains("NSXPCListener(machServiceName: VPNHelperProtocol.machServiceName)"))
         precondition(mainSource.contains("listener.resume()"))
+        precondition(mainSource.contains("fputs(\"\\(helperLabel): XPC listener run loop exited unexpectedly\\n\", stderr)"))
+        precondition(mainSource.contains("exit(1)"))
+        let runLoopOffset = try requireOffset(of: "RunLoop.current.run()", in: mainSource)
+        let fatalDiagnosticOffset = try requireOffset(of: "XPC listener run loop exited unexpectedly", in: mainSource)
+        let failureExitOffset = try requireOffset(of: "exit(1)", in: mainSource)
+        precondition(runLoopOffset < fatalDiagnosticOffset && fatalDiagnosticOffset < failureExitOffset)
         precondition(authenticatorSource.contains("consoleOwner.uid != 0"))
         precondition(authenticatorSource.contains("effectiveUserIdentifier"))
         precondition(authenticatorSource.contains("setCodeSigningRequirement"))
