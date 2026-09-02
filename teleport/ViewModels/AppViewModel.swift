@@ -97,6 +97,7 @@ final class AppViewModel: ObservableObject {
     private var connectionOperationTask: Task<Void, Never>?
     private var connectionOperationID: UUID?
     private var hasObservedInitialConnectionState = false
+    private var isTerminating = false
     private var persistWorkItem: DispatchWorkItem?
     private var splitTunnelApplyWorkItem: DispatchWorkItem?
     private var pendingSplitTunnelLiveApply = false
@@ -217,19 +218,22 @@ final class AppViewModel: ObservableObject {
     }
 
     var canConnect: Bool {
-        hasObservedInitialConnectionState
+        !isTerminating
+            && hasObservedInitialConnectionState
             && selectedConfiguration != nil
             && connectionOperationID == nil
             && connectionPresentation.canConnect
     }
 
     var canDisconnect: Bool {
-        hasObservedInitialConnectionState
+        !isTerminating
+            && hasObservedInitialConnectionState
             && (connectionOperationID != nil || connectionPresentation.canDisconnect)
     }
 
     var canChangeSelection: Bool {
-        hasObservedInitialConnectionState
+        !isTerminating
+            && hasObservedInitialConnectionState
             && connectionOperationID == nil
             && connectionPresentation.canChangeSelection
     }
@@ -790,7 +794,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private func applySplitTunnelRulesLiveIfNeeded() {
-        guard connectionMode == .vpn, hasEstablishedConnection else { return }
+        guard !isTerminating, connectionMode == .vpn, hasEstablishedConnection else { return }
         guard connectionOperationID == nil else {
             pendingSplitTunnelLiveApply = true
             return
@@ -1028,6 +1032,7 @@ final class AppViewModel: ObservableObject {
     }
 
     func disconnect() {
+        guard !isTerminating else { return }
         let provider = connectionProvider
         let precedingOperation = connectionOperationTask
         let operationID = UUID()
@@ -1048,8 +1053,18 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    func handleAppTermination() {
-        disconnect()
+    func handleAppTermination(completion: @escaping () -> Void) {
+        isTerminating = true
+        let provider = connectionProvider
+        let precedingOperation = connectionOperationTask
+        connectionOperationTask = Task { @MainActor [weak self] in
+            if let precedingOperation {
+                _ = await precedingOperation.result
+            }
+            try? await provider.disconnect()
+            self?.connectionStateTask?.cancel()
+            completion()
+        }
     }
 
     private func observeConnectionState() {
@@ -1112,7 +1127,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private func startConnection(using configuration: ConnectionConfiguration) {
-        guard connectionOperationID == nil else { return }
+        guard !isTerminating, connectionOperationID == nil else { return }
 
         let request = makeConnectionRequest(configuration: configuration)
         let provider = connectionProvider

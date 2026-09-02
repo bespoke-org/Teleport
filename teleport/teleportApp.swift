@@ -9,11 +9,18 @@ import AppKit
 import SwiftUI
 
 final class TeleportAppDelegate: NSObject, NSApplicationDelegate {
-    var cleanupHandler: (() -> Void)?
+    var cleanupHandler: ((@escaping () -> Void) -> Void)?
+    private var isTerminationPending = false
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        cleanupHandler?()
-        return .terminateNow
+        guard let cleanupHandler else { return .terminateNow }
+        guard !isTerminationPending else { return .terminateLater }
+
+        isTerminationPending = true
+        cleanupHandler {
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 }
 
@@ -25,8 +32,8 @@ struct TeleportApp: App {
     init() {
         let viewModel = AppViewModel()
         _viewModel = StateObject(wrappedValue: viewModel)
-        appDelegate.cleanupHandler = {
-            viewModel.handleAppTermination()
+        appDelegate.cleanupHandler = { completion in
+            viewModel.handleAppTermination(completion: completion)
         }
     }
 
