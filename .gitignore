@@ -3,3 +3,4 @@ build/
 *.xcodeproj/xcuserdata/
 *.xcworkspace/xcuserdata/
 .claude
+.worktrees/
