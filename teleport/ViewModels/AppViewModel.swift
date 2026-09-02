@@ -47,8 +47,7 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var healthChecksByConnectionID: [UUID: ConnectionHealthCheck] = [:]
     @Published private(set) var subscriptionSources: [SubscriptionSource]
     @Published private(set) var selectedConnectionID: UUID?
-    @Published private(set) var connectionPhase: ConnectionPhase = .unconfigured
-    @Published private(set) var proxyPhase: ProxyPhase = .disabled
+    @Published private(set) var connectionState: ConnectionState = .idle
     @Published private(set) var lastError: String?
     @Published private(set) var lastErrorDetails: String?
     @Published private(set) var proxyEndpoint: ProxyEndpoint
@@ -69,8 +68,8 @@ final class AppViewModel: ObservableObject {
 
     private let parser: ConnectionLinkParser
     private let store: ConfigurationStore
-    private let connectionBackendFactory: ConnectionBackendFactory
-    private var connectionBackend: ConnectionBackend
+    private let connectionProviderFactory: ConnectionProviderFactory
+    private var connectionProvider: any ConnectionProvider
     private let subscriptionClient: SubscriptionClient
     private let healthProbeService: ConnectionHealthProbeService
     private let splitTunnelGeodataMatcher = SplitTunnelGeodataMatcher()
@@ -94,9 +93,14 @@ final class AppViewModel: ObservableObject {
         }
     )
     private var autoRefreshTimerCancellable: AnyCancellable?
+    private var connectionStateTask: Task<Void, Never>?
+    private var connectionOperationTask: Task<Void, Never>?
+    private var connectionOperationID: UUID?
+    private var hasObservedInitialConnectionState = false
     private var persistWorkItem: DispatchWorkItem?
     private var splitTunnelApplyWorkItem: DispatchWorkItem?
     private var pendingSplitTunnelLiveApply = false
+    private var pendingConnectionRequest: (operationID: UUID, request: ConnectionRequest)?
     private var appliedSplitTunnelRules: [SplitTunnelRule]?
     private var appliedSplitTunnelDefaultAction: SplitTunnelRuleAction?
     private var geodataUpdateTokens: [GeodataKind: UUID] = [:]
@@ -109,7 +113,7 @@ final class AppViewModel: ObservableObject {
         self.init(
             parser: ConnectionLinkParser(),
             store: ConfigurationStore(),
-            connectionBackendFactory: ConnectionBackendFactory(),
+            connectionProviderFactory: ConnectionProviderFactory(),
             subscriptionClient: SubscriptionClient(),
             healthProbeService: ConnectionHealthProbeService()
         )
@@ -118,13 +122,13 @@ final class AppViewModel: ObservableObject {
     init(
         parser: ConnectionLinkParser,
         store: ConfigurationStore,
-        connectionBackendFactory: ConnectionBackendFactory,
+        connectionProviderFactory: ConnectionProviderFactory,
         subscriptionClient: SubscriptionClient,
         healthProbeService: ConnectionHealthProbeService
     ) {
         self.parser = parser
         self.store = store
-        self.connectionBackendFactory = connectionBackendFactory
+        self.connectionProviderFactory = connectionProviderFactory
         self.subscriptionClient = subscriptionClient
         self.healthProbeService = healthProbeService
 
@@ -151,7 +155,7 @@ final class AppViewModel: ObservableObject {
         isSplitTunnelEnabled = snapshot.isSplitTunnelEnabled
         geodataSettings = snapshot.geodataSettings
         startsAtLogin = loginItemService.isEnabled
-        connectionBackend = connectionBackendFactory.makeBackend(for: snapshot.connectionMode)
+        connectionProvider = connectionProviderFactory.makeProvider(for: snapshot.connectionMode)
         proxyEndpoint = snapshot.proxyEndpoint
         subscriptionSources = snapshot.subscriptionSources
 
@@ -175,13 +179,11 @@ final class AppViewModel: ObservableObject {
         rebuildSavedConnectionIndexes()
         rebuildSubscriptionSourceIndexes()
         normalizeSelection()
-        connectionPhase = savedConnections.isEmpty ? .unconfigured : .stopped
         prepareSplitTunnelGeodataMatcher()
-        detectActiveRuntimeSessionFromPreviousRunIfNeeded()
+        observeConnectionState()
         startAutoRefreshTimer()
         updateMenuBarAnimation()
         scheduleInitialHealthRefresh()
-        restoreProxyStateFromPreviousSessionIfNeeded()
         refreshUnfetchedSubscriptionsIfNeeded()
     }
 
@@ -202,31 +204,42 @@ final class AppViewModel: ObservableObject {
         connectionPickerItems.filter { $0.sourceID == nil }
     }
 
+    private var connectionPresentation: ConnectionPresentation {
+        ConnectionPresentation(state: connectionState, hasConfiguration: selectedConfiguration != nil)
+    }
+
+    var connectionPhase: ConnectionPhase {
+        connectionPresentation.connectionPhase
+    }
+
+    var proxyPhase: ProxyPhase {
+        connectionPresentation.proxyPhase
+    }
+
     var canConnect: Bool {
-        selectedConfiguration != nil && connectionPhase != .starting && connectionPhase != .running && proxyPhase != .enabling && proxyPhase != .enabled
+        hasObservedInitialConnectionState
+            && selectedConfiguration != nil
+            && connectionOperationID == nil
+            && connectionPresentation.canConnect
     }
 
     var canDisconnect: Bool {
-        connectionPhase == .running || connectionPhase == .starting || proxyPhase == .enabled || proxyPhase == .enabling || connectionPhase == .failed || proxyPhase == .failed
+        hasObservedInitialConnectionState
+            && (connectionOperationID != nil || connectionPresentation.canDisconnect)
     }
 
     var canChangeSelection: Bool {
-        !(connectionPhase == .starting || connectionPhase == .stopping || proxyPhase == .enabling || proxyPhase == .disabling)
+        hasObservedInitialConnectionState
+            && connectionOperationID == nil
+            && connectionPresentation.canChangeSelection
     }
 
     var hasActiveConnectionSession: Bool {
-        connectionPhase == .running
-            || connectionPhase == .starting
-            || connectionPhase == .stopping
-            || connectionPhase == .failed
-            || proxyPhase == .enabled
-            || proxyPhase == .enabling
-            || proxyPhase == .disabling
-            || proxyPhase == .failed
+        connectionOperationID != nil || connectionPresentation.hasActiveConnectionSession
     }
 
     var isConnected: Bool {
-        connectionPhase == .running && proxyPhase == .enabled
+        connectionPresentation.isConnected
     }
 
     var selectedSplitTunnelProfile: SplitTunnelProfile? {
@@ -452,7 +465,6 @@ final class AppViewModel: ObservableObject {
         } else {
             normalizeSelection()
         }
-        updateIdleConnectionPhaseIfNeeded()
 
         setStoredError(nil)
         persistSettingError()
@@ -478,7 +490,6 @@ final class AppViewModel: ObservableObject {
         let removedIDs = Set(affectedConnections.map(\.id))
         cancelHealthProbes(ids: removedIDs)
         normalizeSelection()
-        updateIdleConnectionPhaseIfNeeded()
         setStoredError(nil)
         persistSettingError()
     }
@@ -495,9 +506,6 @@ final class AppViewModel: ObservableObject {
         }
 
         selectedConnectionID = id
-        if selectedConfiguration != nil, connectionPhase == .unconfigured {
-            connectionPhase = .stopped
-        }
         setStoredError(nil)
         persistSettingError()
         enqueueHealthProbes(for: [id], force: false, priority: true)
@@ -556,7 +564,6 @@ final class AppViewModel: ObservableObject {
                 if selectionBelongsToUpdatedSource {
                     normalizeSelection()
                 }
-                updateIdleConnectionPhaseIfNeeded()
             }
 
             setStoredError(nil)
@@ -581,17 +588,22 @@ final class AppViewModel: ObservableObject {
             return
         }
 
-        let previousBackend = connectionBackend
+        let previousProvider = connectionProvider
+        connectionStateTask?.cancel()
         connectionMode = mode
-        connectionBackend = connectionBackendFactory.makeBackend(for: mode)
-        proxyPhase = .disabled
-        connectionPhase = savedConnections.isEmpty ? .unconfigured : .stopped
+        connectionProvider = connectionProviderFactory.makeProvider(for: mode)
+        connectionState = .idle
+        hasObservedInitialConnectionState = false
+        pendingConnectionRequest = nil
+        appliedSplitTunnelRules = nil
+        appliedSplitTunnelDefaultAction = nil
+        observeConnectionState()
         setStoredError(nil)
         updateMenuBarAnimation()
         schedulePersist()
 
-        operationQueue.async {
-            previousBackend.teardown()
+        Task {
+            try? await previousProvider.disconnect()
         }
     }
 
@@ -779,6 +791,10 @@ final class AppViewModel: ObservableObject {
 
     private func applySplitTunnelRulesLiveIfNeeded() {
         guard connectionMode == .vpn, hasEstablishedConnection else { return }
+        guard connectionOperationID == nil else {
+            pendingSplitTunnelLiveApply = true
+            return
+        }
         pendingSplitTunnelLiveApply = false
         // Only reconnect when what Xray would actually see has changed. Editing a
         // disabled rule, or a no-op toggle, must not drop the tunnel; but a change
@@ -1004,7 +1020,6 @@ final class AppViewModel: ObservableObject {
 
     func connect() {
         guard let selectedConfiguration else {
-            connectionPhase = .unconfigured
             setStoredError("Add and select a connection first")
             return
         }
@@ -1013,144 +1028,131 @@ final class AppViewModel: ObservableObject {
     }
 
     func disconnect() {
-        stopConnectionForUserInitiatedDisconnect()
+        let provider = connectionProvider
+        let precedingOperation = connectionOperationTask
+        let operationID = UUID()
+        connectionOperationID = operationID
+        connectionOperationTask = Task { @MainActor [weak self] in
+            if let precedingOperation {
+                _ = await precedingOperation.result
+            }
+            do {
+                try await provider.disconnect()
+                self?.setStoredError(nil)
+            } catch {
+                if await provider.currentState().isTerminalFailure == false {
+                    self?.applyConnectionError(error)
+                }
+            }
+            self?.finishConnectionOperation(operationID)
+        }
     }
 
     func handleAppTermination() {
-        teardownConnection(resetError: true)
+        disconnect()
     }
 
-    private func detectActiveRuntimeSessionFromPreviousRunIfNeeded() {
-        guard connectionBackend.hasActiveRuntimeSession() else { return }
-        connectionPhase = .running
-        proxyPhase = .enabled
-    }
-
-    private func restoreProxyStateFromPreviousSessionIfNeeded() {
-        guard connectionBackend.hasRestorableState() else { return }
-
-        let connectionBackend = connectionBackend
-        operationQueue.async { [weak self] in
-            do {
-                try connectionBackend.restorePreviousState()
-
-                Task { @MainActor [weak self] in
-                    self?.proxyPhase = .disabled
-                    self?.setStoredError(nil)
-                    self?.updateMenuBarAnimation()
-                }
-            } catch {
-                Task { @MainActor [weak self] in
-                    self?.proxyPhase = .failed
-                    self?.applyConnectionError(error)
-                    self?.updateMenuBarAnimation()
-                }
+    private func observeConnectionState() {
+        connectionStateTask?.cancel()
+        let stateUpdates = connectionProvider.stateUpdates()
+        connectionStateTask = Task { @MainActor [weak self] in
+            for await state in stateUpdates {
+                guard !Task.isCancelled else { break }
+                self?.applyConnectionState(state)
             }
         }
     }
 
+    private func applyConnectionState(_ state: ConnectionState) {
+        let isInitialState = !hasObservedInitialConnectionState
+        hasObservedInitialConnectionState = true
+        connectionState = state
+
+        switch state {
+        case let .failed(failure):
+            lastError = failure.summary
+            lastErrorDetails = failure.details
+            pendingConnectionRequest = nil
+        case .connected:
+            if let pendingConnectionRequest {
+                appliedSplitTunnelRules = pendingConnectionRequest.request.splitTunnelPolicy.rules
+                appliedSplitTunnelDefaultAction = pendingConnectionRequest.request.splitTunnelPolicy.defaultAction
+                self.pendingConnectionRequest = nil
+                setStoredError(nil)
+            } else if appliedSplitTunnelRules == nil {
+                appliedSplitTunnelRules = activeSplitTunnelRules
+                appliedSplitTunnelDefaultAction = activeSplitTunnelDefaultAction
+                if !isInitialState {
+                    setStoredError(nil)
+                }
+            }
+            applyDeferredSplitTunnelRulesLiveIfNeeded()
+        case .idle:
+            pendingConnectionRequest = nil
+            appliedSplitTunnelRules = nil
+            appliedSplitTunnelDefaultAction = nil
+            pendingSplitTunnelLiveApply = false
+        case .preparing, .awaitingUserApproval, .connecting, .disconnecting:
+            break
+        }
+        updateMenuBarAnimation()
+    }
+
     private var hasEstablishedConnection: Bool {
-        connectionPhase == .running || proxyPhase == .enabled
+        if case .connected = connectionState { return true }
+        return false
     }
 
     private func reconnectToSelectedConnection() {
         guard let selectedConfiguration else {
-            connectionPhase = .unconfigured
             setStoredError("Add and select a connection first")
             return
         }
+        startConnection(using: selectedConfiguration)
+    }
 
-        let proxyEndpoint = proxyEndpoint
-        let connectionBackend = connectionBackend
-        let shouldDisableProxy = shouldManageSystemProxy
-        let activeSplitTunnelRules = activeSplitTunnelRules
-        let activeSplitTunnelDefaultAction = activeSplitTunnelDefaultAction
+    private func startConnection(using configuration: ConnectionConfiguration) {
+        guard connectionOperationID == nil else { return }
 
-        connectionPhase = .stopping
-        proxyPhase = .disabling
+        let request = makeConnectionRequest(configuration: configuration)
+        let provider = connectionProvider
+        let operationID = UUID()
+        connectionOperationID = operationID
+        pendingConnectionRequest = (operationID, request)
         setStoredError(nil)
-        updateMenuBarAnimation()
 
-        operationQueue.async { [weak self] in
+        connectionOperationTask = Task { @MainActor [weak self] in
             do {
-                Task { @MainActor [weak self] in
-                    self?.connectionPhase = .starting
-                    self?.proxyPhase = .enabling
-                    self?.updateMenuBarAnimation()
-                }
-
-                try connectionBackend.reconnect(
-                    configuration: selectedConfiguration,
-                    endpoint: proxyEndpoint,
-                    shouldDisableExistingProxy: shouldDisableProxy,
-                    splitTunnelRules: activeSplitTunnelRules,
-                    splitTunnelDefaultAction: activeSplitTunnelDefaultAction
-                )
-
-                Task { @MainActor [weak self] in
-                    // Write the applied-rules cache on the main actor: it is read
-                    // there by applySplitTunnelRulesLiveIfNeeded, so mutating it
-                    // from this background queue would be a data race.
-                    self?.appliedSplitTunnelRules = activeSplitTunnelRules
-                    self?.appliedSplitTunnelDefaultAction = activeSplitTunnelDefaultAction
-                    self?.connectionPhase = .running
-                    self?.proxyPhase = .enabled
-                    self?.setStoredError(nil)
-                    self?.updateMenuBarAnimation()
-                    self?.applyDeferredSplitTunnelRulesLiveIfNeeded()
-                }
+                try await provider.connect(request)
+                self?.finishConnectionOperation(operationID, discardPendingRequest: false)
+                self?.applyDeferredSplitTunnelRulesLiveIfNeeded()
             } catch {
-                Task { @MainActor [weak self] in
-                    self?.connectionPhase = .failed
-                    self?.proxyPhase = .failed
+                if await provider.currentState().isTerminalFailure == false {
                     self?.applyConnectionError(error)
-                    self?.updateMenuBarAnimation()
                 }
+                self?.finishConnectionOperation(operationID, discardPendingRequest: true)
             }
         }
     }
 
-    private func startConnection(using configuration: ConnectionConfiguration) {
-        let proxyEndpoint = proxyEndpoint
-        let connectionBackend = connectionBackend
-        let activeSplitTunnelRules = activeSplitTunnelRules
-        let activeSplitTunnelDefaultAction = activeSplitTunnelDefaultAction
-
-        connectionPhase = .starting
-        proxyPhase = .enabling
-        setStoredError(nil)
-        updateMenuBarAnimation()
-
-        operationQueue.async { [weak self] in
-            do {
-                try connectionBackend.start(
-                    configuration: configuration,
-                    endpoint: proxyEndpoint,
-                    splitTunnelRules: activeSplitTunnelRules,
-                    splitTunnelDefaultAction: activeSplitTunnelDefaultAction
-                )
-
-                Task { @MainActor [weak self] in
-                    // Write the applied-rules cache on the main actor: it is read
-                    // there by applySplitTunnelRulesLiveIfNeeded, so mutating it
-                    // from this background queue would be a data race.
-                    self?.appliedSplitTunnelRules = activeSplitTunnelRules
-                    self?.appliedSplitTunnelDefaultAction = activeSplitTunnelDefaultAction
-                    self?.connectionPhase = .running
-                    self?.proxyPhase = .enabled
-                    self?.setStoredError(nil)
-                    self?.updateMenuBarAnimation()
-                    self?.applyDeferredSplitTunnelRulesLiveIfNeeded()
-                }
-            } catch {
-                Task { @MainActor [weak self] in
-                    self?.connectionPhase = .failed
-                    self?.proxyPhase = .failed
-                    self?.applyConnectionError(error)
-                    self?.updateMenuBarAnimation()
-                }
-            }
+    private func finishConnectionOperation(_ operationID: UUID, discardPendingRequest: Bool = false) {
+        if discardPendingRequest, pendingConnectionRequest?.operationID == operationID {
+            pendingConnectionRequest = nil
         }
+        if connectionOperationID == operationID {
+            connectionOperationID = nil
+        }
+    }
+
+    private func makeConnectionRequest(configuration: ConnectionConfiguration) -> ConnectionRequest {
+        ConnectionRequest(
+            configuration: configuration,
+            localProxy: proxyEndpoint,
+            splitTunnelPolicy: SplitTunnelPolicy(
+                rules: activeSplitTunnelRules,
+                defaultAction: activeSplitTunnelDefaultAction
+            )
+        )
     }
 
     private func setStoredError(_ message: String?) {
@@ -1170,39 +1172,6 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private var shouldManageSystemProxy: Bool {
-        proxyPhase == .enabled || proxyPhase == .enabling || proxyPhase == .failed || proxyPhase == .disabling
-    }
-
-    private func stopConnectionForUserInitiatedDisconnect() {
-        let shouldDisableProxy = shouldManageSystemProxy
-        let hasSavedConfiguration = selectedConfiguration != nil
-        let connectionBackend = connectionBackend
-
-        connectionPhase = .stopping
-        proxyPhase = .disabling
-        updateMenuBarAnimation()
-
-        operationQueue.async { [weak self] in
-            do {
-                try connectionBackend.stop(shouldDisableProxy: shouldDisableProxy)
-                Task { @MainActor [weak self] in
-                    self?.connectionPhase = hasSavedConfiguration ? .stopped : .unconfigured
-                    self?.proxyPhase = .disabled
-                    self?.setStoredError(nil)
-                    self?.updateMenuBarAnimation()
-                }
-            } catch {
-                Task { @MainActor [weak self] in
-                    self?.connectionPhase = hasSavedConfiguration ? .stopped : .unconfigured
-                    self?.proxyPhase = .failed
-                    self?.applyConnectionError(error)
-                    self?.updateMenuBarAnimation()
-                }
-            }
-        }
-    }
-
     private func addManualConnection(from rawLink: String) -> Bool {
         do {
             let configuration = try parser.parse(rawLink)
@@ -1213,7 +1182,6 @@ final class AppViewModel: ObservableObject {
             if shouldSelectNewConnection {
                 selectedConnectionID = savedConnection.id
             }
-            updateIdleConnectionPhaseIfNeeded()
             setStoredError(nil)
             updateMenuBarAnimation()
             try persist()
@@ -1221,9 +1189,6 @@ final class AppViewModel: ObservableObject {
             return true
         } catch {
             setStoredError(error.localizedDescription)
-            if savedConnections.isEmpty {
-                connectionPhase = .unconfigured
-            }
             return false
         }
     }
@@ -1254,9 +1219,6 @@ final class AppViewModel: ObservableObject {
             return true
         } catch {
             setStoredError(error.localizedDescription)
-            if savedConnections.isEmpty {
-                connectionPhase = .unconfigured
-            }
             return false
         }
     }
@@ -1385,7 +1347,6 @@ final class AppViewModel: ObservableObject {
 
         refreshingSubscriptionIDs.remove(sourceID)
         setStoredError(nil)
-        updateIdleConnectionPhaseIfNeeded()
         updateMenuBarAnimation()
         persistSettingError()
         refreshSubscriptionHealth(id: sourceID, force: true)
@@ -1589,21 +1550,6 @@ final class AppViewModel: ObservableObject {
         }
 
         selectedConnectionID = savedConnections.first?.id
-    }
-
-    private func updateIdleConnectionPhaseIfNeeded() {
-        guard !hasActiveConnectionSession else { return }
-        connectionPhase = savedConnections.isEmpty ? .unconfigured : .stopped
-    }
-
-    private func teardownConnection(resetError: Bool) {
-        connectionBackend.teardown()
-        connectionPhase = selectedConfiguration == nil ? .unconfigured : .stopped
-        proxyPhase = .disabled
-        if resetError {
-            setStoredError(nil)
-        }
-        updateMenuBarAnimation()
     }
 
     private func updateMenuBarAnimation() {

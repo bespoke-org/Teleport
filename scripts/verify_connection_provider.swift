@@ -9,7 +9,31 @@ struct VerifyConnectionProvider {
         try await testProviderPublishesStartAndStopFailures()
         try await testProviderRejectsConcurrentOperation()
         testFactorySelectsProviderByMode()
+        try testAppViewModelUsesProviderBoundary()
         print("verify_connection_provider: all checks passed")
+    }
+
+    private static func testAppViewModelUsesProviderBoundary() throws {
+        let source = try String(contentsOfFile: "teleport/ViewModels/AppViewModel.swift", encoding: .utf8)
+        precondition(!source.contains("ConnectionBackend"), "AppViewModel must not depend on ConnectionBackend")
+        precondition(!source.contains("connectionBackend"), "AppViewModel must not store a backend")
+        precondition(source.contains("ConnectionProviderFactory"), "AppViewModel must depend on ConnectionProviderFactory")
+        precondition(source.contains("connectionProvider.stateUpdates()"), "AppViewModel must observe provider state updates")
+        precondition(source.contains("@Published private(set) var connectionState"), "AppViewModel must publish one connection state")
+        precondition(source.contains("guard connectionOperationID == nil else { return }"), "AppViewModel must synchronously reject duplicate connect submissions")
+        precondition(source.contains("let isInitialState = !hasObservedInitialConnectionState"), "AppViewModel must distinguish the initial provider snapshot")
+        precondition(source.contains("if !isInitialState"), "the initial provider snapshot must preserve load diagnostics")
+
+        let idleHandler = try sourceSlice(source, from: "        case .idle:", to: "        case .preparing")
+        precondition(!idleHandler.contains("setStoredError(nil)"), "automatic idle transitions must preserve unrelated diagnostics")
+    }
+
+    private static func sourceSlice(_ source: String, from start: String, to end: String) throws -> Substring {
+        guard let startRange = source.range(of: start),
+              let endRange = source.range(of: end, range: startRange.upperBound ..< source.endIndex) else {
+            throw VerificationError.missingSourceMarkers
+        }
+        return source[startRange.upperBound ..< endRange.lowerBound]
     }
 
     private static func testFactorySelectsProviderByMode() {
@@ -192,12 +216,16 @@ struct VerifyConnectionProvider {
             ConnectionPresentation(state: .disconnecting, hasConfiguration: true)
                 == ConnectionPresentation(connectionPhase: .stopping, proxyPhase: .disabling)
         )
-        precondition(
-            ConnectionPresentation(
-                state: .failed(.init(summary: "failed", details: nil)),
-                hasConfiguration: true
-            ) == ConnectionPresentation(connectionPhase: .failed, proxyPhase: .failed)
+        let failedPresentation = ConnectionPresentation(
+            state: .failed(.init(summary: "failed", details: nil)),
+            hasConfiguration: true
         )
+        precondition(failedPresentation == ConnectionPresentation(connectionPhase: .failed, proxyPhase: .failed))
+        precondition(failedPresentation.canChangeSelection, "failed state must preserve selection changes")
+    }
+
+    private enum VerificationError: Error {
+        case missingSourceMarkers
     }
 
     private enum TestError: LocalizedError {

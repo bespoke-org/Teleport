@@ -10,6 +10,11 @@ nonisolated enum ConnectionState: Sendable, Equatable {
     case connected(ConnectionSession)
     case disconnecting
     case failed(ConnectionFailure)
+
+    var isTerminalFailure: Bool {
+        if case .failed = self { return true }
+        return false
+    }
 }
 
 /// UI-level identity for one connected interval. Until the helper protocol gains

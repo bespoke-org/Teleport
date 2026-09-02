@@ -51,10 +51,10 @@ struct ConnectionPresentation: Equatable {
 
     var canChangeSelection: Bool {
         switch connectionPhase {
-        case .starting, .running, .stopping, .failed:
+        case .starting, .running, .stopping:
             return false
-        case .unconfigured, .ready, .stopped:
-            return proxyPhase == .disabled
+        case .unconfigured, .ready, .stopped, .failed:
+            return proxyPhase == .disabled || proxyPhase == .failed
         }
     }
 

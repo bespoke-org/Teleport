@@ -17,6 +17,7 @@ do {
         requireFile("teleport/Connection/ConnectionProviderFactory.swift")
         requireFile("teleport/SystemProxy/SystemProxyConnectionProvider.swift")
         requireFile("teleport/VPN/RootXrayConnectionProvider.swift")
+        requireMissing("teleport/Connection/ConnectionBackendFactory.swift")
 
         requireFile("teleport/XrayCore/XrayConfigurationWriter.swift")
         requireFile("teleport/Geodata/GeodataUpdateService.swift")
