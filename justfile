@@ -148,7 +148,7 @@ package-open: package
 
 # Run all verification scripts after an Xcode build, so the privileged helper target
 # and app copy/sign phases are checked alongside the lightweight Swift scripts.
-verify: build-debug verify-core verify-subscription-support verify-connection-health verify-connection-provider verify-split-tunneling verify-geodata verify-persistence verify-xpc-protocol verify-helper-request-ledger verify-helper-command-dispatch verify-helper-xpc-endpoint verify-architecture-layout
+verify: build-debug verify-core verify-subscription-support verify-connection-health verify-connection-provider verify-split-tunneling verify-geodata verify-persistence verify-xpc-protocol verify-helper-request-ledger verify-helper-command-dispatch verify-helper-xpc-endpoint verify-xpc-transport verify-architecture-layout
 
 # Run core parser/config verification
 verify-core:
@@ -204,6 +204,11 @@ verify-helper-command-dispatch:
 verify-helper-xpc-endpoint:
     swiftc Shared/*.swift TeleportPrivilegedHelper/IPC/HelperRequestLedger.swift TeleportPrivilegedHelper/IPC/HelperCommandExecuting.swift TeleportPrivilegedHelper/IPC/HelperCommandDispatcher.swift TeleportPrivilegedHelper/IPC/HelperXPCService.swift scripts/verify_helper_xpc_endpoint.swift -o /tmp/teleport-verify-helper-xpc-endpoint
     /tmp/teleport-verify-helper-xpc-endpoint
+
+# Verify app-side XPC connection ownership and transport races
+verify-xpc-transport:
+    swiftc Shared/*.swift teleport/VPN/VPNHelperTransport.swift teleport/VPN/XPCVPNHelperTransport.swift scripts/verify_xpc_transport.swift -o /tmp/teleport-verify-xpc-transport
+    /tmp/teleport-verify-xpc-transport
 
 # Guard the Phase 1 Xray and privileged-helper source boundaries
 verify-architecture-layout:

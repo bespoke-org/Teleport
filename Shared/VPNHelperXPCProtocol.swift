@@ -1,6 +1,6 @@
 import Foundation
 
-@objc protocol VPNHelperXPCProtocol {
+@objc nonisolated protocol VPNHelperXPCProtocol {
     func getStatus(_ request: Data, withReply reply: @escaping (Data?, NSError?) -> Void)
     func startSession(_ request: Data, withReply reply: @escaping (Data?, NSError?) -> Void)
     func stopSession(_ request: Data, withReply reply: @escaping (Data?, NSError?) -> Void)
