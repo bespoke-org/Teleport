@@ -62,6 +62,14 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
         )
     }
 
+    /// Transitional socket-only PID projection retained until the app client moves to XPC.
+    /// The typed protocol intentionally keeps PID evidence inside the helper boundary.
+    func legacySocketProcessIdentifier() -> pid_t? {
+        managedProcess.validatedManagedXrayPID(
+            helperStateDirectoryPath: helperStateDirectoryPath
+        )
+    }
+
     func stop(request: StopSessionRequest, sessionID: UUID) throws -> StopSessionResponse {
         let stateDirectoryPath = try validatedStateDirectoryPath(request.stateDirectoryPath)
         let protectedHost = try validatedProtectedHost(request.protectedHost, required: false)

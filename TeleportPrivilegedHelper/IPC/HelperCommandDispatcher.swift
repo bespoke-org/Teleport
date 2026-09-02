@@ -48,6 +48,21 @@ actor HelperCommandDispatcher {
             )
         }
 
+        do {
+            try Self.validateRequestShape(command: command, requestData: requestData)
+        } catch let protocolFailure as VPNHelperProtocolFailure {
+            return failureResponse(command: command, metadata: metadata, failure: protocolFailure)
+        } catch {
+            return failureResponse(
+                command: command,
+                metadata: metadata,
+                failure: failure(
+                    code: .malformedPayload,
+                    summary: "The privileged-helper request shape is invalid"
+                )
+            )
+        }
+
         let fingerprint = HelperRequestFingerprint(command: command, payload: requestData)
         switch ledger.lookup(requestID: metadata.requestID, fingerprint: fingerprint) {
         case let .completed(responseData):
@@ -176,13 +191,6 @@ actor HelperCommandDispatcher {
                     failure: nil
                 )
                 return try VPNHelperCodec.encodeResponse(response)
-            } catch let protocolFailure as VPNHelperProtocolFailure {
-                return Self.encodeFailure(
-                    requestID: requestID,
-                    sessionID: sessionID,
-                    payloadType: Response.self,
-                    failure: protocolFailure
-                )
             } catch {
                 return Self.encodeFailure(
                     requestID: requestID,
@@ -190,7 +198,7 @@ actor HelperCommandDispatcher {
                     payloadType: Response.self,
                     failure: Self.failure(
                         code: .commandFailed,
-                        summary: Self.commandFailureSummary(error)
+                        summary: "The privileged helper command failed"
                     )
                 )
             }
@@ -254,10 +262,53 @@ actor HelperCommandDispatcher {
         return (try? JSONEncoder().encode(fallback)) ?? Data()
     }
 
-    private nonisolated static func commandFailureSummary(_ error: Error) -> String {
-        let source = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-        let summary = source.isEmpty ? "The privileged helper command failed" : source
-        return String(summary.prefix(1_024))
+    private nonisolated static func validateRequestShape(
+        command: VPNHelperCommand,
+        requestData: Data
+    ) throws {
+        guard let object = try JSONSerialization.jsonObject(with: requestData) as? [String: Any],
+              let payload = object["payload"] as? [String: Any] else {
+            throw failure(
+                code: .malformedPayload,
+                summary: "The privileged-helper request shape is invalid"
+            )
+        }
+
+        let topLevelKeys = Set(object.keys)
+        let requiredTopLevelKeys: Set<String> = ["revision", "requestID", "payload"]
+        let allowedTopLevelKeys = requiredTopLevelKeys.union(["sessionID"])
+        guard requiredTopLevelKeys.isSubset(of: topLevelKeys),
+              topLevelKeys.isSubset(of: allowedTopLevelKeys) else {
+            throw failure(
+                code: .malformedPayload,
+                summary: "The privileged-helper request contains unexpected envelope fields"
+            )
+        }
+
+        let allowedPayloadKeys: Set<String>
+        switch command {
+        case .status:
+            allowedPayloadKeys = []
+        case .startSession:
+            allowedPayloadKeys = [
+                "stateDirectoryPath",
+                "configData",
+                "protectedHost",
+                "tunnelInterfaceName",
+                "outboundInterface"
+            ]
+        case .stopSession:
+            allowedPayloadKeys = ["stateDirectoryPath", "protectedHost", "outboundInterface"]
+        case .readDiagnostics:
+            allowedPayloadKeys = ["log", "maximumBytes"]
+        }
+
+        guard Set(payload.keys).isSubset(of: allowedPayloadKeys) else {
+            throw failure(
+                code: .malformedPayload,
+                summary: "The privileged-helper request payload does not match the selected command"
+            )
+        }
     }
 
     private nonisolated static func failure(

@@ -1,5 +1,30 @@
 import Foundation
 
+private struct SecretFailure: LocalizedError, Sendable {
+    let secret: String
+    var errorDescription: String? { "Shell failed with root output: \(secret)" }
+}
+
+private struct SecretFailingExecutor: HelperCommandExecuting, Sendable {
+    let secret: String
+
+    func status(request: StatusRequest) throws -> StatusResponse {
+        throw SecretFailure(secret: secret)
+    }
+
+    func start(request: StartSessionRequest, sessionID: UUID) throws -> StartSessionResponse {
+        throw SecretFailure(secret: secret)
+    }
+
+    func stop(request: StopSessionRequest, sessionID: UUID) throws -> StopSessionResponse {
+        throw SecretFailure(secret: secret)
+    }
+
+    func readDiagnostics(request: ReadDiagnosticsRequest) throws -> DiagnosticsResponse {
+        throw SecretFailure(secret: secret)
+    }
+}
+
 private final class RecordingExecutor: HelperCommandExecuting, @unchecked Sendable {
     private let lock = NSLock()
     private var recordedCommands: [VPNHelperCommand] = []
@@ -53,7 +78,10 @@ private enum VerifyHelperCommandDispatch {
     static func main() async throws {
         try await verifyMatchingCommandsDispatchOnlyTheirExecutorMethod()
         try await verifyMalformedOversizedAndMismatchedRequestsNeverExecute()
+        try await verifyEveryMismatchedPayloadIsRejected()
         try await verifyRevisionMismatchIsStructured()
+        try await verifyCommandFailureDoesNotExposeSecrets()
+        try verifyLegacySocketAdapterPreservesValidatedPID()
         try await verifyCompletedDuplicateReturnsExactBytesOnce()
         try await verifyInProgressDuplicateIsDeterministic()
         try await verifyChangedDuplicateConflicts()
@@ -132,6 +160,27 @@ private enum VerifyHelperCommandDispatch {
         precondition(executor.commands.isEmpty)
     }
 
+    private static func verifyEveryMismatchedPayloadIsRejected() async throws {
+        let executor = RecordingExecutor()
+        let dispatcher = HelperCommandDispatcher(executor: executor)
+        let sessionID = UUID()
+        let requests: [(VPNHelperCommand, Data)] = [
+            (.status, try makeStatusData(requestID: UUID())),
+            (.startSession, try makeStartData(requestID: UUID(), sessionID: sessionID, protectedHost: "example.com")),
+            (.stopSession, try makeStopData(requestID: UUID(), sessionID: sessionID)),
+            (.readDiagnostics, try makeDiagnosticsData(requestID: UUID()))
+        ]
+
+        for (payloadCommand, requestData) in requests {
+            for dispatchedCommand in [VPNHelperCommand.status, .startSession, .stopSession, .readDiagnostics]
+            where dispatchedCommand != payloadCommand {
+                let response = await dispatcher.dispatch(command: dispatchedCommand, requestData: requestData)
+                try assertMalformedFailure(response, command: dispatchedCommand)
+            }
+        }
+        precondition(executor.commands.isEmpty)
+    }
+
     private static func verifyRevisionMismatchIsStructured() async throws {
         let executor = RecordingExecutor()
         let dispatcher = HelperCommandDispatcher(executor: executor)
@@ -145,6 +194,36 @@ private enum VerifyHelperCommandDispatch {
         let response = await dispatcher.dispatch(command: .status, requestData: rawData)
         try assertFailure(response, as: StatusResponse.self, code: .incompatibleService)
         precondition(executor.commands.isEmpty)
+    }
+
+    private static func verifyCommandFailureDoesNotExposeSecrets() async throws {
+        let secret = "SENTINEL_ROOT_LOG_SECRET"
+        let dispatcher = HelperCommandDispatcher(executor: SecretFailingExecutor(secret: secret))
+        let responseData = await dispatcher.dispatch(
+            command: .status,
+            requestData: try makeStatusData(requestID: UUID())
+        )
+        let response: VPNHelperResponseEnvelope<StatusResponse> = try VPNHelperCodec.decodeResponse(responseData)
+        precondition(response.failure?.code == .commandFailed)
+        precondition(response.failure?.summary == "The privileged helper command failed")
+        precondition(response.failure?.details == nil)
+        precondition(!String(decoding: responseData, as: UTF8.self).contains(secret))
+
+        let shellRunnerSource = try String(contentsOfFile: "TeleportPrivilegedHelper/Support/HelperShellRunner.swift", encoding: .utf8)
+        precondition(shellRunnerSource.contains("throw HelperError(\"Privileged helper shell command failed\")"))
+        precondition(!shellRunnerSource.contains("throw HelperError([stderr.text(), stdout.text()]"))
+    }
+
+    private static func verifyLegacySocketAdapterPreservesValidatedPID() throws {
+        let controllerSource = try String(contentsOfFile: "TeleportPrivilegedHelper/Session/XrayTunController.swift", encoding: .utf8)
+        let processSource = try String(contentsOfFile: "TeleportPrivilegedHelper/Xray/ManagedXrayProcess.swift", encoding: .utf8)
+        let serverSource = try String(contentsOfFile: "TeleportPrivilegedHelper/IPC/HelperServer.swift", encoding: .utf8)
+
+        precondition(controllerSource.contains("legacySocketProcessIdentifier"))
+        precondition(processSource.contains("validatedManagedXrayPID"))
+        precondition(processSource.contains("isInstalledXrayProcess(pid: pid)"))
+        precondition(serverSource.contains("let pid = controller.legacySocketProcessIdentifier()"))
+        precondition(serverSource.contains("details: pid.map(String.init)"))
     }
 
     private static func verifyCompletedDuplicateReturnsExactBytesOnce() async throws {
@@ -190,6 +269,15 @@ private enum VerifyHelperCommandDispatch {
         precondition(executor.commands == [.startSession])
     }
 
+    private static func makeStatusData(requestID: UUID) throws -> Data {
+        try VPNHelperCodec.encodeRequest(VPNHelperRequestEnvelope(
+            revision: VPNHelperProtocol.revision,
+            requestID: requestID,
+            sessionID: nil,
+            payload: StatusRequest()
+        ))
+    }
+
     private static func makeStartData(requestID: UUID, sessionID: UUID, protectedHost: String) throws -> Data {
         try VPNHelperCodec.encodeRequest(VPNHelperRequestEnvelope(
             revision: VPNHelperProtocol.revision,
@@ -203,6 +291,41 @@ private enum VerifyHelperCommandDispatch {
                 outboundInterface: "en0"
             )
         ))
+    }
+
+    private static func makeStopData(requestID: UUID, sessionID: UUID) throws -> Data {
+        try VPNHelperCodec.encodeRequest(VPNHelperRequestEnvelope(
+            revision: VPNHelperProtocol.revision,
+            requestID: requestID,
+            sessionID: sessionID,
+            payload: StopSessionRequest(
+                stateDirectoryPath: "/Users/test/Library/Application Support/teleport",
+                protectedHost: "example.com",
+                outboundInterface: "en0"
+            )
+        ))
+    }
+
+    private static func makeDiagnosticsData(requestID: UUID) throws -> Data {
+        try VPNHelperCodec.encodeRequest(VPNHelperRequestEnvelope(
+            revision: VPNHelperProtocol.revision,
+            requestID: requestID,
+            sessionID: nil,
+            payload: ReadDiagnosticsRequest(log: .control, maximumBytes: 1_024)
+        ))
+    }
+
+    private static func assertMalformedFailure(_ data: Data, command: VPNHelperCommand) throws {
+        switch command {
+        case .status:
+            try assertFailure(data, as: StatusResponse.self, code: .malformedPayload)
+        case .startSession:
+            try assertFailure(data, as: StartSessionResponse.self, code: .malformedPayload)
+        case .stopSession:
+            try assertFailure(data, as: StopSessionResponse.self, code: .malformedPayload)
+        case .readDiagnostics:
+            try assertFailure(data, as: DiagnosticsResponse.self, code: .malformedPayload)
+        }
     }
 
     private static func assertFailure<Payload>(

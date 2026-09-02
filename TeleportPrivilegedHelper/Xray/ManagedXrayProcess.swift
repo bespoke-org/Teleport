@@ -5,11 +5,16 @@ struct ManagedXrayProcess: Sendable {
     let installedXrayPath: String
 
     func isManagedXrayRunning(helperStateDirectoryPath: String) -> Bool {
+        validatedManagedXrayPID(helperStateDirectoryPath: helperStateDirectoryPath) != nil
+    }
+
+    func validatedManagedXrayPID(helperStateDirectoryPath: String) -> pid_t? {
         let pidFilePath = helperStateDirectoryPath + "/xray-tun.pid"
-        guard let pid = managedXrayPID(pidFilePath: pidFilePath, expectedOwner: 0) else {
-            return false
+        guard let pid = managedXrayPID(pidFilePath: pidFilePath, expectedOwner: 0),
+              isInstalledXrayProcess(pid: pid) else {
+            return nil
         }
-        return isInstalledXrayProcess(pid: pid)
+        return pid
     }
 
     func terminateManagedXray(helperStateDirectoryPath: String) throws {

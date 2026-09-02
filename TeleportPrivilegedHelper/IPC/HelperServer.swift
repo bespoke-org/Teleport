@@ -114,7 +114,8 @@ final class HelperServer {
                       let tunnelInterfaceName = request.tunnelInterfaceName else {
                     throw HelperError("Missing privileged start request field")
                 }
-                let response = try XrayTunController().start(
+                let controller = XrayTunController()
+                let response = try controller.start(
                     request: StartSessionRequest(
                         stateDirectoryPath: stateDirectoryPath,
                         configData: configData,
@@ -124,7 +125,11 @@ final class HelperServer {
                     ),
                     sessionID: UUID()
                 )
-                return HelperResponse(success: true, version: helperVersion, summary: response.summary, details: response.details)
+                let pid = controller.legacySocketProcessIdentifier()
+                guard pid != nil else {
+                    throw HelperError("Started Xray process could not be validated")
+                }
+                return HelperResponse(success: true, version: helperVersion, summary: response.summary, details: pid.map(String.init))
             case "stop":
                 guard let stateDirectoryPath = request.stateDirectoryPath else {
                     throw HelperError("Missing stateDirectoryPath")

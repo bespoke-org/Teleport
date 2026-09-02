@@ -28,7 +28,9 @@ struct HelperShellRunner: Sendable {
         stopDraining(errorPipe, into: stderr)
 
         guard process.terminationStatus == 0 else {
-            throw HelperError([stderr.text(), stdout.text()].filter { !$0.isEmpty }.joined(separator: "\n"))
+            // Captured output can contain root logs or configuration details. Keep it
+            // inside the helper process and expose logs only through bounded diagnostics.
+            throw HelperError("Privileged helper shell command failed")
         }
     }
 
