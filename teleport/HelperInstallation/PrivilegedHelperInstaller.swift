@@ -1,15 +1,24 @@
 import Foundation
 
+/// Installs the helper, Xray binary, geodata, and LaunchDaemon into root-owned
+/// locations. This path runs only when installed content differs or the helper is
+/// unavailable; ordinary VPN lifecycle commands use `PrivilegedHelperClient`.
 struct PrivilegedHelperInstaller: Sendable {
-    private static let codeSigningRequirement = "identifier \"dev.x.teleport\" and anchor apple generic and certificate leaf[subject.OU] = \"ZTB359LSTB\""
-    private static let bundledXraySHA256 = "650e6edf792ce808554e94f891db5271c77a7c2e80188beaafbf24883b3b84a0"
-
     private let bundle: Bundle
     private let shellRunner: PrivilegedShellRunner
+    private let artifactPolicy: BundledArtifactPolicy
+    private let artifactVerifier: BundledArtifactVerifier
 
-    init(bundle: Bundle = .main, shellRunner: PrivilegedShellRunner = PrivilegedShellRunner()) {
+    init(
+        bundle: Bundle = .main,
+        shellRunner: PrivilegedShellRunner = PrivilegedShellRunner(),
+        artifactPolicy: BundledArtifactPolicy = .current,
+        artifactVerifier: BundledArtifactVerifier? = nil
+    ) {
         self.bundle = bundle
         self.shellRunner = shellRunner
+        self.artifactPolicy = artifactPolicy
+        self.artifactVerifier = artifactVerifier ?? BundledArtifactVerifier(policy: artifactPolicy)
     }
 
     func ensureInstalled(runtimeURL: URL) throws {
@@ -72,53 +81,16 @@ struct PrivilegedHelperInstaller: Sendable {
         }
     }
 
+    // TODO(gpt-5.6-sol): Local `codesign --verify` and a pinned Xray hash do not
+    // establish Developer ID distribution trust or notarization. The release
+    // pipeline must sign every executable appropriately, submit the app/DMG to
+    // Apple's notary service, staple the ticket, and verify the final artifact.
     private func verifyBundleArtifacts(helperURL: URL, runtimeURL: URL) throws {
-        try verifyCodeSignature(at: bundle.bundleURL)
-        try verifyCodeSignature(at: helperURL)
-        try verifyXrayHash(runtimeURL)
-    }
-
-    private func verifyCodeSignature(at url: URL) throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
-        process.arguments = [
-            "--verify",
-            "--strict",
-            "--requirement", Self.codeSigningRequirement,
-            url.path
-        ]
-        let errorPipe = Pipe()
-        process.standardOutput = Pipe()
-        process.standardError = errorPipe
-        try process.run()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            let stderr = String(decoding: errorPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            throw PrivilegedHelperInstallerError.installFailed(stderr.isEmpty ? "Teleport bundle signature verification failed." : stderr)
-        }
-    }
-
-    private func verifyXrayHash(_ runtimeURL: URL) throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/shasum")
-        process.arguments = ["-a", "256", runtimeURL.path]
-        let outputPipe = Pipe()
-        let errorPipe = Pipe()
-        process.standardOutput = outputPipe
-        process.standardError = errorPipe
-        try process.run()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            let stderr = String(decoding: errorPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            throw PrivilegedHelperInstallerError.installFailed(stderr.isEmpty ? "Could not verify bundled Xray runtime." : stderr)
-        }
-        let output = String(decoding: outputPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        let digest = output.split(whereSeparator: { $0.isWhitespace }).first.map(String.init) ?? ""
-        guard digest.caseInsensitiveCompare(Self.bundledXraySHA256) == .orderedSame else {
-            throw PrivilegedHelperInstallerError.installFailed("Bundled Xray runtime hash verification failed.")
-        }
+        try artifactVerifier.verify(
+            appBundleURL: bundle.bundleURL,
+            helperURL: helperURL,
+            runtimeURL: runtimeURL
+        )
     }
 
     private func bundledHelperURL() -> URL? {
@@ -157,6 +129,19 @@ struct PrivilegedHelperInstaller: Sendable {
         """
     }
 
+    /// Generates the complete administrator shell transaction. Values are quoted
+    /// before interpolation, and helper/Xray copies are reverified after staging.
+    // TODO(gpt-5.6-sol): Replace the AppleScript/manual `launchctl` installation
+    // path with `SMAppService` daemon registration once the distribution pipeline
+    // is notarized, and provide a matching unregister/uninstall operation.
+    // TODO(gpt-5.6-sol): Make activation rollback-safe. A failure after `bootout`
+    // can currently leave a stopped daemon or a mixture of old and new helper,
+    // runtime, assets, and plist files because only the temporary directory is
+    // cleaned up.
+    // TODO(gpt-5.6-sol): `ASSET_SRC` is user-writable and is copied by root without
+    // root-side `lstat`/regular-file checks or content verification. Reject symlinks
+    // and revalidate each opened geodata file after privilege elevation to avoid
+    // path-swap attacks and unverified input crossing into the root Xray process.
     private func installScript(appBundleURL: URL, helperURL: URL, runtimeURL: URL, assetDirectoryURL: URL, plist: String) -> String {
         let q = PrivilegedShellRunner.shellQuote
         return """
@@ -170,8 +155,8 @@ struct PrivilegedHelperInstaller: Sendable {
         ASSET_DST=\(q(PrivilegedHelperConstants.installedAssetDirectoryPath))
         PLIST_DST=\(q(PrivilegedHelperClient.launchDaemonPlistPath))
         LABEL=\(q(PrivilegedHelperClient.label))
-        REQUIREMENT=\(q(Self.codeSigningRequirement))
-        EXPECTED_XRAY_SHA256=\(q(Self.bundledXraySHA256))
+        REQUIREMENT=\(q(artifactPolicy.codeSigningRequirement))
+        EXPECTED_XRAY_SHA256=\(q(artifactPolicy.xraySHA256))
         GEODATA_FILES=\(q(GeodataKind.allCases.map(\.fileName).joined(separator: " ")))
 
         verify_signature() {
@@ -241,6 +226,9 @@ struct PrivilegedHelperInstaller: Sendable {
         """
     }
 
+    /// The daemon runs as root by default because no `UserName` is specified.
+    /// `KeepAlive` keeps the IPC service available; Xray itself is a separate child
+    /// launched only for an active VPN session.
     private func launchDaemonPlist() -> String {
         """
         <?xml version="1.0" encoding="UTF-8"?>

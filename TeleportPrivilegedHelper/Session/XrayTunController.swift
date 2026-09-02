@@ -1,0 +1,283 @@
+import Darwin
+import Foundation
+
+/// Validates untrusted client fields, writes root-owned runtime state, and invokes
+/// the generated shell routines that own Xray and macOS route mutations.
+final class XrayTunController {
+    private let managedProcess: ManagedXrayProcess
+    private let shellRunner: HelperShellRunner
+    private let scriptBuilder: XrayTunScriptBuilder
+
+    init(
+        managedProcess: ManagedXrayProcess = ManagedXrayProcess(installedXrayPath: installedXrayPath),
+        shellRunner: HelperShellRunner = HelperShellRunner(),
+        scriptBuilder: XrayTunScriptBuilder = XrayTunScriptBuilder(installedXrayPath: installedXrayPath)
+    ) {
+        self.managedProcess = managedProcess
+        self.shellRunner = shellRunner
+        self.scriptBuilder = scriptBuilder
+    }
+
+    func start(request: HelperRequest) throws -> pid_t? {
+        let stateDirectoryPath = try validatedStateDirectoryPath(request.stateDirectoryPath)
+        let protectedHost = try validatedProtectedHost(request.protectedHost, required: true)
+        let tunnelInterfaceName = try validatedTunnelInterfaceName(request.tunnelInterfaceName)
+        let outboundInterface = try validatedOutboundInterface(request.outboundInterface)
+
+        guard FileManager.default.isExecutableFile(atPath: installedXrayPath) else {
+            throw HelperError("Installed Xray runtime is missing. Reinstall Teleport's privileged helper.")
+        }
+
+        let helperStateDirectoryPath = try preparedHelperStateDirectoryPath()
+        let configPath = try writeHelperConfig(request.configData, helperStateDirectoryPath: helperStateDirectoryPath)
+        try managedProcess.terminateManagedXray(helperStateDirectoryPath: helperStateDirectoryPath)
+        try managedProcess.terminateLegacyManagedXray(stateDirectoryPath: stateDirectoryPath)
+        try shellRunner.run(scriptBuilder.makeStartScript(
+            helperStateDirectoryPath: helperStateDirectoryPath,
+            configPath: configPath,
+            protectedHost: protectedHost,
+            tunnelInterfaceName: tunnelInterfaceName,
+            outboundInterface: outboundInterface
+        ))
+        // TODO(gpt-5.6-sol): Supervision ends as soon as the startup shell reports
+        // readiness. Monitor the validated Xray process afterward and reconcile
+        // helper-owned state/routes on unexpected exit instead of waiting for a
+        // future explicit stop or start request.
+        return managedProcess.managedXrayPID(
+            pidFilePath: helperStateDirectoryPath + "/xray-tun.pid",
+            expectedOwner: 0
+        )
+    }
+
+    func stop(request: HelperRequest) throws {
+        let stateDirectoryPath = try validatedStateDirectoryPath(request.stateDirectoryPath)
+        let protectedHost = try validatedProtectedHost(request.protectedHost, required: false)
+        let outboundInterface = try validatedOutboundInterface(request.outboundInterface)
+        let helperStateDirectoryPath = try preparedHelperStateDirectoryPath()
+        try managedProcess.terminateManagedXray(helperStateDirectoryPath: helperStateDirectoryPath)
+        try managedProcess.terminateLegacyManagedXray(stateDirectoryPath: stateDirectoryPath)
+        try shellRunner.run(scriptBuilder.makeStopScript(
+            helperStateDirectoryPath: helperStateDirectoryPath,
+            protectedHost: protectedHost.isEmpty ? nil : protectedHost,
+            outboundInterface: outboundInterface
+        ))
+    }
+
+    func readLog(request: HelperRequest) throws -> (text: String, metadata: String) {
+        let logName = try validatedLogName(request.logName)
+        let maxBytes = max(1, min(request.maxBytes ?? 256 * 1024, maxLogReadBytes))
+        let helperStateDirectoryPath = try preparedHelperStateDirectoryPath()
+        let logPath = helperStateDirectoryPath + "/" + logName
+        let data = try readTail(from: logPath, maxBytes: maxBytes)
+        let text = String(data: data.contents, encoding: .utf8) ?? ""
+        let metadata = logMetadata(path: logPath, totalBytes: data.totalBytes, returnedBytes: data.contents.count, wasTruncated: data.wasTruncated)
+        return (data.wasTruncated ? "… showing last \(ByteCountFormatter.string(fromByteCount: Int64(maxBytes), countStyle: .file)) …\n" + text : text, metadata)
+    }
+
+    private func required(_ value: String?, _ name: String) throws -> String {
+        guard let value, !value.isEmpty else { throw HelperError("Missing \(name)") }
+        return value
+    }
+
+    private func validatedStateDirectoryPath(_ value: String?) throws -> String {
+        let rawPath = try required(value, "stateDirectoryPath")
+        let expectedPath = try expectedStateDirectoryPath()
+        let normalizedPath = try standardizedAbsolutePath(rawPath, name: "stateDirectoryPath")
+        guard normalizedPath == expectedPath else {
+            throw HelperError("Rejected unexpected state directory path")
+        }
+
+        let resolvedPath = URL(fileURLWithPath: normalizedPath, isDirectory: true).resolvingSymlinksInPath().path
+        guard resolvedPath == expectedPath else {
+            throw HelperError("Rejected state directory path that resolves outside Teleport's support directory")
+        }
+
+        let consoleOwner = consoleUserIDs()
+        var statInfo = stat()
+        if lstat(normalizedPath, &statInfo) == 0 {
+            guard (statInfo.st_mode & S_IFMT) == S_IFDIR else {
+                throw HelperError("Rejected state directory path that is not a directory")
+            }
+            guard statInfo.st_uid == consoleOwner.uid else {
+                throw HelperError("Rejected state directory not owned by console user")
+            }
+            guard (statInfo.st_mode & (S_IWGRP | S_IWOTH)) == 0 else {
+                throw HelperError("Rejected group/world-writable state directory")
+            }
+        } else if errno == ENOENT {
+            return normalizedPath
+        } else {
+            throw POSIXError(.init(rawValue: errno) ?? .EIO)
+        }
+
+        return normalizedPath
+    }
+
+    private func writeHelperConfig(_ value: Data?, helperStateDirectoryPath: String) throws -> String {
+        guard let value, !value.isEmpty else { throw HelperError("Missing configData") }
+        guard value.count <= maxConfigBytes else { throw HelperError("Xray tunnel config is too large") }
+        let configPath = helperStateDirectoryPath + "/xray-tun-config.json"
+        removeSymlinkIfPresent(configPath)
+        try value.write(to: URL(fileURLWithPath: configPath), options: .atomic)
+        guard chown(configPath, 0, 0) == 0 else {
+            throw POSIXError(.init(rawValue: errno) ?? .EIO)
+        }
+        guard chmod(configPath, 0o600) == 0 else {
+            throw POSIXError(.init(rawValue: errno) ?? .EIO)
+        }
+        return configPath
+    }
+
+    private func expectedStateDirectoryPath() throws -> String {
+        let uid = consoleUserIDs().uid
+        guard let passwd = getpwuid(uid), let homeDirectory = passwd.pointee.pw_dir else {
+            throw HelperError("Could not resolve console user home directory")
+        }
+        return URL(fileURLWithPath: String(cString: homeDirectory), isDirectory: true)
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Application Support", isDirectory: true)
+            .appendingPathComponent("teleport", isDirectory: true)
+            .standardizedFileURL
+            .path
+    }
+
+    private func standardizedAbsolutePath(_ value: String, name: String) throws -> String {
+        guard value.hasPrefix("/") else {
+            throw HelperError("Rejected non-absolute \(name)")
+        }
+        let path = URL(fileURLWithPath: value).standardizedFileURL.path
+        guard !path.contains("/../") else {
+            throw HelperError("Rejected invalid \(name)")
+        }
+        return path
+    }
+
+    private func validatedProtectedHost(_ value: String?, required: Bool) throws -> String {
+        guard let value, !value.isEmpty else {
+            if required { throw HelperError("Missing protectedHost") }
+            return ""
+        }
+        guard value.count <= 253,
+              value == value.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.hasPrefix("-"),
+              !value.hasPrefix("."),
+              !value.hasSuffix("."),
+              !value.contains("..") else {
+            throw HelperError("Rejected invalid protectedHost")
+        }
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.-")
+        guard value.unicodeScalars.allSatisfy({ allowed.contains($0) }) else {
+            throw HelperError("Rejected invalid protectedHost")
+        }
+        for label in value.split(separator: ".") {
+            guard !label.isEmpty,
+                  label.count <= 63,
+                  label.first != "-",
+                  label.last != "-" else {
+                throw HelperError("Rejected invalid protectedHost")
+            }
+        }
+        return value
+    }
+
+    private func validatedTunnelInterfaceName(_ value: String?) throws -> String {
+        let value = try required(value, "tunnelInterfaceName")
+        guard matches(value, pattern: #"^utun[0-9]{1,4}$"#) else {
+            throw HelperError("Rejected invalid tunnelInterfaceName")
+        }
+        return value
+    }
+
+    private func validatedOutboundInterface(_ value: String?) throws -> String {
+        guard let value, !value.isEmpty else { return "" }
+        guard value.count <= 32,
+              value == value.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.hasPrefix("-"),
+              matches(value, pattern: #"^[A-Za-z0-9._-]+$"#) else {
+            throw HelperError("Rejected invalid outboundInterface")
+        }
+        return value
+    }
+
+    private func matches(_ value: String, pattern: String) -> Bool {
+        value.range(of: pattern, options: .regularExpression) != nil
+    }
+
+    private func preparedHelperStateDirectoryPath() throws -> String {
+        let normalizedPath = try standardizedAbsolutePath(helperStateDirectoryPath, name: "helperStateDirectoryPath")
+        var statInfo = stat()
+        if lstat(normalizedPath, &statInfo) == 0 {
+            guard (statInfo.st_mode & S_IFMT) == S_IFDIR else {
+                throw HelperError("Rejected helper state path that is not a directory")
+            }
+            guard statInfo.st_uid == 0 else {
+                throw HelperError("Rejected helper state directory not owned by root")
+            }
+            guard (statInfo.st_mode & (S_IWGRP | S_IWOTH)) == 0 else {
+                throw HelperError("Rejected group/world-writable helper state directory")
+            }
+            guard chmod(normalizedPath, 0o700) == 0 else {
+                throw POSIXError(.init(rawValue: errno) ?? .EIO)
+            }
+        } else if errno == ENOENT {
+            try FileManager.default.createDirectory(atPath: normalizedPath, withIntermediateDirectories: false)
+            guard chown(normalizedPath, 0, 0) == 0 else {
+                throw POSIXError(.init(rawValue: errno) ?? .EIO)
+            }
+            guard chmod(normalizedPath, 0o700) == 0 else {
+                throw POSIXError(.init(rawValue: errno) ?? .EIO)
+            }
+        } else {
+            throw POSIXError(.init(rawValue: errno) ?? .EIO)
+        }
+        return normalizedPath
+    }
+
+    private func validatedLogName(_ value: String?) throws -> String {
+        switch value {
+        case "xray-tun.log", "xray-tun-control.log", "xray-tun-config.json":
+            return value!
+        default:
+            throw HelperError("Rejected invalid logName")
+        }
+    }
+
+    private func readTail(from path: String, maxBytes: Int) throws -> (contents: Data, totalBytes: Int, wasTruncated: Bool) {
+        var statInfo = stat()
+        guard lstat(path, &statInfo) == 0 else {
+            if errno == ENOENT { return (Data(), 0, false) }
+            throw POSIXError(.init(rawValue: errno) ?? .EIO)
+        }
+        guard (statInfo.st_mode & S_IFMT) == S_IFREG else {
+            throw HelperError("Rejected log path that is not a regular file")
+        }
+        let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: path))
+        defer { try? handle.close() }
+        let totalBytes = Int(try handle.seekToEnd())
+        let offset = max(0, totalBytes - maxBytes)
+        try handle.seek(toOffset: UInt64(offset))
+        return (try handle.readToEnd() ?? Data(), totalBytes, offset > 0)
+    }
+
+    private func logMetadata(path: String, totalBytes: Int, returnedBytes: Int, wasTruncated: Bool) -> String {
+        var statInfo = stat()
+        guard lstat(path, &statInfo) == 0 else {
+            return "Missing: \(path)"
+        }
+        let modified = Date(timeIntervalSince1970: TimeInterval(statInfo.st_mtimespec.tv_sec))
+        let modifiedText = DateFormatter.localizedString(from: modified, dateStyle: .medium, timeStyle: .medium)
+        let sizeText = ByteCountFormatter.string(fromByteCount: Int64(totalBytes), countStyle: .file)
+        if wasTruncated {
+            let returnedText = ByteCountFormatter.string(fromByteCount: Int64(returnedBytes), countStyle: .file)
+            return "\(path) • \(sizeText) • showing \(returnedText) • modified \(modifiedText)"
+        }
+        return "\(path) • \(sizeText) • modified \(modifiedText)"
+    }
+
+    private func removeSymlinkIfPresent(_ path: String) {
+        var statInfo = stat()
+        if lstat(path, &statInfo) == 0, (statInfo.st_mode & S_IFMT) == S_IFLNK {
+            unlink(path)
+        }
+    }
+}

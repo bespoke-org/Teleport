@@ -1,5 +1,10 @@
 import Foundation
 
+/// User-side coordinator for VPN-mode Xray. It installs the root helper when
+/// necessary, sends lifecycle commands over IPC, and keeps a user-readable cache
+/// of the last reported root session. The helper remains the real privilege and
+/// process boundary. `@unchecked Sendable` places synchronization responsibility
+/// on this implementation rather than on the compiler.
 final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
     private let bundle: Bundle
     private let fileManager: FileManager
@@ -33,6 +38,12 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
 
         do {
             try helperInstaller.ensureInstalled(runtimeURL: runtimeURL)
+            // TODO(gpt-5.6-sol): Make `start` an idempotent operation identified by
+            // a session UUID. If IPC times out after sending the request, or if the
+            // local state write fails after the helper succeeds, query authoritative
+            // helper state and either adopt or stop that exact session before
+            // reporting failure. Today either path can leave root Xray active while
+            // the app has no corresponding session record.
             let pid = try helperClient.start(session: session, paths: paths)
             try persistSessionState(for: session, pid: pid)
         } catch {
@@ -51,6 +62,11 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
         return false
     }
 
+    // TODO(gpt-5.6-sol): Ask the helper for the managed process/session state.
+    // `kill(pid, 0)` proves only that some process currently owns this numeric PID;
+    // it does not verify the executable or guard against PID reuse. The fallback
+    // PID file is below the helper's root-only 0700 directory and is normally
+    // unreadable by this user process anyway.
     func isRunning() -> Bool {
         guard let pid = readSessionState().map(\.pid) ?? readPID() else { return false }
         if kill(pid, 0) == 0 {
@@ -164,6 +180,10 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
     }
 
     private func tailControlLog(maxLines: Int = 40) -> String {
+        // TODO(gpt-5.6-sol): This direct read targets the helper's root-only 0700
+        // directory, so diagnostics are normally empty precisely when IPC fails.
+        // Fetch the bounded control-log tail through the authenticated `readLog`
+        // command, with a separate short diagnostic timeout.
         guard let rawLog = try? String(contentsOf: paths.controlLogFileURL, encoding: .utf8) else { return "" }
         return rawLog
             .split(separator: "\n")

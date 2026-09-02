@@ -1,0 +1,118 @@
+# Runtime source layout
+
+Teleport keeps the app-side connection orchestration separate from the root helper boundary. The folders below are source boundaries inside the existing app and helper targets; they are not separate Swift packages or frameworks.
+
+## App target
+
+### `teleport/XrayCore`
+
+Builds Xray JSON for System Proxy and VPN/TUN sessions.
+
+- Depends on connection and split-tunnel domain models.
+- Does not launch processes.
+- Does not change macOS proxy settings or routes.
+- Does not communicate with the privileged helper.
+
+### `teleport/SystemProxy`
+
+Owns the unprivileged System Proxy execution path.
+
+- `SystemProxyConnectionBackend` implements the app connection backend.
+- `XrayRuntimeManager` owns the user-level Xray child process and logs.
+- `SystemProxyService` reads and changes macOS network proxy settings.
+
+### `teleport/VPN`
+
+Owns app-side VPN/TUN orchestration.
+
+- `XrayTunConnectionBackend` prepares and starts VPN sessions.
+- `PrivilegedXrayRuntimeManager` coordinates helper installation, IPC, and app-side session state.
+- `PrivilegedHelperClient` implements the JSON-over-Unix-socket client.
+- `XrayTunRouteInspector` performs read-only network inspection before startup.
+- `XrayTunSessionState` contains app-side launch and cached-state values.
+
+This directory contains no root-executed code. The helper is authoritative for privileged operations.
+
+### `teleport/HelperInstallation`
+
+Owns deployment and verification of bundled privileged artifacts.
+
+- `BundledArtifactPolicy` contains the approved signing requirement and Xray digest.
+- `BundledArtifactVerifier` verifies the app, helper, and bundled Xray runtime.
+- `PrivilegedHelperInstaller` installs the helper, runtime, geodata, and LaunchDaemon.
+- `PrivilegedShellRunner` is the current administrator-authorization bridge used only during installation or update.
+
+### `teleport/Geodata`
+
+Owns geodata source selection, downloads, and resolved asset preparation. Geodata is consumed by configuration generation and copied into the helper-owned asset directory during privileged installation.
+
+### `teleport/Connection`
+
+Contains the common `ConnectionBackend` protocol and the backend factory. Mode-specific backend implementations live in `SystemProxy` and `VPN` rather than in this directory.
+
+## Privileged helper target
+
+`TeleportPrivilegedHelper` remains a separate executable target and the explicit root trust boundary.
+
+### `IPC`
+
+- Defines helper request and response messages.
+- Authenticates the console-user client and its code signature.
+- Owns the Unix-domain socket server and command dispatch.
+
+### `Session`
+
+`XrayTunController` validates request fields, manages root-owned state files, and preserves the ordering of start, stop, and log operations.
+
+### `Xray`
+
+`ManagedXrayProcess` validates PID files and executable paths, then performs the existing SIGTERM, bounded wait, and SIGKILL lifecycle.
+
+### `Routing`
+
+`XrayTunScriptBuilder` generates the current shell commands for TUN readiness, protected host and DNS routes, split default routes, and cleanup.
+
+### `Support`
+
+Contains module-wide constants, platform helpers, and bounded shell execution support used by the helper components.
+
+### `main.swift`
+
+Contains only process bootstrap behavior: ignore `SIGPIPE`, start `HelperServer`, report a fatal startup error, and exit.
+
+## Shared source
+
+`Shared/PrivilegedHelperConstants.swift` is compiled into both targets. It is the single source for protocol compatibility version, socket path, helper label, and root-owned installation paths.
+
+## Dependency direction
+
+```text
+AppViewModel
+    -> ConnectionBackend / ConnectionBackendFactory
+        -> SystemProxy components
+        -> VPN components
+            -> HelperInstallation
+            -> PrivilegedHelperClient
+
+XrayCore <- SystemProxy and VPN configuration preparation
+Geodata  <- app settings and helper installation
+
+PrivilegedHelperClient
+    -> authenticated helper IPC
+        -> XrayTunController
+            -> ManagedXrayProcess
+            -> HelperShellRunner
+            -> XrayTunScriptBuilder
+```
+
+App code must not import helper implementation files. Root-only process and route mutations must not move into the app target.
+
+## Verification
+
+Run the complete build and smoke-test suite:
+
+```bash
+just verify
+```
+
+The `verify-architecture-layout` recipe guards required source locations, rejects obsolete mixed-responsibility files, and verifies that helper `main.swift` remains entry-only.

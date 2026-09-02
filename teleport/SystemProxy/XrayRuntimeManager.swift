@@ -6,6 +6,10 @@ import Foundation
 import Network
 import SystemConfiguration
 
+/// Runs bundled Xray as the logged-in user for System Proxy mode. This manager
+/// owns only the child process and its logs; `SystemProxyService` separately owns
+/// macOS proxy settings. `@unchecked Sendable` means thread safety is promised by
+/// this implementation rather than verified by the compiler.
 final class XrayRuntimeManager: @unchecked Sendable {
     private var process: Process?
     private var errorPipe: Pipe?
@@ -61,6 +65,9 @@ final class XrayRuntimeManager: @unchecked Sendable {
         errorPipe = pipe
         self.logFileHandle = logFileHandle
 
+        // TODO(gpt-5.6-sol): Observe unexpected process termination and notify the
+        // connection backend so it can disable or restore macOS proxy settings.
+        // Otherwise the system may remain configured to use dead localhost ports.
         try process.run()
         self.process = process
     }
@@ -138,6 +145,10 @@ final class XrayRuntimeManager: @unchecked Sendable {
     }
 
     private func assetDirectoryURL() -> URL? {
+        // TODO(gpt-5.6-sol): The current Xcode resource phase flattens `geoip.dat`
+        // and `geosite.dat` into `Contents/Resources`, so this directory lookup
+        // returns nil and `XRAY_LOCATION_ASSET` is set to an empty string. Preserve
+        // the folder in the bundle or resolve one shared asset layout in both modes.
         bundle.url(forResource: "xray-assets", withExtension: nil)
     }
 

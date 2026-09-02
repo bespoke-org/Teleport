@@ -13,6 +13,7 @@ struct VerifyCore {
         try testMalformedAndUnsupportedLinks()
         try testLegacyStateMigration()
         try testRuntimeStartupFailureWithoutBundledBinary()
+        try testBundledArtifactVerifierAcceptsExpectedHash()
         print("verify_core: all checks passed")
     }
 
@@ -289,6 +290,19 @@ struct VerifyCore {
                 fatalError("Expected binaryNotFound")
             }
         }
+    }
+
+    private static func testBundledArtifactVerifierAcceptsExpectedHash() throws {
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("teleport-empty-artifact-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+        try Data().write(to: fileURL)
+
+        let policy = BundledArtifactPolicy(
+            codeSigningRequirement: "unused-by-hash-test",
+            xraySHA256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        )
+        try BundledArtifactVerifier(policy: policy).verifyXrayHash(fileURL)
     }
 
     private static func temporaryConfigURL() -> URL {

@@ -7,7 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		C2F100032F98000000CCB832 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2F100012F98000000CCB832 /* main.swift */; };
 		C2F100102F98000000CCB832 /* PrivilegedHelperConstants.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2F1000F2F98000000CCB832 /* PrivilegedHelperConstants.swift */; };
 		C2F100112F98000000CCB832 /* PrivilegedHelperConstants.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2F1000F2F98000000CCB832 /* PrivilegedHelperConstants.swift */; };
 /* End PBXBuildFile section */
@@ -24,7 +23,6 @@
 
 /* Begin PBXFileReference section */
 		C2DEAC0C2F96D9FB00CCB832 /* Teleport.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Teleport.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		C2F100012F98000000CCB832 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		C2F100022F98000000CCB832 /* dev.x.teleport.PrivilegedHelper */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = dev.x.teleport.PrivilegedHelper; sourceTree = BUILT_PRODUCTS_DIR; };
 		C2F1000F2F98000000CCB832 /* PrivilegedHelperConstants.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivilegedHelperConstants.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -33,6 +31,11 @@
 		C2DEAC0E2F96D9FB00CCB832 /* teleport */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = teleport;
+			sourceTree = "<group>";
+		};
+		C2F1000A2F98000000CCB832 /* TeleportPrivilegedHelper */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = TeleportPrivilegedHelper;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -72,14 +75,6 @@
 				C2F100022F98000000CCB832 /* dev.x.teleport.PrivilegedHelper */,
 			);
 			name = Products;
-			sourceTree = "<group>";
-		};
-		C2F1000A2F98000000CCB832 /* TeleportPrivilegedHelper */ = {
-			isa = PBXGroup;
-			children = (
-				C2F100012F98000000CCB832 /* main.swift */,
-			);
-			path = TeleportPrivilegedHelper;
 			sourceTree = "<group>";
 		};
 		C2F1000E2F98000000CCB832 /* Shared */ = {
@@ -129,6 +124,9 @@
 			buildRules = (
 			);
 			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				C2F1000A2F98000000CCB832 /* TeleportPrivilegedHelper */,
 			);
 			name = dev.x.teleport.PrivilegedHelper;
 			packageProductDependencies = (
@@ -241,7 +239,6 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				C2F100032F98000000CCB832 /* main.swift in Sources */,
 				C2F100102F98000000CCB832 /* PrivilegedHelperConstants.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

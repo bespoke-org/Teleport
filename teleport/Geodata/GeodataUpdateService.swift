@@ -49,6 +49,10 @@ struct GeodataUpdateService {
     /// Real geosite.dat/geoip.dat files are several megabytes; this is a floor
     /// well below that meant only to catch obviously-wrong downloads (HTML
     /// error pages, truncated transfers), not to validate the format itself.
+    // TODO(gpt-5.6-sol): Size is not an integrity or format check. These bytes are
+    // later parsed by a root Xray process, so accept HTTPS only and validate the
+    // expected protobuf structure plus a trusted digest/signature before storing
+    // or copying an update across the privilege boundary.
     private static let minimumPlausibleByteCount = 4096
 
     private let fileManager: FileManager
@@ -131,6 +135,10 @@ struct GeodataUpdateService {
         return bundledURL
     }
 
+    // TODO(gpt-5.6-sol): Make downloads async, cancellable, and size-bounded while
+    // streaming. `dataTask` currently buffers an unbounded response in memory, and
+    // the UI's Cancel action only discards the eventual result; it cannot cancel
+    // this synchronous semaphore wait or the underlying network transfer.
     private func downloadData(from url: URL) throws -> Data {
         let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 60)
         let session = URLSession(configuration: .ephemeral)

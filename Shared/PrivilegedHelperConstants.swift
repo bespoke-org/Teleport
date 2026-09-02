@@ -1,9 +1,17 @@
 import Foundation
 
+/// Values compiled into both the sandbox-free app process and the root helper.
+/// Keeping them here prevents the two binaries from silently disagreeing about
+/// the wire protocol or about which root-owned files they are allowed to use.
 enum PrivilegedHelperConstants {
+    /// Installation/protocol compatibility version, not the user-facing app version.
+    /// Bump this whenever an older helper cannot safely serve the current client.
     static let version = "7"
     static let label = "dev.x.teleport.PrivilegedHelper"
+    /// The socket is only a transport. The helper must still authenticate every peer.
     static let socketPath = "/var/run/dev.x.teleport.helper.sock"
+
+    /// Root-owned runtime state. The regular app process cannot read this directory directly.
     static let helperStateDirectoryPath = "/var/db/dev.x.teleport"
     static let installedToolPath = "/Library/PrivilegedHelperTools/dev.x.teleport.PrivilegedHelper"
     static let installedXrayPath = "/Library/PrivilegedHelperTools/dev.x.teleport.xray"

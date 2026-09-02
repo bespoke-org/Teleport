@@ -1,5 +1,8 @@
 import Foundation
 
+/// Read-only adapter around macOS routing tools. These observations are taken
+/// before the helper mutates routes and are therefore best-effort snapshots,
+/// not reservations or guarantees about the later network topology.
 struct XrayTunRouteInspector: Sendable {
     func outboundInterface(for host: String) -> String? {
         routeInterface(for: host)
@@ -12,6 +15,10 @@ struct XrayTunRouteInspector: Sendable {
         routeInterface(for: "default")
     }
 
+    // TODO(gpt-5.6-sol): This detects only an exact IPv4 `default` route on a
+    // `utun` interface. VPNs that install IPv4 /1 routes or only an IPv6 default
+    // route are missed. Inspect `default`, 0/1, 128/1, and `default` in `inet6`
+    // before claiming that no conflicting VPN is active.
     func existingVPNDefaultRouteInterface() -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/sbin/netstat")
@@ -95,6 +102,10 @@ struct XrayTunRouteInspector: Sendable {
             .map(String.init)
     }
 
+    // TODO(gpt-5.6-sol, needs verification): This is a check-then-use race: the
+    // app chooses a free name, then the helper creates the TUN later. Another
+    // process may claim that name in between. Prefer helper-side allocation and
+    // return the interface identity that Xray actually created.
     func nextAvailableTunnelInterfaceName() -> String {
         let existingIndexes = existingTunnelInterfaceIndexes()
         let startIndex = 10

@@ -1,5 +1,8 @@
 import Foundation
 
+/// A user-owned cache of the session that the helper reported as started.
+/// This is useful for UI restoration, but it is not authoritative root state:
+/// the helper/Xray process may have changed after this snapshot was written.
 struct XrayTunSessionState: Codable, Sendable {
     var pid: Int32
     var protectedHost: String
@@ -9,6 +12,9 @@ struct XrayTunSessionState: Codable, Sendable {
     var startedAt: Date
 }
 
+/// Inputs sent across the privileged IPC boundary for one Xray TUN launch.
+/// `configData` is the complete JSON configuration; the helper writes it into
+/// its root-only state directory before starting Xray.
 struct XrayTunLaunchSession: Sendable {
     var configData: Data
     var protectedHost: String
@@ -16,6 +22,9 @@ struct XrayTunLaunchSession: Sendable {
     var outboundInterface: String
 }
 
+/// Collects paths used by both sides of the IPC protocol.
+/// `stateDirectoryURL` and `sessionStateFileURL` are user-owned. The PID, logs,
+/// protected-host marker, and config live below the root-only helper directory.
 struct XrayTunRuntimePaths: Sendable {
     var stateDirectoryURL: URL
     var pidFileURL: URL

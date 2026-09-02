@@ -73,6 +73,10 @@ just clean
 
 You can also open `teleport.xcodeproj` in Xcode and run the `teleport` scheme.
 
+## Runtime architecture
+
+See [`docs/runtime-source-layout.md`](docs/runtime-source-layout.md) for the app/helper source boundaries, dependency direction, and verification entry points.
+
 ## Built-in subscriptions and configs
 
 Initial subscriptions and manual configs are defined in:

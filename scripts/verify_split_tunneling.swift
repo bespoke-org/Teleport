@@ -387,8 +387,29 @@ struct VerifySplitTunneling {
         precondition(overrides == ["http", "tls", "quic"], "expected sniffing to include HTTP, TLS, and QUIC")
     }
 
+    private static func privilegedHelperSource() throws -> String {
+        let root = URL(fileURLWithPath: "TeleportPrivilegedHelper", isDirectory: true)
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            preconditionFailure("expected to enumerate privileged helper sources")
+        }
+
+        let sourceURLs = enumerator
+            .compactMap { $0 as? URL }
+            .filter { $0.pathExtension == "swift" }
+            .sorted { $0.path < $1.path }
+
+        precondition(!sourceURLs.isEmpty, "expected privileged helper Swift sources")
+        return try sourceURLs
+            .map { try String(contentsOf: $0, encoding: .utf8) }
+            .joined(separator: "\n")
+    }
+
     private static func testHelperAddsScopedDirectRoutes() throws {
-        let helperSource = try String(contentsOfFile: "TeleportPrivilegedHelper/main.swift", encoding: .utf8)
+        let helperSource = try privilegedHelperSource()
         precondition(helperSource.contains("cleanup_direct_routes"), "expected helper to clean up scoped direct routes")
         precondition(helperSource.contains("protect_direct_routes"), "expected helper to install scoped direct routes")
         precondition(helperSource.contains("-ifscope \"$OUTBOUND_INTERFACE\""), "expected direct routes to be scoped to the physical interface")

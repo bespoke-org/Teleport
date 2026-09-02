@@ -1,5 +1,10 @@
 import Foundation
 
+/// Legacy installation bridge that asks macOS to execute one generated shell
+/// script as an administrator. Normal connect/disconnect traffic does not use
+/// AppleScript; it goes through the authenticated helper socket instead.
+///
+/// Every interpolated value crossing this boundary must be shell-quoted first.
 struct PrivilegedShellRunner: Sendable {
     func runAdministratorShellScript(_ shellScript: String, prompt: String? = nil) throws {
         var appleScript = "do shell script \"\(Self.appleScriptQuote(shellScript))\" with administrator privileges"
@@ -27,10 +32,12 @@ struct PrivilegedShellRunner: Sendable {
         }
     }
 
+    /// Produces one POSIX-shell single-quoted argument, including embedded quotes.
     nonisolated static func shellQuote(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
+    /// Escapes the already-generated shell script for its AppleScript string literal.
     nonisolated static func appleScriptQuote(_ value: String) -> String {
         value
             .replacingOccurrences(of: "\\", with: "\\\\")

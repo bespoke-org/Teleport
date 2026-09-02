@@ -7,7 +7,7 @@ helper_name := "dev.x.teleport.PrivilegedHelper"
 derived_data := "build/DerivedData"
 dist_dir := "build/dist"
 destination := "platform=macOS,arch=arm64"
-verify_sources := "teleport/TeleportModels.swift teleport/App/*.swift teleport/Connection/*.swift teleport/Parsing/*.swift teleport/Persistence/*.swift teleport/Subscriptions/*.swift teleport/Xray/*.swift teleport/Proxy/*.swift teleport/Health/*.swift teleport/ViewModels/*.swift Shared/PrivilegedHelperConstants.swift"
+verify_sources := "teleport/TeleportModels.swift teleport/App/*.swift teleport/Connection/*.swift teleport/Parsing/*.swift teleport/Persistence/*.swift teleport/Subscriptions/*.swift teleport/XrayCore/*.swift teleport/SystemProxy/*.swift teleport/VPN/*.swift teleport/HelperInstallation/*.swift teleport/Geodata/*.swift teleport/Health/*.swift teleport/ViewModels/*.swift Shared/PrivilegedHelperConstants.swift"
 
 # List available recipes
 default:
@@ -148,7 +148,7 @@ package-open: package
 
 # Run all verification scripts after an Xcode build, so the privileged helper target
 # and app copy/sign phases are checked alongside the lightweight Swift scripts.
-verify: build-debug verify-core verify-subscription-support verify-connection-health verify-split-tunneling verify-geodata
+verify: build-debug verify-core verify-subscription-support verify-connection-health verify-split-tunneling verify-geodata verify-persistence verify-architecture-layout
 
 # Run core parser/config verification
 verify-core:
@@ -174,3 +174,13 @@ verify-split-tunneling:
 verify-geodata:
     swiftc {{verify_sources}} scripts/verify_geodata.swift -o /tmp/teleport-verify-geodata
     /tmp/teleport-verify-geodata
+
+# Run ConfigurationStore Keychain-failure-handling verification
+verify-persistence:
+    swiftc {{verify_sources}} scripts/verify_persistence.swift -o /tmp/teleport-verify-persistence
+    /tmp/teleport-verify-persistence
+
+# Guard the Phase 1 Xray and privileged-helper source boundaries
+verify-architecture-layout:
+    swiftc scripts/verify_architecture_layout.swift -o /tmp/teleport-verify-architecture-layout
+    /tmp/teleport-verify-architecture-layout

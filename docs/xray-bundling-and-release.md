@@ -10,6 +10,15 @@ The app now expects these bundled resources under the app target directory:
 
 The runtime manager resolves `xray` from the main bundle and sets `XRAY_LOCATION_ASSET` to the bundled `xray-assets` directory before launch.
 
+## Runtime source boundaries
+
+- `teleport/XrayCore` builds Xray JSON and has no process or privilege code.
+- `teleport/SystemProxy` owns the user Xray process and macOS proxy settings.
+- `teleport/VPN` owns app-side privileged VPN orchestration.
+- `teleport/HelperInstallation` owns the current helper deployment path.
+- `teleport/Geodata` owns geodata selection and updates.
+- `TeleportPrivilegedHelper` contains root-only IPC, process, and route code.
+
 ## Runtime refresh notes
 
 The current bundled runtime was copied from a local Homebrew-installed Xray distribution.

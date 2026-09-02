@@ -6,6 +6,9 @@ import Foundation
 import Network
 import SystemConfiguration
 
+/// Builds Xray JSON for two distinct execution models: an unprivileged local
+/// SOCKS/HTTP proxy and a root-owned TUN process. Dynamic dictionaries mirror
+/// Xray's external schema, then `JSONSerialization` turns them into bytes.
 struct XrayConfigurationWriter {
     let proxyEndpoint: ProxyEndpoint
 
@@ -48,6 +51,10 @@ struct XrayConfigurationWriter {
         try encodePayload(makeTunnelPayload(configuration: configuration, interfaceName: interfaceName, outboundInterface: outboundInterface, directSendThrough: directSendThrough, splitTunnelRules: splitTunnelRules, defaultAction: defaultAction))
     }
 
+    /// Writes atomically so Xray never observes a partially serialized config.
+    // TODO(gpt-5.6-sol): The config contains connection credentials. Explicitly set
+    // the resulting file to 0600 instead of relying on the parent directory and the
+    // process umask; the privileged helper already enforces 0600 for its copy.
     private func writePayload(_ payload: [String: Any], to outputURL: URL) throws -> URL {
         let directory = outputURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -133,6 +140,11 @@ struct XrayConfigurationWriter {
             directOutbound["sendThrough"] = directSendThrough
         }
 
+        // TODO(gpt-5.6-sol): This branch captures only `0.0.0.0/0`. Port and
+        // harden the partial dual-stack work from the IPv6/startup worktrees: require
+        // successful `::/1` and `8000::/1` installation, validate actual IPv6 egress
+        // and proxy-host protection, and clean up only session-owned routes. Until
+        // then, disclose and enforce IPv4-only behavior in the user-facing UI.
         return [
             "log": [
                 "loglevel": "warning"
