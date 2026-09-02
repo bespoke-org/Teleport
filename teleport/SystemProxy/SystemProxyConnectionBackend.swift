@@ -1,6 +1,6 @@
 import Foundation
 
-final class SystemProxyConnectionBackend: ConnectionBackend {
+final class SystemProxyConnectionBackend: ConnectionBackend, @unchecked Sendable {
     private let runtimeManager: XrayRuntimeManager
     private let proxyService: SystemProxyService
     private let vpnRuntimeManager: PrivilegedXrayRuntimeManager?

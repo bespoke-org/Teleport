@@ -3,7 +3,7 @@ import Foundation
 /// Coordinates the user-visible VPN transaction around the lower-level runtime:
 /// reject obvious VPN conflicts, disable System Proxy, derive the physical uplink,
 /// build Xray JSON, and ask the privileged runtime to start or stop the session.
-final class XrayTunConnectionBackend: ConnectionBackend {
+final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
     private let runtimeManager: PrivilegedXrayRuntimeManager
     private let routeInspector: XrayTunRouteInspector
     private let systemProxyService: SystemProxyService
