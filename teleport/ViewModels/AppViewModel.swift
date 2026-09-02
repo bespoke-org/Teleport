@@ -129,11 +129,19 @@ final class AppViewModel: ObservableObject {
         self.healthProbeService = healthProbeService
 
         var snapshot = store.load()
-        if !store.hasSavedSnapshot {
+        var loadErrorMessage: String?
+        if let loadError = store.lastLoadError {
+            // Keychain read failed (e.g. still locked right after boot, or the app's
+            // signature changed since the item was written) rather than there being no
+            // saved data. Surface it instead of silently seeding/showing an empty state,
+            // since seeding here would go on to overwrite the real Keychain item.
+            loadErrorMessage = loadError.localizedDescription
+        } else if !store.hasSavedSnapshot {
             snapshot = BundledConfigurationSeeder(parser: parser).seed(snapshot)
             try? store.save(snapshot)
         }
 
+        lastError = loadErrorMessage
         connectionMode = snapshot.connectionMode
         subscriptionConnectionSort = snapshot.subscriptionConnectionSort
         showsLatencyInMenuBarPicker = snapshot.showsLatencyInMenuBarPicker
