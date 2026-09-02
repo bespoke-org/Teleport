@@ -75,7 +75,9 @@ You can also open `teleport.xcodeproj` in Xcode and run the `teleport` scheme.
 
 ## Runtime architecture
 
-See [`docs/runtime-source-layout.md`](docs/runtime-source-layout.md) for the app/helper source boundaries, dependency direction, and verification entry points.
+`AppViewModel` drives both connection modes through the asynchronous `ConnectionProvider` API and one shared `ConnectionState` stream. Mode-specific providers keep System Proxy and privileged root-Xray lifecycle details below that boundary.
+
+See [`docs/runtime-source-layout.md`](docs/runtime-source-layout.md) for the app/helper source boundaries, transitional backend adapters, current trust boundary, future-phase exclusions, dependency direction, and verification entry points.
 
 ## Built-in subscriptions and configs
 

@@ -17,7 +17,8 @@ Builds Xray JSON for System Proxy and VPN/TUN sessions.
 
 Owns the unprivileged System Proxy execution path.
 
-- `SystemProxyConnectionBackend` implements the app connection backend.
+- `SystemProxyConnectionProvider` is the mode-specific provider facade selected by the app.
+- `SystemProxyConnectionBackend` is the transitional synchronous adapter below that provider.
 - `XrayRuntimeManager` owns the user-level Xray child process and logs.
 - `SystemProxyService` reads and changes macOS network proxy settings.
 
@@ -25,7 +26,8 @@ Owns the unprivileged System Proxy execution path.
 
 Owns app-side VPN/TUN orchestration.
 
-- `XrayTunConnectionBackend` prepares and starts VPN sessions.
+- `RootXrayConnectionProvider` is the mode-specific provider facade selected by the app.
+- `XrayTunConnectionBackend` is the transitional synchronous adapter that prepares and starts VPN sessions below the provider.
 - `PrivilegedXrayRuntimeManager` coordinates helper installation, IPC, and app-side session state.
 - `PrivilegedHelperClient` implements the JSON-over-Unix-socket client.
 - `XrayTunRouteInspector` performs read-only network inspection before startup.
@@ -48,7 +50,15 @@ Owns geodata source selection, downloads, and resolved asset preparation. Geodat
 
 ### `teleport/Connection`
 
-Contains the common `ConnectionBackend` protocol and the backend factory. Mode-specific backend implementations live in `SystemProxy` and `VPN` rather than in this directory.
+Contains the provider-oriented API consumed by upper application layers:
+
+- `ConnectionProvider` defines asynchronous connect/disconnect operations and one `ConnectionState` stream.
+- `ConnectionRequest` carries provider-neutral connection and split-tunnel inputs.
+- `ConnectionProviderFactory` selects the System Proxy or root-Xray provider for the persisted mode.
+- `BackendConnectionProvider` serializes lifecycle work and adapts the current synchronous implementations.
+- `ConnectionBackend` remains a transitional Phase 2 adapter below providers; it is not consumed by `AppViewModel`.
+
+`ConnectionSession.id` is currently generated in the app provider layer and identifies a UI connected interval only. It is not yet an authoritative helper-owned VPN session identifier.
 
 ## Privileged helper target
 
@@ -88,11 +98,14 @@ Contains only process bootstrap behavior: ignore `SIGPIPE`, start `HelperServer`
 
 ```text
 AppViewModel
-    -> ConnectionBackend / ConnectionBackendFactory
-        -> SystemProxy components
-        -> VPN components
-            -> HelperInstallation
-            -> PrivilegedHelperClient
+    -> ConnectionProvider / ConnectionRequest / ConnectionState
+        -> ConnectionProviderFactory
+            -> SystemProxyConnectionProvider
+                -> BackendConnectionProvider -> SystemProxyConnectionBackend
+            -> RootXrayConnectionProvider
+                -> BackendConnectionProvider -> XrayTunConnectionBackend
+                    -> HelperInstallation
+                    -> PrivilegedHelperClient
 
 XrayCore <- SystemProxy and VPN configuration preparation
 Geodata  <- app settings and helper installation
@@ -105,7 +118,9 @@ PrivilegedHelperClient
             -> XrayTunScriptBuilder
 ```
 
-App code must not import helper implementation files. Root-only process and route mutations must not move into the app target.
+`AppViewModel` consumes one provider state stream and does not coordinate process, proxy, helper, or route details directly. App code must not import helper implementation files. Root-only process and route mutations must not move into the app target.
+
+The current root path still uses JSON over a Unix-domain socket, app-generated session identity, the existing privileged installer, and synchronous backend adapters. XPC/Mach services, authoritative helper-owned sessions, reconciliation, and `SMAppService` registration are future architecture phases and are not shipping behavior in this layout.
 
 ## Verification
 

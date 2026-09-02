@@ -13,11 +13,14 @@ The runtime manager resolves `xray` from the main bundle and sets `XRAY_LOCATION
 ## Runtime source boundaries
 
 - `teleport/XrayCore` builds Xray JSON and has no process or privilege code.
-- `teleport/SystemProxy` owns the user Xray process and macOS proxy settings.
-- `teleport/VPN` owns app-side privileged VPN orchestration.
+- `teleport/Connection` defines the asynchronous provider API and shared connection state consumed by `AppViewModel`.
+- `teleport/SystemProxy` owns the System Proxy provider, user Xray process, and macOS proxy settings.
+- `teleport/VPN` owns the root-Xray provider and app-side privileged VPN orchestration.
 - `teleport/HelperInstallation` owns the current helper deployment path.
 - `teleport/Geodata` owns geodata selection and updates.
 - `TeleportPrivilegedHelper` contains root-only IPC, process, and route code.
+
+The synchronous System Proxy and VPN backends are transitional adapters below `BackendConnectionProvider`. The root provider still uses the existing Unix-socket helper protocol and app-side session identity. XPC, authoritative helper sessions, and `SMAppService` registration are planned follow-up work, not current release behavior.
 
 ## Runtime refresh notes
 
@@ -53,7 +56,7 @@ A Swift smoke-check script is available at `scripts/verify_core.swift` and curre
 Run it with:
 
 ```bash
-swiftc teleport/TeleportModels.swift teleport/TeleportServices.swift scripts/verify_core.swift -o /tmp/verify_core && /tmp/verify_core
+just verify-core
 ```
 
 ### Still required in Xcode / app runtime
@@ -68,4 +71,4 @@ The full end-to-end product flow still needs manual verification in the actual m
 6. Disable proxy
 7. Stop Xray
 
-This repo environment could not run `xcodebuild` because the active developer directory points to Command Line Tools instead of a full Xcode installation.
+Run `just verify` before release to execute the focused checks and fresh Xcode builds. The end-to-end proxy and VPN traffic flows above still require manual validation on a real macOS host.

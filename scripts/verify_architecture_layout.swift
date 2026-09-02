@@ -13,11 +13,29 @@ do {
         requireFile("teleport/Connection/ConnectionRequest.swift")
         requireFile("teleport/Connection/ConnectionState.swift")
         requireFile("teleport/Connection/ConnectionStateStore.swift")
+        requireFile("teleport/Connection/ConnectionPresentation.swift")
+        requireFile("teleport/Connection/ConnectionBackend.swift")
         requireFile("teleport/Connection/BackendConnectionProvider.swift")
         requireFile("teleport/Connection/ConnectionProviderFactory.swift")
         requireFile("teleport/SystemProxy/SystemProxyConnectionProvider.swift")
         requireFile("teleport/VPN/RootXrayConnectionProvider.swift")
         requireMissing("teleport/Connection/ConnectionBackendFactory.swift")
+
+        let appViewModelPath = "teleport/ViewModels/AppViewModel.swift"
+        let appViewModelSource = try String(contentsOfFile: appViewModelPath, encoding: .utf8)
+        let forbiddenAppViewModelDetails = [
+            "ConnectionBackend",
+            "PrivilegedHelperClient",
+            "PrivilegedXrayRuntimeManager",
+            "XrayTunRouteInspector",
+            "XrayConfigurationWriter",
+            "xray-tun-session.json",
+            "PrivilegedHelperConstants.version",
+            "utun"
+        ]
+        for detail in forbiddenAppViewModelDetails {
+            precondition(!appViewModelSource.contains(detail), "\(appViewModelPath) crosses the provider boundary with \(detail)")
+        }
 
         requireFile("teleport/XrayCore/XrayConfigurationWriter.swift")
         requireFile("teleport/Geodata/GeodataUpdateService.swift")

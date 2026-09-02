@@ -4,12 +4,19 @@ import Foundation
 /// backend implementations. Concrete process, proxy, helper, and route details do
 /// not cross this boundary.
 final class BackendConnectionProvider: ConnectionProvider, @unchecked Sendable {
+    private enum OperationReservation {
+        case reserved
+        case restorationInProgress
+        case busy
+    }
+
     private let mode: ConnectionMode
     private let backend: ConnectionBackend
     private let lifecycleQueue: DispatchQueue
     private let stateStore: ConnectionStateStore
     private let operationLock = NSLock()
     private var operationInProgress = false
+    private var restoringPreviousState = false
 
     init(mode: ConnectionMode, backend: ConnectionBackend) {
         self.mode = mode
@@ -23,6 +30,7 @@ final class BackendConnectionProvider: ConnectionProvider, @unchecked Sendable {
         } else if backend.hasRestorableState() {
             stateStore = ConnectionStateStore(initialState: .preparing)
             operationInProgress = true
+            restoringPreviousState = true
             lifecycleQueue.async { [weak self] in
                 guard let self else { return }
                 do {
@@ -31,7 +39,7 @@ final class BackendConnectionProvider: ConnectionProvider, @unchecked Sendable {
                 } catch {
                     self.stateStore.update(.failed(ConnectionFailure(error: error)))
                 }
-                self.releaseOperation()
+                self.releaseOperation(completedRestoration: true)
             }
         } else {
             stateStore = ConnectionStateStore(initialState: .idle)
@@ -47,7 +55,7 @@ final class BackendConnectionProvider: ConnectionProvider, @unchecked Sendable {
     }
 
     func connect(_ request: ConnectionRequest) async throws {
-        guard reserveOperation() else {
+        guard case .reserved = reserveOperation() else {
             throw ConnectionProviderError.operationInProgress
         }
 
@@ -87,11 +95,19 @@ final class BackendConnectionProvider: ConnectionProvider, @unchecked Sendable {
     }
 
     func disconnect() async throws {
-        if case .idle = stateStore.current() {
-            return
-        }
-        guard reserveOperation() else {
+        switch reserveOperation() {
+        case .reserved:
+            break
+        case .restorationInProgress:
+            try await performOnLifecycleQueue {}
+            return try await disconnect()
+        case .busy:
             throw ConnectionProviderError.operationInProgress
+        }
+
+        if case .idle = stateStore.current() {
+            releaseOperation()
+            return
         }
 
         stateStore.update(.disconnecting)
@@ -108,17 +124,22 @@ final class BackendConnectionProvider: ConnectionProvider, @unchecked Sendable {
         }
     }
 
-    private func reserveOperation() -> Bool {
+    private func reserveOperation() -> OperationReservation {
         operationLock.lock()
         defer { operationLock.unlock() }
-        guard !operationInProgress else { return false }
+        guard !operationInProgress else {
+            return restoringPreviousState ? .restorationInProgress : .busy
+        }
         operationInProgress = true
-        return true
+        return .reserved
     }
 
-    private func releaseOperation() {
+    private func releaseOperation(completedRestoration: Bool = false) {
         operationLock.lock()
         operationInProgress = false
+        if completedRestoration {
+            restoringPreviousState = false
+        }
         operationLock.unlock()
     }
 

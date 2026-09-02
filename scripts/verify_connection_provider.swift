@@ -8,6 +8,8 @@ struct VerifyConnectionProvider {
         try await testProviderConnectReconnectAndDisconnect()
         try await testProviderPublishesStartAndStopFailures()
         try await testProviderRejectsConcurrentOperation()
+        try await testProviderRejectsDisconnectDuringConnect()
+        try await testDisconnectWaitsForStartupRestoration()
         testFactorySelectsProviderByMode()
         try testAppViewModelUsesProviderBoundary()
         try testTerminationAwaitsProviderCleanup()
@@ -167,6 +169,46 @@ struct VerifyConnectionProvider {
         precondition(backend.recordedCalls() == ["start"])
     }
 
+    private static func testProviderRejectsDisconnectDuringConnect() async throws {
+        let backend = RecordingConnectionBackend()
+        backend.blockStart = true
+        let provider = BackendConnectionProvider(mode: .systemProxy, backend: backend)
+        let connectTask = Task { try await provider.connect(try makeRequest()) }
+
+        precondition(backend.startEntered.wait(timeout: .now() + 2) == .success, "connect did not enter backend")
+        do {
+            try await provider.disconnect()
+            preconditionFailure("expected disconnect rejection while connect is active")
+        } catch ConnectionProviderError.operationInProgress {
+            // Expected.
+        }
+
+        backend.allowStart.signal()
+        try await connectTask.value
+    }
+
+    private static func testDisconnectWaitsForStartupRestoration() async throws {
+        let backend = RecordingConnectionBackend()
+        backend.hasRestorableStateValue = true
+        backend.blockRestore = true
+        let provider = BackendConnectionProvider(mode: .systemProxy, backend: backend)
+        precondition(backend.restoreEntered.wait(timeout: .now() + 2) == .success, "startup restoration did not begin")
+
+        let disconnectCompleted = DispatchSemaphore(value: 0)
+        let disconnectTask = Task {
+            defer { disconnectCompleted.signal() }
+            try await provider.disconnect()
+        }
+        precondition(
+            disconnectCompleted.wait(timeout: .now() + 0.1) == .timedOut,
+            "disconnect returned before startup restoration completed"
+        )
+
+        backend.allowRestore.signal()
+        try await disconnectTask.value
+        precondition(backend.recordedCalls() == ["restore"], "unexpected restoration cleanup calls: \(backend.recordedCalls())")
+    }
+
     private static func makeRequest() throws -> ConnectionRequest {
         let configuration = try ConnectionLinkParser().parse(
             "vless://123e4567-e89b-12d3-a456-426614174000@example.com:443?security=tls&type=tcp&sni=example.com#Provider"
@@ -263,13 +305,24 @@ struct VerifyConnectionProvider {
         private var calls: [String] = []
         var startError: Error?
         var stopError: Error?
+        var hasRestorableStateValue = false
         var blockStart = false
+        var blockRestore = false
         let startEntered = DispatchSemaphore(value: 0)
         let allowStart = DispatchSemaphore(value: 0)
+        let restoreEntered = DispatchSemaphore(value: 0)
+        let allowRestore = DispatchSemaphore(value: 0)
 
-        func hasRestorableState() -> Bool { false }
+        func hasRestorableState() -> Bool { hasRestorableStateValue }
         func hasActiveRuntimeSession() -> Bool { false }
-        func restorePreviousState() throws {}
+
+        func restorePreviousState() throws {
+            record("restore")
+            if blockRestore {
+                restoreEntered.signal()
+                allowRestore.wait()
+            }
+        }
 
         func start(configuration: ConnectionConfiguration, endpoint: ProxyEndpoint, splitTunnelRules: [SplitTunnelRule], splitTunnelDefaultAction: SplitTunnelRuleAction) throws {
             record("start")
