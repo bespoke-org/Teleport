@@ -148,7 +148,7 @@ package-open: package
 
 # Run all verification scripts after an Xcode build, so the privileged helper target
 # and app copy/sign phases are checked alongside the lightweight Swift scripts.
-verify: build-debug verify-core verify-subscription-support verify-connection-health verify-connection-provider verify-split-tunneling verify-geodata verify-persistence verify-architecture-layout
+verify: build-debug verify-core verify-subscription-support verify-connection-health verify-connection-provider verify-split-tunneling verify-geodata verify-persistence verify-xpc-protocol verify-architecture-layout
 
 # Run core parser/config verification
 verify-core:
@@ -184,6 +184,11 @@ verify-geodata:
 verify-persistence:
     swiftc {{verify_sources}} scripts/verify_persistence.swift -o /tmp/teleport-verify-persistence
     /tmp/teleport-verify-persistence
+
+# Verify the shared privileged-helper XPC protocol and payload bounds
+verify-xpc-protocol:
+    swiftc Shared/*.swift scripts/verify_xpc_protocol.swift -o /tmp/teleport-verify-xpc-protocol
+    /tmp/teleport-verify-xpc-protocol
 
 # Guard the Phase 1 Xray and privileged-helper source boundaries
 verify-architecture-layout:
