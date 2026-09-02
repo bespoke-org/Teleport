@@ -149,8 +149,8 @@ nonisolated enum VPNHelperCodec {
     where Payload: Codable & Sendable & Equatable {
         try validateRevision(envelope.revision)
         try validateResponseShape(payload: envelope.payload, failure: envelope.failure)
-        try validateSessionID(envelope.sessionID, payloadType: Payload.self)
         if let payload = envelope.payload {
+            try validateSessionID(envelope.sessionID, payloadType: Payload.self)
             try validatePayload(payload)
         }
         if let failure = envelope.failure {
@@ -165,8 +165,8 @@ nonisolated enum VPNHelperCodec {
         let envelope: VPNHelperResponseEnvelope<Payload> = try decode(data)
         try validateRevision(envelope.revision)
         try validateResponseShape(payload: envelope.payload, failure: envelope.failure)
-        try validateSessionID(envelope.sessionID, payloadType: Payload.self)
         if let payload = envelope.payload {
+            try validateSessionID(envelope.sessionID, payloadType: Payload.self)
             try validatePayload(payload)
         }
         if let failure = envelope.failure {

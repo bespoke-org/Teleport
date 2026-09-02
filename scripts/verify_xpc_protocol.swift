@@ -5,8 +5,9 @@ struct XPCProtocolVerification {
     static func main() throws {
         try verifyExactRevisionAndStartRoundTrip()
         try verifyAllResponseRoundTrips()
-        try verifyStructuredFailureRoundTrip()
+        try verifyStructuredFailureRoundTripsWithoutSessionIDs()
         try verifyRevisionRejection()
+        try verifyRequestSessionValidation()
         try verifyConfigurationBounds()
         try verifyDiagnosticsBounds()
         print("verify_xpc_protocol: all checks passed")
@@ -73,23 +74,27 @@ struct XPCProtocolVerification {
         ))
     }
 
-    private static func verifyStructuredFailureRoundTrip() throws {
+    private static func verifyStructuredFailureRoundTripsWithoutSessionIDs() throws {
         let failure = VPNHelperProtocolFailure(
             code: .commandFailed,
-            summary: "Start failed",
+            summary: "Command failed",
             details: "Xray exited",
             retryDisposition: .never
         )
-        let response = VPNHelperResponseEnvelope<StartSessionResponse>(
+        try roundTrip(VPNHelperResponseEnvelope<StartSessionResponse>(
             revision: VPNHelperProtocol.revision,
             requestID: UUID(),
-            sessionID: UUID(),
+            sessionID: nil,
             payload: nil,
             failure: failure
-        )
-        let encoded = try VPNHelperCodec.encodeResponse(response)
-        let decoded: VPNHelperResponseEnvelope<StartSessionResponse> = try VPNHelperCodec.decodeResponse(encoded)
-        precondition(decoded == response)
+        ))
+        try roundTrip(VPNHelperResponseEnvelope<StopSessionResponse>(
+            revision: VPNHelperProtocol.revision,
+            requestID: UUID(),
+            sessionID: nil,
+            payload: nil,
+            failure: failure
+        ))
     }
 
     private static func verifyRevisionRejection() throws {
@@ -103,6 +108,43 @@ struct XPCProtocolVerification {
         expectFailure(.incompatibleService) {
             let _: VPNHelperRequestEnvelope<StatusRequest> = try VPNHelperCodec.decodeRequest(rawData)
         }
+    }
+
+    private static func verifyRequestSessionValidation() throws {
+        expectRequestSessionFailure(VPNHelperRequestEnvelope(
+            revision: VPNHelperProtocol.revision,
+            requestID: UUID(),
+            sessionID: nil,
+            payload: StartSessionRequest(
+                stateDirectoryPath: "/var/db/dev.x.teleport",
+                configData: Data("{}".utf8),
+                protectedHost: "example.com",
+                tunnelInterfaceName: "utun1",
+                outboundInterface: "en0"
+            )
+        ))
+        expectRequestSessionFailure(VPNHelperRequestEnvelope(
+            revision: VPNHelperProtocol.revision,
+            requestID: UUID(),
+            sessionID: nil,
+            payload: StopSessionRequest(
+                stateDirectoryPath: "/var/db/dev.x.teleport",
+                protectedHost: "example.com",
+                outboundInterface: "en0"
+            )
+        ))
+        expectRequestSessionFailure(VPNHelperRequestEnvelope(
+            revision: VPNHelperProtocol.revision,
+            requestID: UUID(),
+            sessionID: UUID(),
+            payload: StatusRequest()
+        ))
+        expectRequestSessionFailure(VPNHelperRequestEnvelope(
+            revision: VPNHelperProtocol.revision,
+            requestID: UUID(),
+            sessionID: UUID(),
+            payload: ReadDiagnosticsRequest(log: .xray, maximumBytes: 1_024)
+        ))
     }
 
     private static func verifyConfigurationBounds() throws {
@@ -160,6 +202,24 @@ struct XPCProtocolVerification {
         let encoded = try VPNHelperCodec.encodeResponse(response)
         let decoded: VPNHelperResponseEnvelope<Payload> = try VPNHelperCodec.decodeResponse(encoded)
         precondition(decoded == response)
+    }
+
+    private static func expectRequestSessionFailure<Payload>(
+        _ request: VPNHelperRequestEnvelope<Payload>
+    ) where Payload: Codable & Sendable & Equatable {
+        expectFailure(.malformedPayload) {
+            _ = try VPNHelperCodec.encodeRequest(request)
+        }
+
+        let rawData: Data
+        do {
+            rawData = try JSONEncoder().encode(request)
+        } catch {
+            preconditionFailure("Could not create malformed request fixture: \(error)")
+        }
+        expectFailure(.malformedPayload) {
+            let _: VPNHelperRequestEnvelope<Payload> = try VPNHelperCodec.decodeRequest(rawData)
+        }
     }
 
     private static func expectFailure(
