@@ -148,7 +148,7 @@ package-open: package
 
 # Run all verification scripts after an Xcode build, so the privileged helper target
 # and app copy/sign phases are checked alongside the lightweight Swift scripts.
-verify: build-debug verify-core verify-subscription-support verify-connection-health verify-split-tunneling verify-geodata verify-persistence verify-architecture-layout
+verify: build-debug verify-core verify-subscription-support verify-connection-health verify-connection-provider verify-split-tunneling verify-geodata verify-persistence verify-architecture-layout
 
 # Run core parser/config verification
 verify-core:
@@ -164,6 +164,11 @@ verify-subscription-support:
 verify-connection-health:
     swiftc {{verify_sources}} scripts/verify_connection_health.swift -o /tmp/teleport-verify-connection-health
     /tmp/teleport-verify-connection-health
+
+# Run connection provider state and presentation verification
+verify-connection-provider:
+    swiftc {{verify_sources}} scripts/verify_connection_provider.swift -o /tmp/teleport-verify-connection-provider
+    /tmp/teleport-verify-connection-provider
 
 # Run split-tunnel rule classification/matching/routing verification
 verify-split-tunneling:
