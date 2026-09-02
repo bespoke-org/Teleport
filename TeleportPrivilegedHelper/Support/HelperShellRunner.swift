@@ -1,6 +1,6 @@
 import Foundation
 
-struct HelperShellRunner {
+struct HelperShellRunner: Sendable {
     func run(_ script: String) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")

@@ -105,20 +105,56 @@ final class HelperServer {
         do {
             switch request.command {
             case "status":
-                // TODO(gpt-5.6-sol): Return authoritative managed-session state—not
-                // just helper liveness—including session ID, Xray PID/executable
-                // validation, TUN interface, and route phase. The client needs this
-                // to recover safely after timeout, crash, or PID reuse.
-                return HelperResponse(success: true, version: helperVersion, summary: nil, details: nil)
+                let status = try XrayTunController().status(request: StatusRequest())
+                return HelperResponse(success: true, version: status.helperVersion, summary: status.summary, details: status.details)
             case "start":
-                let pid = try XrayTunController().start(request: request)
-                return HelperResponse(success: true, version: helperVersion, summary: nil, details: pid.map(String.init))
+                guard let stateDirectoryPath = request.stateDirectoryPath,
+                      let configData = request.configData,
+                      let protectedHost = request.protectedHost,
+                      let tunnelInterfaceName = request.tunnelInterfaceName else {
+                    throw HelperError("Missing privileged start request field")
+                }
+                let response = try XrayTunController().start(
+                    request: StartSessionRequest(
+                        stateDirectoryPath: stateDirectoryPath,
+                        configData: configData,
+                        protectedHost: protectedHost,
+                        tunnelInterfaceName: tunnelInterfaceName,
+                        outboundInterface: request.outboundInterface ?? ""
+                    ),
+                    sessionID: UUID()
+                )
+                return HelperResponse(success: true, version: helperVersion, summary: response.summary, details: response.details)
             case "stop":
-                try XrayTunController().stop(request: request)
-                return HelperResponse(success: true, version: helperVersion, summary: nil, details: nil)
+                guard let stateDirectoryPath = request.stateDirectoryPath else {
+                    throw HelperError("Missing stateDirectoryPath")
+                }
+                let response = try XrayTunController().stop(
+                    request: StopSessionRequest(
+                        stateDirectoryPath: stateDirectoryPath,
+                        protectedHost: request.protectedHost,
+                        outboundInterface: request.outboundInterface
+                    ),
+                    sessionID: UUID()
+                )
+                return HelperResponse(success: true, version: helperVersion, summary: response.summary, details: response.details)
             case "readLog":
-                let log = try XrayTunController().readLog(request: request)
-                return HelperResponse(success: true, version: helperVersion, summary: log.metadata, details: log.text)
+                let log: VPNHelperLog
+                switch request.logName {
+                case "xray-tun.log":
+                    log = .xray
+                case "xray-tun-control.log":
+                    log = .control
+                default:
+                    throw HelperError("Rejected invalid logName")
+                }
+                let response = try XrayTunController().readDiagnostics(
+                    request: ReadDiagnosticsRequest(
+                        log: log,
+                        maximumBytes: request.maxBytes ?? VPNHelperProtocol.maximumDiagnosticsBytes
+                    )
+                )
+                return HelperResponse(success: true, version: helperVersion, summary: response.metadata, details: response.text)
             default:
                 return HelperResponse(success: false, version: helperVersion, summary: "Unsupported helper command: \(request.command)", details: nil)
             }

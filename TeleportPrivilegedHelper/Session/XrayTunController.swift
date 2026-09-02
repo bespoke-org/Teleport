@@ -3,7 +3,7 @@ import Foundation
 
 /// Validates untrusted client fields, writes root-owned runtime state, and invokes
 /// the generated shell routines that own Xray and macOS route mutations.
-final class XrayTunController {
+struct XrayTunController: HelperCommandExecuting, Sendable {
     private let managedProcess: ManagedXrayProcess
     private let shellRunner: HelperShellRunner
     private let scriptBuilder: XrayTunScriptBuilder
@@ -18,7 +18,19 @@ final class XrayTunController {
         self.scriptBuilder = scriptBuilder
     }
 
-    func start(request: HelperRequest) throws -> pid_t? {
+    func status(request: StatusRequest) throws -> StatusResponse {
+        let isRunning = managedProcess.isManagedXrayRunning(
+            helperStateDirectoryPath: helperStateDirectoryPath
+        )
+        return StatusResponse(
+            helperVersion: helperVersion,
+            phase: isRunning ? .running : .idle,
+            summary: nil,
+            details: nil
+        )
+    }
+
+    func start(request: StartSessionRequest, sessionID: UUID) throws -> StartSessionResponse {
         let stateDirectoryPath = try validatedStateDirectoryPath(request.stateDirectoryPath)
         let protectedHost = try validatedProtectedHost(request.protectedHost, required: true)
         let tunnelInterfaceName = try validatedTunnelInterfaceName(request.tunnelInterfaceName)
@@ -43,13 +55,14 @@ final class XrayTunController {
         // readiness. Monitor the validated Xray process afterward and reconcile
         // helper-owned state/routes on unexpected exit instead of waiting for a
         // future explicit stop or start request.
-        return managedProcess.managedXrayPID(
-            pidFilePath: helperStateDirectoryPath + "/xray-tun.pid",
-            expectedOwner: 0
+        return StartSessionResponse(
+            phase: .running,
+            summary: nil,
+            details: nil
         )
     }
 
-    func stop(request: HelperRequest) throws {
+    func stop(request: StopSessionRequest, sessionID: UUID) throws -> StopSessionResponse {
         let stateDirectoryPath = try validatedStateDirectoryPath(request.stateDirectoryPath)
         let protectedHost = try validatedProtectedHost(request.protectedHost, required: false)
         let outboundInterface = try validatedOutboundInterface(request.outboundInterface)
@@ -61,17 +74,39 @@ final class XrayTunController {
             protectedHost: protectedHost.isEmpty ? nil : protectedHost,
             outboundInterface: outboundInterface
         ))
+        return StopSessionResponse(
+            phase: .idle,
+            summary: nil,
+            details: nil
+        )
     }
 
-    func readLog(request: HelperRequest) throws -> (text: String, metadata: String) {
-        let logName = try validatedLogName(request.logName)
-        let maxBytes = max(1, min(request.maxBytes ?? 256 * 1024, maxLogReadBytes))
+    func readDiagnostics(request: ReadDiagnosticsRequest) throws -> DiagnosticsResponse {
+        let logName: String
+        switch request.log {
+        case .xray:
+            logName = "xray-tun.log"
+        case .control:
+            logName = "xray-tun-control.log"
+        }
+        let maxBytes = max(1, min(request.maximumBytes, maxLogReadBytes))
         let helperStateDirectoryPath = try preparedHelperStateDirectoryPath()
         let logPath = helperStateDirectoryPath + "/" + logName
         let data = try readTail(from: logPath, maxBytes: maxBytes)
-        let text = String(data: data.contents, encoding: .utf8) ?? ""
-        let metadata = logMetadata(path: logPath, totalBytes: data.totalBytes, returnedBytes: data.contents.count, wasTruncated: data.wasTruncated)
-        return (data.wasTruncated ? "… showing last \(ByteCountFormatter.string(fromByteCount: Int64(maxBytes), countStyle: .file)) …\n" + text : text, metadata)
+        let truncationNotice = data.wasTruncated
+            ? "… showing last \(ByteCountFormatter.string(fromByteCount: Int64(maxBytes), countStyle: .file)) …\n"
+            : ""
+        let contentLimit = max(0, maxBytes - truncationNotice.lengthOfBytes(using: .utf8))
+        let contents = data.wasTruncated ? Data(data.contents.suffix(contentLimit)) : data.contents
+        let text = String(decoding: contents, as: UTF8.self)
+        let metadata = logMetadata(path: logPath, totalBytes: data.totalBytes, returnedBytes: contents.count, wasTruncated: data.wasTruncated)
+        let boundedText = truncationNotice + text
+        return DiagnosticsResponse(
+            log: request.log,
+            text: boundedText,
+            metadata: metadata,
+            wasTruncated: data.wasTruncated
+        )
     }
 
     private func required(_ value: String?, _ name: String) throws -> String {
@@ -231,15 +266,6 @@ final class XrayTunController {
             throw POSIXError(.init(rawValue: errno) ?? .EIO)
         }
         return normalizedPath
-    }
-
-    private func validatedLogName(_ value: String?) throws -> String {
-        switch value {
-        case "xray-tun.log", "xray-tun-control.log", "xray-tun-config.json":
-            return value!
-        default:
-            throw HelperError("Rejected invalid logName")
-        }
     }
 
     private func readTail(from path: String, maxBytes: Int) throws -> (contents: Data, totalBytes: Int, wasTruncated: Bool) {

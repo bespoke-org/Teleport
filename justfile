@@ -148,7 +148,7 @@ package-open: package
 
 # Run all verification scripts after an Xcode build, so the privileged helper target
 # and app copy/sign phases are checked alongside the lightweight Swift scripts.
-verify: build-debug verify-core verify-subscription-support verify-connection-health verify-connection-provider verify-split-tunneling verify-geodata verify-persistence verify-xpc-protocol verify-helper-request-ledger verify-architecture-layout
+verify: build-debug verify-core verify-subscription-support verify-connection-health verify-connection-provider verify-split-tunneling verify-geodata verify-persistence verify-xpc-protocol verify-helper-request-ledger verify-helper-command-dispatch verify-architecture-layout
 
 # Run core parser/config verification
 verify-core:
@@ -194,6 +194,11 @@ verify-xpc-protocol:
 verify-helper-request-ledger:
     swiftc Shared/*.swift TeleportPrivilegedHelper/IPC/HelperRequestLedger.swift scripts/verify_helper_request_ledger.swift -o /tmp/teleport-verify-helper-request-ledger
     /tmp/teleport-verify-helper-request-ledger
+
+# Verify typed privileged-helper command dispatch and request deduplication
+verify-helper-command-dispatch:
+    swiftc Shared/*.swift TeleportPrivilegedHelper/IPC/HelperRequestLedger.swift TeleportPrivilegedHelper/IPC/HelperCommandExecuting.swift TeleportPrivilegedHelper/IPC/HelperCommandDispatcher.swift scripts/verify_helper_command_dispatch.swift -o /tmp/teleport-verify-helper-command-dispatch
+    /tmp/teleport-verify-helper-command-dispatch
 
 # Guard the Phase 1 Xray and privileged-helper source boundaries
 verify-architecture-layout:

@@ -1,6 +1,6 @@
 import Foundation
 
-struct XrayTunScriptBuilder {
+struct XrayTunScriptBuilder: Sendable {
     let installedXrayPath: String
 
     func makeStartScript(helperStateDirectoryPath: String, configPath: String, protectedHost: String, tunnelInterfaceName: String, outboundInterface: String) -> String {

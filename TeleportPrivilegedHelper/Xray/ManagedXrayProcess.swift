@@ -1,8 +1,16 @@
 import Darwin
 import Foundation
 
-struct ManagedXrayProcess {
+struct ManagedXrayProcess: Sendable {
     let installedXrayPath: String
+
+    func isManagedXrayRunning(helperStateDirectoryPath: String) -> Bool {
+        let pidFilePath = helperStateDirectoryPath + "/xray-tun.pid"
+        guard let pid = managedXrayPID(pidFilePath: pidFilePath, expectedOwner: 0) else {
+            return false
+        }
+        return isInstalledXrayProcess(pid: pid)
+    }
 
     func terminateManagedXray(helperStateDirectoryPath: String) throws {
         let pidFilePath = helperStateDirectoryPath + "/xray-tun.pid"
