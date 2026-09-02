@@ -8,7 +8,24 @@ struct VerifyConnectionProvider {
         try await testProviderConnectReconnectAndDisconnect()
         try await testProviderPublishesStartAndStopFailures()
         try await testProviderRejectsConcurrentOperation()
+        testFactorySelectsProviderByMode()
         print("verify_connection_provider: all checks passed")
+    }
+
+    private static func testFactorySelectsProviderByMode() {
+        let systemProxyProvider = SystemProxyConnectionProvider(
+            coordinator: BackendConnectionProvider(mode: .systemProxy, backend: RecordingConnectionBackend())
+        )
+        let vpnProvider = RootXrayConnectionProvider(
+            coordinator: BackendConnectionProvider(mode: .vpn, backend: RecordingConnectionBackend())
+        )
+        let factory = ConnectionProviderFactory(
+            systemProxyProvider: { systemProxyProvider },
+            vpnProvider: { vpnProvider }
+        )
+
+        precondition(factory.makeProvider(for: .systemProxy) is SystemProxyConnectionProvider)
+        precondition(factory.makeProvider(for: .vpn) is RootXrayConnectionProvider)
     }
 
     private static func testConnectionStateStorePublishesInitialAndUpdatedStates() async {

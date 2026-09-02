@@ -326,7 +326,6 @@ git commit -m "🤖 feat: serialize connection provider lifecycle"
 - Create: `teleport/SystemProxy/SystemProxyConnectionProvider.swift`
 - Create: `teleport/VPN/RootXrayConnectionProvider.swift`
 - Create: `teleport/Connection/ConnectionProviderFactory.swift`
-- Delete: `teleport/Connection/ConnectionBackendFactory.swift`
 - Modify: `scripts/verify_connection_provider.swift`
 - Modify: `scripts/verify_architecture_layout.swift`
 
@@ -367,9 +366,9 @@ case .vpn: return RootXrayConnectionProvider()
 
 The injected initializer stores two `@Sendable () -> any ConnectionProvider` closures.
 
-- [ ] **Step 5: Remove the old factory and strengthen layout guards**
+- [ ] **Step 5: Strengthen layout guards**
 
-Delete `ConnectionBackendFactory.swift`. Require `ConnectionProviderFactory.swift` and both mode-specific provider files. Reject the obsolete factory path. Keep `ConnectionBackend.swift` as an explicitly documented transitional lower-level adapter.
+Require `ConnectionProviderFactory.swift` and both mode-specific provider files. Keep `ConnectionBackendFactory.swift` until Task 4 replaces its final `AppViewModel` consumer, and keep `ConnectionBackend.swift` as an explicitly documented transitional lower-level adapter.
 
 - [ ] **Step 6: Run tests and builds**
 
@@ -396,6 +395,7 @@ git commit -m "🤖 refactor: select connection providers by mode"
 
 **Files:**
 - Modify: `teleport/ViewModels/AppViewModel.swift`
+- Delete: `teleport/Connection/ConnectionBackendFactory.swift`
 - Modify: `scripts/verify_connection_provider.swift`
 
 **Interfaces:**
@@ -473,7 +473,11 @@ Both initial connect and live reconnect call `connectionProvider.connect(request
 
 On mode change, capture the previous provider, cancel its observer, assign `connectionProviderFactory.makeProvider(for:)`, set local `connectionState = .idle`, start the new observer, and asynchronously disconnect the previous provider. Preserve the existing guard requiring no active session before mode changes.
 
-- [ ] **Step 9: Run focused and UI-facing verification**
+- [ ] **Step 9: Remove the obsolete backend factory**
+
+Delete `teleport/Connection/ConnectionBackendFactory.swift` after `AppViewModel` has no remaining references to it. Add `requireMissing("teleport/Connection/ConnectionBackendFactory.swift")` to `verify_architecture_layout.swift`.
+
+- [ ] **Step 10: Run focused and UI-facing verification**
 
 Run:
 
@@ -486,7 +490,7 @@ just build-debug
 
 Expected: all pass and source assertions confirm `AppViewModel` has no backend references.
 
-- [ ] **Step 10: Commit AppViewModel migration**
+- [ ] **Step 11: Commit AppViewModel migration**
 
 ```bash
 git add teleport/ViewModels/AppViewModel.swift scripts/verify_connection_provider.swift

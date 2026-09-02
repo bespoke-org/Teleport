@@ -9,6 +9,15 @@ private func requireMissing(_ path: String) {
 }
 
 do {
+        requireFile("teleport/Connection/ConnectionProvider.swift")
+        requireFile("teleport/Connection/ConnectionRequest.swift")
+        requireFile("teleport/Connection/ConnectionState.swift")
+        requireFile("teleport/Connection/ConnectionStateStore.swift")
+        requireFile("teleport/Connection/BackendConnectionProvider.swift")
+        requireFile("teleport/Connection/ConnectionProviderFactory.swift")
+        requireFile("teleport/SystemProxy/SystemProxyConnectionProvider.swift")
+        requireFile("teleport/VPN/RootXrayConnectionProvider.swift")
+
         requireFile("teleport/XrayCore/XrayConfigurationWriter.swift")
         requireFile("teleport/Geodata/GeodataUpdateService.swift")
         requireMissing("teleport/Xray/XrayConfigurationWriter.swift")

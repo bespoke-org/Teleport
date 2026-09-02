@@ -2,7 +2,7 @@ import Foundation
 
 /// Transitional synchronous adapter used only below `ConnectionProvider`.
 /// Phase 2 serializes every call through `BackendConnectionProvider`.
-protocol ConnectionBackend: AnyObject, Sendable {
+nonisolated protocol ConnectionBackend: AnyObject, Sendable {
     func hasRestorableState() -> Bool
     func hasActiveRuntimeSession() -> Bool
     func restorePreviousState() throws

@@ -2,7 +2,7 @@ import Foundation
 
 /// Thread-safe state storage and fan-out used by providers whose blocking backend
 /// work runs on a private serial DispatchQueue.
-final class ConnectionStateStore: @unchecked Sendable {
+nonisolated final class ConnectionStateStore: @unchecked Sendable {
     private let lock = NSLock()
     private var state: ConnectionState
     private var continuations: [UUID: AsyncStream<ConnectionState>.Continuation] = [:]
