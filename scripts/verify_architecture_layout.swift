@@ -66,6 +66,10 @@ do {
         requireMissing("teleport/Xray/PrivilegedShellRunner.swift")
 
         requireFile("TeleportPrivilegedHelper/IPC/ClientAuthenticator.swift")
+        requireFile("TeleportPrivilegedHelper/IPC/HelperCommandDispatcher.swift")
+        requireFile("TeleportPrivilegedHelper/IPC/HelperRequestLedger.swift")
+        requireFile("TeleportPrivilegedHelper/IPC/HelperXPCListenerDelegate.swift")
+        requireFile("TeleportPrivilegedHelper/IPC/HelperXPCService.swift")
         requireFile("TeleportPrivilegedHelper/IPC/HelperMessages.swift")
         requireFile("TeleportPrivilegedHelper/IPC/HelperServer.swift")
         requireFile("TeleportPrivilegedHelper/Routing/XrayTunScriptBuilder.swift")
@@ -77,7 +81,9 @@ do {
 
         let mainPath = "TeleportPrivilegedHelper/main.swift"
         let mainSource = try String(contentsOfFile: mainPath, encoding: .utf8)
-        precondition(mainSource.contains("HelperServer().run()"), "expected helper entry point in \(mainPath)")
+        precondition(mainSource.contains("NSXPCListener(machServiceName: VPNHelperProtocol.machServiceName)"), "expected XPC Mach-service listener in \(mainPath)")
+        precondition(mainSource.contains("listener.resume()"), "expected XPC listener activation in \(mainPath)")
+        precondition(!mainSource.contains("HelperServer().run()"), "obsolete socket helper bootstrap remains in \(mainPath)")
         precondition(!mainSource.contains("final class HelperServer"), "expected HelperServer to be extracted from \(mainPath)")
         precondition(!mainSource.contains("final class XrayTunController"), "expected XrayTunController to be extracted from \(mainPath)")
         precondition(!mainSource.contains("makeStartScript"), "expected route scripts to be extracted from \(mainPath)")
