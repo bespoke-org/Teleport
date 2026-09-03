@@ -62,6 +62,12 @@ nonisolated final class XPCVPNHelperTransport: VPNHelperTransport {
         let generation: UInt64
     }
 
+    private struct ConnectionCreation: Sendable {
+        let generation: UInt64
+        var record: ConnectionRecord?
+        var retirementError: VPNHelperTransportError?
+    }
+
     private struct PendingRequest: Sendable {
         let generation: UInt64
         let completion: Completion
@@ -69,6 +75,7 @@ nonisolated final class XPCVPNHelperTransport: VPNHelperTransport {
 
     private struct State: Sendable {
         var connection: ConnectionRecord?
+        var connectionCreation: ConnectionCreation?
         var nextGeneration: UInt64 = 0
         var pendingRequests: [UUID: PendingRequest] = [:]
     }
@@ -107,6 +114,7 @@ nonisolated final class XPCVPNHelperTransport: VPNHelperTransport {
     }
 
     private let connectionFactory: ConnectionFactory
+    private let connectionCreationLock = Mutex<Void>(())
     private let state = Mutex(State())
 
     init(
@@ -128,7 +136,7 @@ nonisolated final class XPCVPNHelperTransport: VPNHelperTransport {
             )
         }
 
-        let record = connectionRecord()
+        let record = try connectionRecord()
         let requestToken = UUID()
         let completion = Completion()
         let registered = state.withLock { state in
@@ -216,54 +224,116 @@ nonisolated final class XPCVPNHelperTransport: VPNHelperTransport {
     }
 
     func invalidate() {
-        let retired = state.withLock { state -> (ConnectionRecord?, [Completion]) in
+        let retired = state.withLock {
+            state -> (ConnectionRecord?, ConnectionRecord?, [Completion]) in
             let record = state.connection
             state.connection = nil
+
+            var creatingRecord: ConnectionRecord?
+            if var creation = state.connectionCreation {
+                if creation.retirementError == nil {
+                    creation.retirementError = .invalidated
+                }
+                creatingRecord = creation.record
+                state.connectionCreation = creation
+            }
+
             let completions = state.pendingRequests.values.map(\.completion)
             state.pendingRequests.removeAll()
-            return (record, completions)
+            return (record, creatingRecord, completions)
         }
 
         retired.0?.connection.invalidate()
-        for completion in retired.1 {
+        retired.1?.connection.invalidate()
+        for completion in retired.2 {
             completion.resolve(.failure(.invalidated))
         }
     }
 
-    private func connectionRecord() -> ConnectionRecord {
-        let result = state.withLock { state -> (ConnectionRecord, Bool) in
-            if let record = state.connection {
-                return (record, false)
+    private func connectionRecord() throws -> ConnectionRecord {
+        try connectionCreationLock.withLock { _ in
+            if let record = state.withLock({ $0.connection }) {
+                return record
             }
 
-            state.nextGeneration &+= 1
-            let generation = state.nextGeneration
+            let generation = state.withLock { state -> UInt64 in
+                state.nextGeneration &+= 1
+                state.connectionCreation = ConnectionCreation(
+                    generation: state.nextGeneration,
+                    record: nil,
+                    retirementError: nil
+                )
+                return state.nextGeneration
+            }
             let connection = connectionFactory()
             let record = ConnectionRecord(connection: connection, generation: generation)
-
-            connection.setRemoteObjectInterface(Self.remoteInterface())
-            connection.setInterruptionHandler { [weak self] in
-                self?.retireConnection(
-                    generation: generation,
-                    error: .interrupted,
-                    invalidatingConnection: true
-                )
+            let initialError = state.withLock { state -> VPNHelperTransportError? in
+                guard var creation = state.connectionCreation,
+                      creation.generation == generation else {
+                    return .invalidated
+                }
+                creation.record = record
+                state.connectionCreation = creation
+                return creation.retirementError
             }
-            connection.setInvalidationHandler { [weak self] in
-                self?.retireConnection(
-                    generation: generation,
-                    error: .invalidated,
-                    invalidatingConnection: false
-                )
-            }
-            state.connection = record
-            return (record, true)
-        }
 
-        if result.1 {
-            result.0.connection.activate()
+            if initialError == nil {
+                connection.setRemoteObjectInterface(Self.remoteInterface())
+            }
+            if connectionCreationError(for: generation) == nil {
+                connection.setInterruptionHandler { [weak self] in
+                    self?.retireConnection(
+                        generation: generation,
+                        error: .interrupted,
+                        invalidatingConnection: true
+                    )
+                }
+            }
+            if connectionCreationError(for: generation) == nil {
+                connection.setInvalidationHandler { [weak self] in
+                    self?.retireConnection(
+                        generation: generation,
+                        error: .invalidated,
+                        invalidatingConnection: false
+                    )
+                }
+            }
+            if connectionCreationError(for: generation) == nil {
+                connection.activate()
+            }
+
+            let result = state.withLock {
+                state -> Result<ConnectionRecord, VPNHelperTransportError> in
+                guard let creation = state.connectionCreation,
+                      creation.generation == generation else {
+                    return .failure(.invalidated)
+                }
+
+                state.connectionCreation = nil
+                if let error = creation.retirementError {
+                    return .failure(error)
+                }
+
+                state.connection = record
+                return .success(record)
+            }
+            if case .failure = result {
+                connection.invalidate()
+            }
+            return try result.get()
         }
-        return result.0
+    }
+
+    private func connectionCreationError(
+        for generation: UInt64
+    ) -> VPNHelperTransportError? {
+        state.withLock { state in
+            guard let creation = state.connectionCreation,
+                  creation.generation == generation else {
+                return .invalidated
+            }
+            return creation.retirementError
+        }
     }
 
     private static func remoteInterface() -> NSXPCInterface {
@@ -305,7 +375,14 @@ nonisolated final class XPCVPNHelperTransport: VPNHelperTransport {
     ) {
         let retired = state.withLock { state -> (ConnectionRecord?, [Completion]) in
             let record: ConnectionRecord?
-            if state.connection?.generation == generation {
+            if var creation = state.connectionCreation,
+               creation.generation == generation {
+                if creation.retirementError == nil {
+                    creation.retirementError = error
+                }
+                record = creation.record
+                state.connectionCreation = creation
+            } else if state.connection?.generation == generation {
                 record = state.connection
                 state.connection = nil
             } else {

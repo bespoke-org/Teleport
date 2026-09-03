@@ -66,10 +66,16 @@ private final class FakeConnection: VPNHelperXPCConnection, @unchecked Sendable 
     private var activations = 0
     private var invalidations = 0
     private var configuredInterface: NSXPCInterface?
+    private let interruptsWhenHandlerIsInstalled: Bool
 
-    init(proxy: FakeProxy, proxyFailure: Error? = nil) {
+    init(
+        proxy: FakeProxy,
+        proxyFailure: Error? = nil,
+        interruptsWhenHandlerIsInstalled: Bool = false
+    ) {
         self.proxy = proxy
         self.proxyFailure = proxyFailure
+        self.interruptsWhenHandlerIsInstalled = interruptsWhenHandlerIsInstalled
     }
 
     var activationCount: Int {
@@ -125,7 +131,11 @@ private final class FakeConnection: VPNHelperXPCConnection, @unchecked Sendable 
     func setInterruptionHandler(_ handler: @escaping @Sendable () -> Void) {
         lock.lock()
         interruption = handler
+        let shouldInterrupt = interruptsWhenHandlerIsInstalled
         lock.unlock()
+        if shouldInterrupt {
+            handler()
+        }
     }
 
     func setInvalidationHandler(_ handler: @escaping @Sendable () -> Void) {
@@ -198,6 +208,40 @@ private final class ConnectionFactory: @unchecked Sendable {
     }
 }
 
+private final class StoredTransportResults: @unchecked Sendable {
+    private let lock = NSLock()
+    private var results: [Result<Data, Error>] = []
+
+    func append(_ value: Result<Data, Error>) {
+        lock.lock()
+        results.append(value)
+        lock.unlock()
+    }
+
+    func load() -> [Result<Data, Error>] {
+        lock.lock()
+        defer { lock.unlock() }
+        return results
+    }
+}
+
+private final class StoredTransportResult: @unchecked Sendable {
+    private let lock = NSLock()
+    private var result: Result<Data, Error>?
+
+    func store(_ value: Result<Data, Error>) {
+        lock.lock()
+        result = value
+        lock.unlock()
+    }
+
+    func load() -> Result<Data, Error>? {
+        lock.lock()
+        defer { lock.unlock() }
+        return result
+    }
+}
+
 private final class StoredReply: @unchecked Sendable {
     private let lock = NSLock()
     private var reply: ((Data?, NSError?) -> Void)?
@@ -222,8 +266,10 @@ private enum VerifyXPCTransport {
     static func main() throws {
         try verifiesExplicitAllowedClassesConfiguration()
         try verifiesCommandRoutingAndNormalReplies()
+        verifiesConcurrentSendsShareConnectionCreation()
         verifiesProxyErrorMapping()
         verifiesNSErrorReplyMapping()
+        try verifiesSynchronousLifecycleHandlerDuringConfiguration()
         try verifiesInterruptionRetiresOnlyItsGeneration()
         try verifiesInvalidationCreatesOneReplacement()
         try verifiesDeadlineAndIgnoresLateReply()
@@ -264,6 +310,53 @@ private enum VerifyXPCTransport {
         precondition(connection.didConfigureAllowedClasses)
     }
 
+    private static func verifiesConcurrentSendsShareConnectionCreation() {
+        let proxy = FakeProxy { _, _, reply in reply(Data("ok".utf8), nil) }
+        let connection = FakeConnection(proxy: proxy)
+        let factory = ConnectionFactory([connection])
+        let creationStarted = DispatchSemaphore(value: 0)
+        let allowCreation = DispatchSemaphore(value: 0)
+        let transport = XPCVPNHelperTransport(connectionFactory: {
+            creationStarted.signal()
+            allowCreation.wait()
+            return factory.make()
+        })
+        let results = StoredTransportResults()
+        let group = DispatchGroup()
+
+        for _ in 0..<8 {
+            group.enter()
+            DispatchQueue.global().async {
+                do {
+                    let data = try transport.send(
+                        command: .status,
+                        requestData: Data(),
+                        timeout: 1
+                    )
+                    results.append(.success(data))
+                } catch {
+                    results.append(.failure(error))
+                }
+                group.leave()
+            }
+        }
+
+        precondition(creationStarted.wait(timeout: .now() + 1) == .success)
+        allowCreation.signal()
+        precondition(group.wait(timeout: .now() + 2) == .success)
+        precondition(results.load().count == 8)
+        for result in results.load() {
+            do {
+                let data = try result.get()
+                precondition(data == Data("ok".utf8))
+            } catch {
+                preconditionFailure("Unexpected concurrent send error: \(error)")
+            }
+        }
+        precondition(factory.creationCount == 1)
+        precondition(connection.activationCount == 1)
+    }
+
     private static func verifiesProxyErrorMapping() {
         let error = NSError(domain: "test.proxy", code: 7, userInfo: [
             NSLocalizedDescriptionKey: "proxy unavailable"
@@ -292,6 +385,46 @@ private enum VerifyXPCTransport {
         expectTransportError(.unavailable("reply rejected")) {
             try transport.send(command: .status, requestData: Data(), timeout: 1)
         }
+    }
+
+    private static func verifiesSynchronousLifecycleHandlerDuringConfiguration() throws {
+        let firstProxy = FakeProxy { _, _, reply in reply(Data("unexpected".utf8), nil) }
+        let firstConnection = FakeConnection(
+            proxy: firstProxy,
+            interruptsWhenHandlerIsInstalled: true
+        )
+        let secondProxy = FakeProxy { _, _, reply in reply(Data("replacement".utf8), nil) }
+        let secondConnection = FakeConnection(proxy: secondProxy)
+        let factory = ConnectionFactory([firstConnection, secondConnection])
+        let transport = XPCVPNHelperTransport(connectionFactory: { factory.make() })
+        let result = StoredTransportResult()
+        let finished = DispatchSemaphore(value: 0)
+
+        DispatchQueue.global().async {
+            do {
+                let data = try transport.send(command: .status, requestData: Data(), timeout: 1)
+                result.store(.success(data))
+            } catch {
+                result.store(.failure(error))
+            }
+            finished.signal()
+        }
+
+        precondition(
+            finished.wait(timeout: .now() + 1) == .success,
+            "Synchronous lifecycle handler deadlocked connection configuration"
+        )
+        guard let storedResult = result.load() else {
+            preconditionFailure("Expected the synchronous send to store a result")
+        }
+        expectTransportError(.interrupted) {
+            try storedResult.get()
+        }
+        precondition(firstConnection.activationCount == 0)
+
+        let replacement = try transport.send(command: .status, requestData: Data(), timeout: 1)
+        precondition(replacement == Data("replacement".utf8))
+        precondition(factory.creationCount == 2)
     }
 
     private static func verifiesInterruptionRetiresOnlyItsGeneration() throws {
