@@ -474,6 +474,7 @@ private enum VerifyPrivilegedHelperClient {
     private static func verifyRuntimePersistsSessionCorrelation() throws {
         let managerSource = try String(contentsOfFile: "teleport/VPN/PrivilegedXrayRuntimeManager.swift", encoding: .utf8)
         let stateSource = try String(contentsOfFile: "teleport/VPN/XrayTunSessionState.swift", encoding: .utf8)
+        let systemProxySource = try String(contentsOfFile: "teleport/SystemProxy/SystemProxyConnectionBackend.swift", encoding: .utf8)
         precondition(managerSource.contains("let sessionID = UUID()"))
         precondition(managerSource.contains("XrayTunStartCorrelation.perform"))
         precondition(managerSource.contains("sessionID: sessionID"))
@@ -486,6 +487,11 @@ private enum VerifyPrivilegedHelperClient {
         )!.lowerBound
         let stopSource = managerSource[stopStart..<stopEnd]
         precondition(stopSource.components(separatedBy: "helperClient.stop(").count - 1 == 1)
+        precondition(
+            systemProxySource.components(
+                separatedBy: "try vpnRuntimeManager?.cleanupIfHelperAvailable(protectedHost: configuration.host)"
+            ).count - 1 == 2
+        )
     }
 
     private static func verifyRuntimeResolvesMissingSessionWithoutInventingIdentity() throws {
@@ -562,7 +568,7 @@ private enum VerifyPrivilegedHelperClient {
                 preconditionFailure("Unexpected command: \(command)")
             }
         }
-        PrivilegedXrayRuntimeManager(
+        try PrivilegedXrayRuntimeManager(
             helperClient: PrivilegedHelperClient(transport: cleanupTransport),
             paths: cleanupPaths
         ).cleanupIfHelperAvailable()
@@ -602,10 +608,15 @@ private enum VerifyPrivilegedHelperClient {
                 payload: StatusResponse(helperVersion: "8", phase: .running, summary: nil, details: nil)
             )
         }
-        PrivilegedXrayRuntimeManager(
-            helperClient: PrivilegedHelperClient(transport: cleanupUnidentifiedTransport),
-            paths: cleanupUnidentifiedPaths
-        ).cleanupIfHelperAvailable()
+        do {
+            try PrivilegedXrayRuntimeManager(
+                helperClient: PrivilegedHelperClient(transport: cleanupUnidentifiedTransport),
+                paths: cleanupUnidentifiedPaths
+            ).cleanupIfHelperAvailable()
+            preconditionFailure("Expected cleanup to report unidentified running state")
+        } catch let PrivilegedHelperClientError.indeterminateStatus(summary) {
+            precondition(summary.localizedCaseInsensitiveContains("correlation"))
+        }
         precondition(cleanupUnidentifiedTransport.calls.map(\.0) == [.status])
     }
 

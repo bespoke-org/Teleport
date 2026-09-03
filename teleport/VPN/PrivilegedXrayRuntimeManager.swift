@@ -117,7 +117,7 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
         }
     }
 
-    func cleanupIfHelperAvailable(protectedHost fallbackProtectedHost: String? = nil) {
+    func cleanupIfHelperAvailable(protectedHost fallbackProtectedHost: String? = nil) throws {
         if let runtimeURL = runtimeURL() {
             try? helperInstaller.ensureInstalled(runtimeURL: runtimeURL)
         }
@@ -131,31 +131,27 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
         guard response.phase == .running else {
             return
         }
-
-        let sessionState = readSessionState()
-        let protectedHost = sessionState?.protectedHost ?? readProtectedHost() ?? fallbackProtectedHost
-        let outboundInterface = sessionState?.outboundInterface
-        let sessionID: UUID
-        if let cachedSessionID = sessionState?.sessionID {
-            if let observedSessionID = response.sessionID, observedSessionID != cachedSessionID {
-                return
-            }
-            sessionID = cachedSessionID
-        } else {
-            guard let observedSessionID = response.sessionID else {
-                return
-            }
-            sessionID = observedSessionID
+        guard let observedSessionID = response.sessionID else {
+            throw PrivilegedHelperClientError.indeterminateStatus(
+                "The running privileged helper session has no correlation identifier"
+            )
         }
 
-        if (try? helperClient.stop(
+        let sessionState = readSessionState()
+        if let cachedSessionID = sessionState?.sessionID, cachedSessionID != observedSessionID {
+            throw PrivilegedHelperClientError.indeterminateStatus(
+                "The running privileged helper session does not match the cached correlation identifier"
+            )
+        }
+        let protectedHost = sessionState?.protectedHost ?? readProtectedHost() ?? fallbackProtectedHost
+        let outboundInterface = sessionState?.outboundInterface
+        try helperClient.stop(
             paths: paths,
             protectedHost: protectedHost,
             outboundInterface: outboundInterface,
-            sessionID: sessionID
-        )) != nil {
-            removeSessionState()
-        }
+            sessionID: observedSessionID
+        )
+        removeSessionState()
     }
 
     func teardown() {

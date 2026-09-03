@@ -31,7 +31,7 @@ final class SystemProxyConnectionBackend: ConnectionBackend, @unchecked Sendable
         _ = splitTunnelRules
         _ = splitTunnelDefaultAction
         do {
-            vpnRuntimeManager?.cleanupIfHelperAvailable(protectedHost: configuration.host)
+            try vpnRuntimeManager?.cleanupIfHelperAvailable(protectedHost: configuration.host)
             try startRuntime(configuration: configuration, endpoint: endpoint)
             try proxyService.enableProxy(endpoint: endpoint)
         } catch {
@@ -50,7 +50,7 @@ final class SystemProxyConnectionBackend: ConnectionBackend, @unchecked Sendable
             }
 
             runtimeManager.stop()
-            vpnRuntimeManager?.cleanupIfHelperAvailable(protectedHost: configuration.host)
+            try vpnRuntimeManager?.cleanupIfHelperAvailable(protectedHost: configuration.host)
             try startRuntime(configuration: configuration, endpoint: endpoint)
             try proxyService.enableProxy(endpoint: endpoint)
         } catch {
