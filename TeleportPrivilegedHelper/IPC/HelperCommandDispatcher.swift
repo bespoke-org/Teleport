@@ -125,6 +125,12 @@ actor HelperCommandDispatcher {
                 guard let sessionID = request.sessionID else {
                     throw failure(code: .malformedPayload, summary: "The stop request requires a session identifier")
                 }
+                if let observedSessionID, observedSessionID != sessionID {
+                    throw failure(
+                        code: .requestConflict,
+                        summary: "The stop request does not match the observed privileged-helper session"
+                    )
+                }
                 return try await execute(
                     command: command,
                     requestID: request.requestID,

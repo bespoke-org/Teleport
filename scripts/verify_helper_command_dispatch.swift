@@ -91,6 +91,7 @@ private enum VerifyHelperCommandDispatch {
         try await verifyEveryMismatchedPayloadIsRejected()
         try await verifyRevisionMismatchIsStructured()
         try await verifySameDaemonStatusCorrelation()
+        try await verifyMismatchedStopDoesNotExecute()
         try await verifyCommandFailureDoesNotExposeSecrets()
         try verifyLegacySocketAdapterPreservesValidatedPID()
         try await verifyCompletedDuplicateReturnsExactBytesOnce()
@@ -237,6 +238,33 @@ private enum VerifyHelperCommandDispatch {
         )
         precondition(idle.sessionID == sessionID)
         precondition(idle.payload?.phase == .idle)
+    }
+
+    private static func verifyMismatchedStopDoesNotExecute() async throws {
+        let executor = RecordingExecutor()
+        let dispatcher = HelperCommandDispatcher(executor: executor)
+        let activeSessionID = UUID()
+        _ = await dispatcher.dispatch(
+            command: .startSession,
+            requestData: try makeStartData(
+                requestID: UUID(),
+                sessionID: activeSessionID,
+                protectedHost: "example.com"
+            )
+        )
+
+        let response = await dispatcher.dispatch(
+            command: .stopSession,
+            requestData: try makeStopData(requestID: UUID(), sessionID: UUID())
+        )
+
+        try assertFailure(response, as: StopSessionResponse.self, code: .requestConflict)
+        precondition(executor.commands == [.startSession])
+        let status: VPNHelperResponseEnvelope<StatusResponse> = try VPNHelperCodec.decodeResponse(
+            await dispatcher.dispatch(command: .status, requestData: try makeStatusData(requestID: UUID()))
+        )
+        precondition(status.sessionID == activeSessionID)
+        precondition(status.payload?.phase == .running)
     }
 
     private static func verifyCommandFailureDoesNotExposeSecrets() async throws {

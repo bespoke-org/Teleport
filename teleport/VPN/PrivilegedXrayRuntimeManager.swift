@@ -39,8 +39,14 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
         do {
             try helperInstaller.ensureInstalled(runtimeURL: runtimeURL)
             let sessionID = UUID()
-            let pid = try helperClient.start(session: session, paths: paths, sessionID: sessionID)
-            try persistSessionState(for: session, sessionID: sessionID, pid: pid)
+            _ = try XrayTunStartCorrelation.perform(
+                persist: { pid in
+                    try self.persistSessionState(for: session, sessionID: sessionID, pid: pid)
+                },
+                start: {
+                    try self.helperClient.start(session: session, paths: self.paths, sessionID: sessionID)
+                }
+            )
         } catch {
             throw XrayTunRuntimeError.startFailed(summary: readableSummary(from: error), details: diagnosticDetails(from: error))
         }
@@ -84,22 +90,6 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
             removeSessionState()
         } catch PrivilegedHelperClientError.unavailable(_) where pid == nil && protectedHost == nil {
             return
-        } catch PrivilegedHelperClientError.unavailable(_) {
-            do {
-                guard let runtimeURL = runtimeURL() else {
-                    throw XrayRuntimeManager.RuntimeError.binaryNotFound
-                }
-                try helperInstaller.ensureInstalled(runtimeURL: runtimeURL)
-                try helperClient.stop(
-                    paths: paths,
-                    protectedHost: protectedHost,
-                    outboundInterface: outboundInterface,
-                    sessionID: sessionID
-                )
-                removeSessionState()
-            } catch {
-                throw XrayTunRuntimeError.stopFailed(summary: readableSummary(from: error), details: diagnosticDetails(from: error))
-            }
         } catch {
             throw XrayTunRuntimeError.stopFailed(summary: readableSummary(from: error), details: diagnosticDetails(from: error))
         }

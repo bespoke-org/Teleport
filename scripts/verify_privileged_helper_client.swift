@@ -33,6 +33,105 @@ private final class ScriptedTransport: VPNHelperTransport, @unchecked Sendable {
     }
 }
 
+private final class LostStopReplyProxy: NSObject, VPNHelperXPCProtocol, @unchecked Sendable {
+    private let lock = NSLock()
+    private let sessionID: UUID
+    private let losesStopReply: Bool
+    private var proxyErrorHandler: (@Sendable (Error) -> Void)?
+    private var stopCalls = 0
+    private var statusCalls = 0
+
+    init(sessionID: UUID, losesStopReply: Bool) {
+        self.sessionID = sessionID
+        self.losesStopReply = losesStopReply
+    }
+
+    var counts: (stop: Int, status: Int) {
+        lock.withLock { (stopCalls, statusCalls) }
+    }
+
+    func setProxyErrorHandler(_ handler: @escaping @Sendable (Error) -> Void) {
+        lock.withLock { proxyErrorHandler = handler }
+    }
+
+    func getStatus(_ request: Data, withReply reply: @escaping (Data?, NSError?) -> Void) {
+        lock.withLock { statusCalls += 1 }
+        do {
+            let envelope: VPNHelperRequestEnvelope<StatusRequest> = try VPNHelperCodec.decodeRequest(request)
+            reply(try VerifyPrivilegedHelperClient.response(
+                requestID: envelope.requestID,
+                sessionID: sessionID,
+                payload: StatusResponse(helperVersion: "8", phase: .idle, summary: nil, details: nil)
+            ), nil)
+        } catch {
+            reply(nil, error as NSError)
+        }
+    }
+
+    func startSession(_ request: Data, withReply reply: @escaping (Data?, NSError?) -> Void) {
+        reply(nil, NSError(domain: "test.unexpected-start", code: 1))
+    }
+
+    func stopSession(_ request: Data, withReply reply: @escaping (Data?, NSError?) -> Void) {
+        lock.withLock { stopCalls += 1 }
+        if losesStopReply {
+            let handler = lock.withLock { proxyErrorHandler }
+            handler?(NSError(
+                domain: NSCocoaErrorDomain,
+                code: NSXPCConnectionInterrupted,
+                userInfo: [NSLocalizedDescriptionKey: "reply channel interrupted"]
+            ))
+        } else {
+            reply(nil, NSError(domain: "test.unexpected-stop", code: 1))
+        }
+    }
+
+    func readDiagnostics(_ request: Data, withReply reply: @escaping (Data?, NSError?) -> Void) {
+        reply(nil, NSError(domain: "test.unexpected-diagnostics", code: 1))
+    }
+}
+
+private final class LostStopReplyConnection: VPNHelperXPCConnection, @unchecked Sendable {
+    private let proxy: LostStopReplyProxy
+    private let lock = NSLock()
+    private var invalidationHandler: (@Sendable () -> Void)?
+
+    init(proxy: LostStopReplyProxy) {
+        self.proxy = proxy
+    }
+
+    func setRemoteObjectInterface(_ interface: NSXPCInterface) {}
+    func setInterruptionHandler(_ handler: @escaping @Sendable () -> Void) {}
+    func setInvalidationHandler(_ handler: @escaping @Sendable () -> Void) {
+        lock.withLock { invalidationHandler = handler }
+    }
+    func remoteProxy(errorHandler: @escaping @Sendable (Error) -> Void) -> (any VPNHelperXPCProtocol)? {
+        proxy.setProxyErrorHandler(errorHandler)
+        return proxy
+    }
+    func activate() {}
+    func invalidate() {
+        let handler = lock.withLock { invalidationHandler }
+        handler?()
+    }
+}
+
+private final class LostStopReplyConnectionFactory: @unchecked Sendable {
+    private let lock = NSLock()
+    private var connections: [LostStopReplyConnection]
+
+    init(connections: [LostStopReplyConnection]) {
+        self.connections = connections
+    }
+
+    func make() -> any VPNHelperXPCConnection {
+        lock.withLock {
+            precondition(!connections.isEmpty, "Unexpected XPC connection creation")
+            return connections.removeFirst()
+        }
+    }
+}
+
 @main
 private enum VerifyPrivilegedHelperClient {
     static func main() throws {
@@ -44,6 +143,8 @@ private enum VerifyPrivilegedHelperClient {
         try verifyFailedReconciliationIsCommandFailure()
         try verifyUnavailableAndUnknownReconciliationAreIndeterminate()
         try verifyDispatcherPublishesMemoryOnlyCorrelation()
+        try verifyStartCorrelationPersistenceOrderingAndFailureRetention()
+        try verifyLostXPCStopReplyDoesNotReplayMutation()
         try verifyRuntimePersistsSessionCorrelation()
         try verifyClientContainsNoSocketTransport()
         print("verify_privileged_helper_client: all checks passed")
@@ -269,12 +370,73 @@ private enum VerifyPrivilegedHelperClient {
         precondition(source.contains("observedSessionID = successfulSessionID"))
     }
 
+    private static func verifyStartCorrelationPersistenceOrderingAndFailureRetention() throws {
+        enum ExpectedFailure: Error { case start }
+
+        var failedEvents: [String] = []
+        do {
+            _ = try XrayTunStartCorrelation.perform(
+                persist: { pid in failedEvents.append("persist:\(pid.map(String.init) ?? "nil")") },
+                start: {
+                    failedEvents.append("start")
+                    throw ExpectedFailure.start
+                }
+            )
+            preconditionFailure("Expected start failure")
+        } catch ExpectedFailure.start {}
+        precondition(failedEvents == ["persist:nil", "start"])
+
+        var successfulEvents: [String] = []
+        let pid = try XrayTunStartCorrelation.perform(
+            persist: { pid in successfulEvents.append("persist:\(pid.map(String.init) ?? "nil")") },
+            start: {
+                successfulEvents.append("start")
+                return 42
+            }
+        )
+        precondition(pid == 42)
+        precondition(successfulEvents == ["persist:nil", "start", "persist:42"])
+    }
+
+    private static func verifyLostXPCStopReplyDoesNotReplayMutation() throws {
+        let sessionID = UUID()
+        let mutatingProxy = LostStopReplyProxy(sessionID: sessionID, losesStopReply: true)
+        let statusProxy = LostStopReplyProxy(sessionID: sessionID, losesStopReply: false)
+        let factory = LostStopReplyConnectionFactory(connections: [
+            LostStopReplyConnection(proxy: mutatingProxy),
+            LostStopReplyConnection(proxy: statusProxy)
+        ])
+        let transport = XPCVPNHelperTransport(connectionFactory: { factory.make() })
+        let client = PrivilegedHelperClient(transport: transport)
+
+        try client.stop(
+            paths: XrayTunRuntimePaths(),
+            protectedHost: "example.com",
+            outboundInterface: "en0",
+            sessionID: sessionID
+        )
+
+        precondition(mutatingProxy.counts.stop == 1)
+        precondition(mutatingProxy.counts.status == 0)
+        precondition(statusProxy.counts.stop == 0)
+        precondition(statusProxy.counts.status == 1)
+    }
+
     private static func verifyRuntimePersistsSessionCorrelation() throws {
         let managerSource = try String(contentsOfFile: "teleport/VPN/PrivilegedXrayRuntimeManager.swift", encoding: .utf8)
         let stateSource = try String(contentsOfFile: "teleport/VPN/XrayTunSessionState.swift", encoding: .utf8)
         precondition(managerSource.contains("let sessionID = UUID()"))
+        precondition(managerSource.contains("XrayTunStartCorrelation.perform"))
         precondition(managerSource.contains("sessionID: sessionID"))
         precondition(stateSource.contains("var sessionID: UUID"))
+
+        let stopStart = managerSource.range(of: "    func stop() throws {")!.lowerBound
+        let stopEnd = managerSource.range(
+            of: "    func cleanupIfHelperAvailable",
+            range: stopStart..<managerSource.endIndex
+        )!.lowerBound
+        let stopSource = managerSource[stopStart..<stopEnd]
+        precondition(stopSource.components(separatedBy: "helperClient.stop(").count - 1 == 1)
     }
 
     private static func verifyClientContainsNoSocketTransport() throws {
@@ -327,7 +489,7 @@ private enum VerifyPrivilegedHelperClient {
         )
     }
 
-    private static func response<Payload>(
+    fileprivate static func response<Payload>(
         requestID: UUID,
         sessionID: UUID?,
         payload: Payload

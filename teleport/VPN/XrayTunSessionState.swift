@@ -23,6 +23,20 @@ struct XrayTunLaunchSession: Sendable {
     var outboundInterface: String
 }
 
+/// Persists correlation before privileged work can become indeterminate, then
+/// refreshes the cache with the confirmed process projection on success.
+nonisolated enum XrayTunStartCorrelation {
+    static func perform(
+        persist: (Int32?) throws -> Void,
+        start: () throws -> Int32?
+    ) throws -> Int32? {
+        try persist(nil)
+        let pid = try start()
+        try persist(pid)
+        return pid
+    }
+}
+
 /// Collects paths used by both sides of the IPC protocol.
 /// `stateDirectoryURL` and `sessionStateFileURL` are user-owned. The PID, logs,
 /// protected-host marker, and config live below the root-only helper directory.

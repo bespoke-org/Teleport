@@ -154,7 +154,10 @@ nonisolated final class XPCVPNHelperTransport: VPNHelperTransport {
         }
 
         let proxy = record.connection.remoteProxy { [weak self, completion] error in
-            let transportError = VPNHelperTransportError.unavailable(error.localizedDescription)
+            let transportError = Self.proxyInvocationError(
+                for: command,
+                message: error.localizedDescription
+            )
             completion.resolve(.failure(transportError))
             self?.retireConnection(
                 generation: record.generation,
@@ -181,7 +184,10 @@ nonisolated final class XPCVPNHelperTransport: VPNHelperTransport {
 
         let reply: (Data?, NSError?) -> Void = { data, error in
             if let error {
-                completion.resolve(.failure(.unavailable(error.localizedDescription)))
+                completion.resolve(.failure(Self.proxyInvocationError(
+                    for: command,
+                    message: error.localizedDescription
+                )))
                 return
             }
             guard let data else {
@@ -333,6 +339,20 @@ nonisolated final class XPCVPNHelperTransport: VPNHelperTransport {
                 return .invalidated
             }
             return creation.retirementError
+        }
+    }
+
+    private static func proxyInvocationError(
+        for command: VPNHelperCommand,
+        message: String
+    ) -> VPNHelperTransportError {
+        switch command {
+        case .startSession, .stopSession:
+            // A proxy/reply-channel error does not prove whether a mutating
+            // message reached the helper, so the client must reconcile it.
+            return .interrupted
+        case .status, .readDiagnostics:
+            return .unavailable(message)
         }
     }
 
