@@ -25,12 +25,11 @@ enum HelperRequestLedgerError: Error, Equatable {
 struct HelperRequestLedger {
     private enum EntryState {
         case inProgress
-        case completed(Data)
+        case completed(Data, completedAt: Date)
     }
 
     private struct Entry {
         let fingerprint: HelperRequestFingerprint
-        let timestamp: Date
         let insertionOrder: UInt64
         var state: EntryState
     }
@@ -60,7 +59,7 @@ struct HelperRequestLedger {
         switch entry.state {
         case .inProgress:
             return .inProgress
-        case let .completed(responseData):
+        case let .completed(responseData, _):
             return .completed(responseData)
         }
     }
@@ -80,7 +79,6 @@ struct HelperRequestLedger {
 
         entries[requestID] = Entry(
             fingerprint: fingerprint,
-            timestamp: now(),
             insertionOrder: nextInsertionOrder,
             state: .inProgress
         )
@@ -96,7 +94,7 @@ struct HelperRequestLedger {
         guard var entry = entries[requestID], entry.fingerprint == fingerprint else {
             return
         }
-        entry.state = .completed(responseData)
+        entry.state = .completed(responseData, completedAt: now())
         entries[requestID] = entry
         pruneCompletedEntriesToMaximumCount()
     }
@@ -114,7 +112,12 @@ struct HelperRequestLedger {
     private mutating func pruneExpiredEntries() {
         let currentTime = now()
         entries = entries.filter { _, entry in
-            currentTime.timeIntervalSince(entry.timestamp) <= maximumAge
+            switch entry.state {
+            case .inProgress:
+                return true
+            case let .completed(_, completedAt):
+                return currentTime.timeIntervalSince(completedAt) <= maximumAge
+            }
         }
     }
 

@@ -18,9 +18,4 @@ struct ClientAuthenticator {
         connection.setCodeSigningRequirement(requirement)
         return true
     }
-
-    func authorizePeer(_ fd: Int32) throws {
-        _ = fd
-        throw HelperError("UNIX socket clients are no longer accepted")
-    }
 }

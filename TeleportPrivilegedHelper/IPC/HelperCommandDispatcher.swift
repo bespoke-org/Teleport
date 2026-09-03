@@ -13,16 +13,21 @@ actor HelperCommandDispatcher {
     /// Same-daemon correlation only. PID/process evidence remains owned by the executor,
     /// and a helper restart intentionally loses this observation.
     private var observedSessionID: UUID?
+    private var queuedSessionID: UUID?
+    private var correlationGeneration: UInt64 = 0
+    private let onRequestAdmitted: @Sendable (VPNHelperCommand) -> Void
 
     init(
         executor: any HelperCommandExecuting,
         ledger: HelperRequestLedger = HelperRequestLedger(
             maximumEntries: 128,
             maximumAge: 10 * 60
-        )
+        ),
+        onRequestAdmitted: @escaping @Sendable (VPNHelperCommand) -> Void = { _ in }
     ) {
         self.executor = executor
         self.ledger = ledger
+        self.onRequestAdmitted = onRequestAdmitted
     }
 
     func dispatch(command: VPNHelperCommand, requestData: Data) async -> Data {
@@ -100,7 +105,8 @@ actor HelperCommandDispatcher {
                 return try await execute(
                     command: command,
                     requestID: request.requestID,
-                    responseSessionID: observedSessionID,
+                    responseSessionID: nil,
+                    usesObservedSessionID: true,
                     successfulSessionID: nil,
                     fingerprint: fingerprint
                 ) { [executor] in
@@ -115,6 +121,7 @@ actor HelperCommandDispatcher {
                     command: command,
                     requestID: request.requestID,
                     responseSessionID: sessionID,
+                    usesObservedSessionID: false,
                     successfulSessionID: sessionID,
                     fingerprint: fingerprint
                 ) { [executor] in
@@ -125,7 +132,8 @@ actor HelperCommandDispatcher {
                 guard let sessionID = request.sessionID else {
                     throw failure(code: .malformedPayload, summary: "The stop request requires a session identifier")
                 }
-                if let observedSessionID, observedSessionID != sessionID {
+                if let expectedSessionID = queuedSessionID ?? observedSessionID,
+                   expectedSessionID != sessionID {
                     throw failure(
                         code: .requestConflict,
                         summary: "The stop request does not match the observed privileged-helper session"
@@ -135,6 +143,7 @@ actor HelperCommandDispatcher {
                     command: command,
                     requestID: request.requestID,
                     responseSessionID: sessionID,
+                    usesObservedSessionID: false,
                     successfulSessionID: sessionID,
                     fingerprint: fingerprint
                 ) { [executor] in
@@ -146,6 +155,7 @@ actor HelperCommandDispatcher {
                     command: command,
                     requestID: request.requestID,
                     responseSessionID: nil,
+                    usesObservedSessionID: false,
                     successfulSessionID: nil,
                     fingerprint: fingerprint
                 ) { [executor] in
@@ -170,6 +180,7 @@ actor HelperCommandDispatcher {
         command: VPNHelperCommand,
         requestID: UUID,
         responseSessionID: UUID?,
+        usesObservedSessionID: Bool,
         successfulSessionID: UUID?,
         fingerprint: HelperRequestFingerprint,
         operation: @escaping @Sendable () throws -> Response
@@ -192,6 +203,17 @@ actor HelperCommandDispatcher {
             )
         }
 
+        var reservedCorrelationGeneration: UInt64?
+        if let successfulSessionID {
+            correlationGeneration &+= 1
+            reservedCorrelationGeneration = correlationGeneration
+            queuedSessionID = successfulSessionID
+        }
+        let effectiveResponseSessionID = usesObservedSessionID
+            ? (queuedSessionID ?? observedSessionID)
+            : responseSessionID
+        onRequestAdmitted(command)
+
         let precedingExecution = executionTail
         let execution = Task.detached { () -> (data: Data, succeeded: Bool) in
             await precedingExecution?.value
@@ -200,7 +222,7 @@ actor HelperCommandDispatcher {
                 let response = VPNHelperResponseEnvelope(
                     revision: VPNHelperProtocol.revision,
                     requestID: requestID,
-                    sessionID: responseSessionID,
+                    sessionID: effectiveResponseSessionID,
                     payload: payload,
                     failure: nil
                 )
@@ -209,7 +231,7 @@ actor HelperCommandDispatcher {
                 return (
                     Self.encodeFailure(
                         requestID: requestID,
-                        sessionID: responseSessionID,
+                        sessionID: effectiveResponseSessionID,
                         payloadType: Response.self,
                         failure: Self.failure(
                             code: .commandFailed,
@@ -227,6 +249,9 @@ actor HelperCommandDispatcher {
         let result = await execution.value
         if result.succeeded, let successfulSessionID {
             observedSessionID = successfulSessionID
+        }
+        if reservedCorrelationGeneration == correlationGeneration {
+            queuedSessionID = nil
         }
         ledger.complete(
             requestID: requestID,

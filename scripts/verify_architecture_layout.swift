@@ -8,86 +8,138 @@ private func requireMissing(_ path: String) {
     precondition(!FileManager.default.fileExists(atPath: path), "obsolete architecture file remains at \(path)")
 }
 
+private func readSource(_ path: String) throws -> String {
+    try String(contentsOfFile: path, encoding: .utf8)
+}
+
+private func recursivelyEnumeratedSwiftFiles(in root: String) -> [String] {
+    guard let enumerator = FileManager.default.enumerator(atPath: root) else { return [] }
+    return enumerator.compactMap { entry in
+        guard let relativePath = entry as? String, relativePath.hasSuffix(".swift") else { return nil }
+        return root + "/" + relativePath
+    }
+}
+
+private func requireNoForbiddenDetails(_ details: [String], in path: String) throws {
+    let source = try readSource(path)
+    for detail in details {
+        precondition(!source.contains(detail), "\(path) contains forbidden architecture detail \(detail)")
+    }
+}
+
 do {
-        requireFile("teleport/Connection/ConnectionProvider.swift")
-        requireFile("teleport/Connection/ConnectionRequest.swift")
-        requireFile("teleport/Connection/ConnectionState.swift")
-        requireFile("teleport/Connection/ConnectionStateStore.swift")
-        requireFile("teleport/Connection/ConnectionPresentation.swift")
-        requireFile("teleport/Connection/ConnectionBackend.swift")
-        requireFile("teleport/Connection/BackendConnectionProvider.swift")
-        requireFile("teleport/Connection/ConnectionProviderFactory.swift")
-        requireFile("teleport/SystemProxy/SystemProxyConnectionProvider.swift")
-        requireFile("teleport/VPN/RootXrayConnectionProvider.swift")
-        requireMissing("teleport/Connection/ConnectionBackendFactory.swift")
+    let requiredFiles = [
+        "teleport/Connection/ConnectionProvider.swift",
+        "teleport/Connection/ConnectionRequest.swift",
+        "teleport/Connection/ConnectionState.swift",
+        "teleport/Connection/ConnectionStateStore.swift",
+        "teleport/Connection/ConnectionPresentation.swift",
+        "teleport/Connection/ConnectionBackend.swift",
+        "teleport/Connection/BackendConnectionProvider.swift",
+        "teleport/Connection/ConnectionProviderFactory.swift",
+        "teleport/SystemProxy/SystemProxyConnectionProvider.swift",
+        "teleport/VPN/RootXrayConnectionProvider.swift",
+        "teleport/XrayCore/XrayConfigurationWriter.swift",
+        "teleport/Geodata/GeodataUpdateService.swift",
+        "teleport/SystemProxy/SystemProxyConnectionBackend.swift",
+        "teleport/SystemProxy/SystemProxyService.swift",
+        "teleport/SystemProxy/XrayRuntimeManager.swift",
+        "teleport/VPN/XrayTunConnectionBackend.swift",
+        "teleport/VPN/PrivilegedHelperClient.swift",
+        "teleport/VPN/PrivilegedXrayRuntimeManager.swift",
+        "teleport/VPN/VPNHelperTransport.swift",
+        "teleport/VPN/XPCVPNHelperTransport.swift",
+        "teleport/VPN/XrayTunRouteInspector.swift",
+        "teleport/VPN/XrayTunSessionState.swift",
+        "teleport/HelperInstallation/BundledArtifactPolicy.swift",
+        "teleport/HelperInstallation/BundledArtifactVerifier.swift",
+        "teleport/HelperInstallation/PrivilegedHelperInstaller.swift",
+        "teleport/HelperInstallation/PrivilegedShellRunner.swift",
+        "Shared/VPNHelperXPCProtocol.swift",
+        "Shared/VPNHelperMessages.swift",
+        "Shared/VPNHelperProtocolError.swift",
+        "TeleportPrivilegedHelper/IPC/ClientAuthenticator.swift",
+        "TeleportPrivilegedHelper/IPC/HelperCommandDispatcher.swift",
+        "TeleportPrivilegedHelper/IPC/HelperCommandExecuting.swift",
+        "TeleportPrivilegedHelper/IPC/HelperRequestLedger.swift",
+        "TeleportPrivilegedHelper/IPC/HelperXPCListenerDelegate.swift",
+        "TeleportPrivilegedHelper/IPC/HelperXPCService.swift",
+        "TeleportPrivilegedHelper/Routing/XrayTunScriptBuilder.swift",
+        "TeleportPrivilegedHelper/Session/XrayTunController.swift",
+        "TeleportPrivilegedHelper/Support/HelperConfiguration.swift",
+        "TeleportPrivilegedHelper/Support/HelperError.swift",
+        "TeleportPrivilegedHelper/Support/HelperPlatform.swift",
+        "TeleportPrivilegedHelper/Support/HelperShellRunner.swift",
+        "TeleportPrivilegedHelper/Xray/ManagedXrayProcess.swift"
+    ]
+    for path in requiredFiles {
+        requireFile(path)
+    }
 
-        let appViewModelPath = "teleport/ViewModels/AppViewModel.swift"
-        let appViewModelSource = try String(contentsOfFile: appViewModelPath, encoding: .utf8)
-        let forbiddenAppViewModelDetails = [
-            "ConnectionBackend",
-            "PrivilegedHelperClient",
-            "PrivilegedXrayRuntimeManager",
-            "XrayTunRouteInspector",
-            "XrayConfigurationWriter",
-            "xray-tun-session.json",
-            "PrivilegedHelperConstants.version",
-            "utun"
-        ]
-        for detail in forbiddenAppViewModelDetails {
-            precondition(!appViewModelSource.contains(detail), "\(appViewModelPath) crosses the provider boundary with \(detail)")
+    let obsoleteFiles = [
+        "teleport/Connection/ConnectionBackendFactory.swift",
+        "teleport/Xray/XrayConfigurationWriter.swift",
+        "teleport/Xray/GeodataUpdateService.swift",
+        "teleport/Proxy/SystemProxyService.swift",
+        "teleport/Xray/XrayRuntimeManager.swift",
+        "teleport/Xray/PrivilegedHelperClient.swift",
+        "teleport/Xray/PrivilegedXrayRuntimeManager.swift",
+        "teleport/Xray/XrayTunRouteInspector.swift",
+        "teleport/Xray/XrayTunSessionState.swift",
+        "teleport/Xray/PrivilegedHelperInstaller.swift",
+        "teleport/Xray/PrivilegedShellRunner.swift",
+        "TeleportPrivilegedHelper/IPC/HelperMessages.swift",
+        "TeleportPrivilegedHelper/IPC/HelperServer.swift"
+    ]
+    for path in obsoleteFiles {
+        requireMissing(path)
+    }
+
+    let upperLayerForbiddenDetails = [
+        "ConnectionBackend",
+        "PrivilegedHelperClient",
+        "PrivilegedXrayRuntimeManager",
+        "XrayTunRouteInspector",
+        "XrayConfigurationWriter",
+        "NSXPCConnection",
+        "dev.x.teleport.helper",
+        "VPNHelperProtocol.revision",
+        "requestID",
+        "sessionID",
+        "xray-tun-session.json",
+        "PrivilegedHelperConstants.version",
+        "utun"
+    ]
+    try requireNoForbiddenDetails(upperLayerForbiddenDetails, in: "teleport/ViewModels/AppViewModel.swift")
+    try requireNoForbiddenDetails(
+        ["NSXPCConnection", "dev.x.teleport.helper", "VPNHelperProtocol.revision", "requestID", "sessionID"],
+        in: "teleport/Connection/ConnectionProvider.swift"
+    )
+
+    let productionRoots = ["Shared", "TeleportPrivilegedHelper", "teleport"]
+    let forbiddenSocketDetails = [
+        "AF_UNIX",
+        "sockaddr_un",
+        "LOCAL_PEERPID",
+        "getpeereid",
+        "socketPath",
+        "/var/run/dev.x.teleport.helper.sock",
+        "HelperServer",
+        "PrivilegedHelperRequest",
+        "PrivilegedHelperResponse"
+    ]
+    for root in productionRoots {
+        for path in recursivelyEnumeratedSwiftFiles(in: root) {
+            try requireNoForbiddenDetails(forbiddenSocketDetails, in: path)
         }
+    }
 
-        requireFile("teleport/XrayCore/XrayConfigurationWriter.swift")
-        requireFile("teleport/Geodata/GeodataUpdateService.swift")
-        requireMissing("teleport/Xray/XrayConfigurationWriter.swift")
-        requireMissing("teleport/Xray/GeodataUpdateService.swift")
-
-        requireFile("teleport/SystemProxy/SystemProxyConnectionBackend.swift")
-        requireFile("teleport/SystemProxy/SystemProxyService.swift")
-        requireFile("teleport/SystemProxy/XrayRuntimeManager.swift")
-        requireMissing("teleport/Proxy/SystemProxyService.swift")
-        requireMissing("teleport/Xray/XrayRuntimeManager.swift")
-
-        requireFile("teleport/VPN/XrayTunConnectionBackend.swift")
-        requireFile("teleport/VPN/PrivilegedHelperClient.swift")
-        requireFile("teleport/VPN/PrivilegedXrayRuntimeManager.swift")
-        requireFile("teleport/VPN/XrayTunRouteInspector.swift")
-        requireFile("teleport/VPN/XrayTunSessionState.swift")
-        requireMissing("teleport/Xray/PrivilegedHelperClient.swift")
-        requireMissing("teleport/Xray/PrivilegedXrayRuntimeManager.swift")
-        requireMissing("teleport/Xray/XrayTunRouteInspector.swift")
-        requireMissing("teleport/Xray/XrayTunSessionState.swift")
-
-        requireFile("teleport/HelperInstallation/BundledArtifactPolicy.swift")
-        requireFile("teleport/HelperInstallation/BundledArtifactVerifier.swift")
-        requireFile("teleport/HelperInstallation/PrivilegedHelperInstaller.swift")
-        requireFile("teleport/HelperInstallation/PrivilegedShellRunner.swift")
-        requireMissing("teleport/Xray/PrivilegedHelperInstaller.swift")
-        requireMissing("teleport/Xray/PrivilegedShellRunner.swift")
-
-        requireFile("TeleportPrivilegedHelper/IPC/ClientAuthenticator.swift")
-        requireFile("TeleportPrivilegedHelper/IPC/HelperCommandDispatcher.swift")
-        requireFile("TeleportPrivilegedHelper/IPC/HelperRequestLedger.swift")
-        requireFile("TeleportPrivilegedHelper/IPC/HelperXPCListenerDelegate.swift")
-        requireFile("TeleportPrivilegedHelper/IPC/HelperXPCService.swift")
-        requireFile("TeleportPrivilegedHelper/IPC/HelperMessages.swift")
-        requireFile("TeleportPrivilegedHelper/IPC/HelperServer.swift")
-        requireFile("TeleportPrivilegedHelper/Routing/XrayTunScriptBuilder.swift")
-        requireFile("TeleportPrivilegedHelper/Session/XrayTunController.swift")
-        requireFile("TeleportPrivilegedHelper/Support/HelperConfiguration.swift")
-        requireFile("TeleportPrivilegedHelper/Support/HelperPlatform.swift")
-        requireFile("TeleportPrivilegedHelper/Support/HelperShellRunner.swift")
-        requireFile("TeleportPrivilegedHelper/Xray/ManagedXrayProcess.swift")
-
-        let mainPath = "TeleportPrivilegedHelper/main.swift"
-        let mainSource = try String(contentsOfFile: mainPath, encoding: .utf8)
-        precondition(mainSource.contains("NSXPCListener(machServiceName: VPNHelperProtocol.machServiceName)"), "expected XPC Mach-service listener in \(mainPath)")
-        precondition(mainSource.contains("listener.resume()"), "expected XPC listener activation in \(mainPath)")
-        precondition(!mainSource.contains("HelperServer().run()"), "obsolete socket helper bootstrap remains in \(mainPath)")
-        precondition(!mainSource.contains("final class HelperServer"), "expected HelperServer to be extracted from \(mainPath)")
-        precondition(!mainSource.contains("final class XrayTunController"), "expected XrayTunController to be extracted from \(mainPath)")
-        precondition(!mainSource.contains("makeStartScript"), "expected route scripts to be extracted from \(mainPath)")
-        precondition(mainSource.split(separator: "\n").count < 20, "expected \(mainPath) to remain entry-only")
+    let mainPath = "TeleportPrivilegedHelper/main.swift"
+    let mainSource = try readSource(mainPath)
+    precondition(mainSource.contains("NSXPCListener(machServiceName: VPNHelperProtocol.machServiceName)"), "expected XPC Mach-service listener in \(mainPath)")
+    precondition(mainSource.contains("listener.resume()"), "expected XPC listener activation in \(mainPath)")
+    precondition(!mainSource.contains("SIGPIPE"), "obsolete socket signal handling remains in \(mainPath)")
+    precondition(mainSource.split(separator: "\n").count < 20, "expected \(mainPath) to remain entry-only")
 
     print("verify_architecture_layout: all checks passed")
 } catch {

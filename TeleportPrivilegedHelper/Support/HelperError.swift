@@ -1,0 +1,11 @@
+import Foundation
+
+struct HelperError: LocalizedError {
+    let message: String
+
+    init(_ message: String) {
+        self.message = message.isEmpty ? "Privileged helper command failed" : message
+    }
+
+    var errorDescription: String? { message }
+}

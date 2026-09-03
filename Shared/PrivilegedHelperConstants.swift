@@ -8,8 +8,6 @@ nonisolated enum PrivilegedHelperConstants {
     /// Bump this whenever an older helper cannot safely serve the current client.
     static let version = "8"
     static let label = "dev.x.teleport.PrivilegedHelper"
-    /// Legacy-only compatibility for the obsolete socket ingress retained until Task 8 removes both consumers.
-    static let socketPath = "/var/run/dev.x.teleport.helper.sock"
 
     /// Root-owned runtime state. The regular app process cannot read this directory directly.
     static let helperStateDirectoryPath = "/var/db/dev.x.teleport"

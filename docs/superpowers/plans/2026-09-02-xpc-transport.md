@@ -819,14 +819,15 @@ Record, without fabricating results, which checks were performed:
 
 ```text
 legacy helper reset
-fresh helper installation
-signed app accepted
+fresh helper installation and upgrade/cutover installation
+production Developer ID app accepted
 unsigned/wrong-team client rejected
 System Proxy connect/disconnect
 VPN connect/disconnect
-helper interruption during a mutating request
+live helper interruption during status, start, and stop
 app termination during a pending request
 Fast User Switching/login-window behavior
+hardened-runtime and notarized distribution validation
 ```
 
 Unperformed checks remain explicit release risks.

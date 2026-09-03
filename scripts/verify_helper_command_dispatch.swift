@@ -30,11 +30,15 @@ private final class RecordingExecutor: HelperCommandExecuting, @unchecked Sendab
     private var recordedCommands: [VPNHelperCommand] = []
     private var statusPhase: VPNHelperSessionPhase = .idle
     private let blockStart: Bool
+    private let blockStop: Bool
     let startEntered = DispatchSemaphore(value: 0)
     let releaseStart = DispatchSemaphore(value: 0)
+    let stopEntered = DispatchSemaphore(value: 0)
+    let releaseStop = DispatchSemaphore(value: 0)
 
-    init(blockStart: Bool = false) {
+    init(blockStart: Bool = false, blockStop: Bool = false) {
         self.blockStart = blockStart
+        self.blockStop = blockStop
     }
 
     var commands: [VPNHelperCommand] {
@@ -68,6 +72,10 @@ private final class RecordingExecutor: HelperCommandExecuting, @unchecked Sendab
         recordedCommands.append(.stopSession)
         statusPhase = .idle
         lock.unlock()
+        if blockStop {
+            stopEntered.signal()
+            precondition(releaseStop.wait(timeout: .now() + 5) == .success)
+        }
         return StopSessionResponse(phase: .idle, summary: nil, details: nil)
     }
 
@@ -91,9 +99,10 @@ private enum VerifyHelperCommandDispatch {
         try await verifyEveryMismatchedPayloadIsRejected()
         try await verifyRevisionMismatchIsStructured()
         try await verifySameDaemonStatusCorrelation()
+        try await verifyStatusAdmittedDuringStartUsesQueuedSessionCorrelation()
+        try await verifyStatusAdmittedDuringStopUsesQueuedSessionCorrelation()
         try await verifyMismatchedStopDoesNotExecute()
         try await verifyCommandFailureDoesNotExposeSecrets()
-        try verifyLegacySocketAdapterPreservesValidatedPID()
         try await verifyCompletedDuplicateReturnsExactBytesOnce()
         try await verifyInProgressDuplicateIsDeterministic()
         try await verifyChangedDuplicateConflicts()
@@ -240,6 +249,54 @@ private enum VerifyHelperCommandDispatch {
         precondition(idle.payload?.phase == .idle)
     }
 
+    private static func verifyStatusAdmittedDuringStartUsesQueuedSessionCorrelation() async throws {
+        let executor = RecordingExecutor(blockStart: true)
+        let statusAdmitted = DispatchSemaphore(value: 0)
+        let dispatcher = HelperCommandDispatcher(executor: executor) { command in
+            if command == .status { statusAdmitted.signal() }
+        }
+        let sessionID = UUID()
+        let startData = try makeStartData(requestID: UUID(), sessionID: sessionID, protectedHost: "example.com")
+        let statusData = try makeStatusData(requestID: UUID())
+
+        async let startResponseData = dispatcher.dispatch(command: .startSession, requestData: startData)
+        precondition(executor.startEntered.wait(timeout: .now() + 5) == .success)
+        async let statusResponseData = dispatcher.dispatch(command: .status, requestData: statusData)
+        precondition(statusAdmitted.wait(timeout: .now() + 5) == .success)
+        executor.releaseStart.signal()
+
+        let startResponse: VPNHelperResponseEnvelope<StartSessionResponse> = try await VPNHelperCodec.decodeResponse(startResponseData)
+        let statusResponse: VPNHelperResponseEnvelope<StatusResponse> = try await VPNHelperCodec.decodeResponse(statusResponseData)
+        precondition(startResponse.payload?.phase == .running)
+        precondition(statusResponse.payload?.phase == .running)
+        precondition(statusResponse.sessionID == sessionID)
+        precondition(executor.commands == [.startSession, .status])
+    }
+
+    private static func verifyStatusAdmittedDuringStopUsesQueuedSessionCorrelation() async throws {
+        let executor = RecordingExecutor(blockStop: true)
+        let statusAdmitted = DispatchSemaphore(value: 0)
+        let dispatcher = HelperCommandDispatcher(executor: executor) { command in
+            if command == .status { statusAdmitted.signal() }
+        }
+        let sessionID = UUID()
+        let stopData = try makeStopData(requestID: UUID(), sessionID: sessionID)
+        let statusData = try makeStatusData(requestID: UUID())
+
+        async let stopResponseData = dispatcher.dispatch(command: .stopSession, requestData: stopData)
+        precondition(executor.stopEntered.wait(timeout: .now() + 5) == .success)
+        async let statusResponseData = dispatcher.dispatch(command: .status, requestData: statusData)
+        precondition(statusAdmitted.wait(timeout: .now() + 5) == .success)
+        executor.releaseStop.signal()
+
+        let stopResponse: VPNHelperResponseEnvelope<StopSessionResponse> = try await VPNHelperCodec.decodeResponse(stopResponseData)
+        let statusResponse: VPNHelperResponseEnvelope<StatusResponse> = try await VPNHelperCodec.decodeResponse(statusResponseData)
+        precondition(stopResponse.payload?.phase == .idle)
+        precondition(statusResponse.payload?.phase == .idle)
+        precondition(statusResponse.sessionID == sessionID)
+        precondition(executor.commands == [.stopSession, .status])
+    }
+
     private static func verifyMismatchedStopDoesNotExecute() async throws {
         let executor = RecordingExecutor()
         let dispatcher = HelperCommandDispatcher(executor: executor)
@@ -283,18 +340,6 @@ private enum VerifyHelperCommandDispatch {
         let shellRunnerSource = try String(contentsOfFile: "TeleportPrivilegedHelper/Support/HelperShellRunner.swift", encoding: .utf8)
         precondition(shellRunnerSource.contains("throw HelperError(\"Privileged helper shell command failed\")"))
         precondition(!shellRunnerSource.contains("throw HelperError([stderr.text(), stdout.text()]"))
-    }
-
-    private static func verifyLegacySocketAdapterPreservesValidatedPID() throws {
-        let controllerSource = try String(contentsOfFile: "TeleportPrivilegedHelper/Session/XrayTunController.swift", encoding: .utf8)
-        let processSource = try String(contentsOfFile: "TeleportPrivilegedHelper/Xray/ManagedXrayProcess.swift", encoding: .utf8)
-        let serverSource = try String(contentsOfFile: "TeleportPrivilegedHelper/IPC/HelperServer.swift", encoding: .utf8)
-
-        precondition(controllerSource.contains("legacySocketProcessIdentifier"))
-        precondition(processSource.contains("validatedManagedXrayPID"))
-        precondition(processSource.contains("isInstalledXrayProcess(pid: pid)"))
-        precondition(serverSource.contains("let pid = controller.legacySocketProcessIdentifier()"))
-        precondition(serverSource.contains("details: pid.map(String.init)"))
     }
 
     private static func verifyCompletedDuplicateReturnsExactBytesOnce() async throws {

@@ -2,73 +2,63 @@
 
 ## Bundled runtime layout
 
-The app now expects these bundled resources under the app target directory:
+The app expects:
 
-- `teleport/Resources/xray` — arm64 executable used as the bundled Xray runtime
+- `teleport/Resources/xray` — bundled arm64 Xray executable
 - `teleport/Resources/xray-assets/geoip.dat`
 - `teleport/Resources/xray-assets/geosite.dat`
 
-The runtime manager resolves `xray` from the main bundle and sets `XRAY_LOCATION_ASSET` to the bundled `xray-assets` directory before launch.
+The System Proxy runtime resolves these resources from the app bundle. VPN installation verifies and copies the approved runtime and assets into root-owned paths.
 
-## Runtime source boundaries
+## Runtime boundaries
 
-- `teleport/XrayCore` builds Xray JSON and has no process or privilege code.
-- `teleport/Connection` defines the asynchronous provider API and shared connection state consumed by `AppViewModel`.
-- `teleport/SystemProxy` owns the System Proxy provider, user Xray process, and macOS proxy settings.
-- `teleport/VPN` owns the root-Xray provider and app-side privileged VPN orchestration.
-- `teleport/HelperInstallation` owns the current helper deployment path.
-- `teleport/Geodata` owns geodata selection and updates.
-- `TeleportPrivilegedHelper` contains root-only IPC, process, and route code.
+- `teleport/XrayCore` builds Xray JSON without process or privilege code.
+- `teleport/Connection` defines the provider API and state consumed by `AppViewModel`.
+- `teleport/SystemProxy` owns the unprivileged provider, user Xray process, and proxy settings.
+- `teleport/VPN` owns the root-Xray provider, typed helper client, and XPC transport.
+- `teleport/HelperInstallation` owns the transitional administrator installer.
+- `TeleportPrivilegedHelper` is the separate root executable containing authenticated XPC ingress, synchronous command dispatch, process lifecycle, and routes.
 
-The synchronous System Proxy and VPN backends are transitional adapters below `BackendConnectionProvider`. The root provider still uses the existing Unix-socket helper protocol and app-side session identity. XPC, authoritative helper sessions, and `SMAppService` registration are planned follow-up work, not current release behavior.
+The app and helper compile one Foundation-only exact-revision protocol. Revision 8 exposes four explicit `Data`/`NSError` XPC methods over launchd Mach service `dev.x.teleport.helper`. Requests and responses are typed Codable values with request/session UUIDs and fixed bounds. The helper authenticates the active console UID and applies the Teleport code-signing requirement before activating a connection.
+
+The helper keeps a bounded, ten-minute/128-entry in-memory request ledger for same-daemon deduplication. The app performs one status reconciliation after an interrupted, invalidated, or timed-out start/stop and never automatically retransmits that mutation.
+
+These UUIDs and observations are correlation only. Helper state is not persisted authoritatively across daemon restart, route cleanup is not journaled/session-owned, and process/routing operations remain synchronous. Those are Phase 4 concerns. `SMAppService` installation remains Phase 5.
 
 ## Runtime refresh notes
 
-The current bundled runtime was copied from a local Homebrew-installed Xray distribution.
-
-If the bundled runtime is refreshed later, replace both the executable and the asset directory together so the binary and data files stay in sync.
+The current bundled runtime was copied from a local Homebrew-installed Xray distribution. Refresh the executable and asset directory together so binary and data remain synchronized, then update the approved digest and repeat signing verification.
 
 ## Packaging considerations
 
-- The bundled executable must remain executable inside the built app bundle.
-- Release builds will require valid code signing for the app and any embedded executable content.
-- Hardened runtime and notarization should be validated specifically with the bundled Xray binary in place.
-- If App Sandbox stays enabled, verify that launching the bundled executable and changing system proxy settings still works in the intended distribution model.
+- Preserve executable permissions inside the app bundle.
+- App, helper, and bundled executable content require valid release signing.
+- Validate hardened runtime and notarization with the bundled Xray binary.
+- Release trust-boundary testing must use the production Developer ID requirement rather than assuming an Apple Development identity.
+- The current installer still requests administrator authorization and writes the LaunchDaemon/helper/runtime directly; it is intentionally transitional.
 
-## Proxy management considerations
+## Manual release checks
 
-- Proxy changes are currently implemented through `/usr/sbin/networksetup`.
-- This affects macOS network services outside the app process and should be tested on real user environments.
-- A failed proxy update should always be recoverable by disabling the proxy from the app or manually resetting macOS proxy settings.
+Automated verification does not replace real macOS checks for:
 
-## Verification status
+1. explicit legacy-helper reset, fresh installation, and upgrade/cutover installation;
+2. acceptance using the production Developer ID requirement and rejection of unsigned/wrong-team clients;
+3. System Proxy connect/disconnect;
+4. VPN connect/disconnect and current IPv4 route cleanup;
+5. live helper interruption during status, start, and stop;
+6. app termination during a pending request;
+7. Fast User Switching and login-window behavior;
+8. hardened-runtime and notarized distribution validation.
 
-### Completed from CLI
+These checks remain release risks until actually performed; do not infer them from unit/source verification.
 
-A Swift smoke-check script is available at `scripts/verify_core.swift` and currently verifies:
+## Automated verification
 
-- valid VLESS parsing
-- malformed/unsupported VLESS rejection
-- Xray JSON config generation
-- startup failure behavior when no bundled runtime is present in the executing bundle
-- proxy enablement rejection before runtime readiness
-
-Run it with:
+Run:
 
 ```bash
-just verify-core
+just clean
+just verify
 ```
 
-### Still required in Xcode / app runtime
-
-The full end-to-end product flow still needs manual verification in the actual macOS app build:
-
-1. Launch the menu bar app
-2. Save a working VLESS link
-3. Start bundled Xray
-4. Enable system proxy
-5. Confirm traffic routes through the local proxy endpoint
-6. Disable proxy
-7. Stop Xray
-
-Run `just verify` before release to execute the focused checks and fresh Xcode builds. The end-to-end proxy and VPN traffic flows above still require manual validation on a real macOS host.
+The suite checks shared protocol bounds/revision, helper ledger and dispatch, authenticated endpoint composition, client transport races, reconciliation behavior, Mach-service plist generation, architecture boundaries, both Debug builds, helper embedding, and signatures covered by the existing flow.

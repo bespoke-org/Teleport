@@ -1,133 +1,121 @@
 # Runtime source layout
 
-Teleport keeps the app-side connection orchestration separate from the root helper boundary. The folders below are source boundaries inside the existing app and helper targets; they are not separate Swift packages or frameworks.
+Teleport keeps app-side connection orchestration separate from the root helper trust boundary. These directories are source boundaries within the existing app and helper targets; they are not Swift packages or frameworks.
 
 ## App target
 
+### `teleport/Connection`
+
+Defines the provider-oriented API consumed by upper application layers:
+
+- `ConnectionProvider` exposes asynchronous connect/disconnect operations and one `ConnectionState` stream.
+- `ConnectionRequest` carries provider-neutral connection and split-tunnel inputs.
+- `ConnectionProviderFactory` selects System Proxy or root-Xray mode.
+- `BackendConnectionProvider` serializes lifecycle work around transitional synchronous backends.
+
+`AppViewModel` depends on this domain boundary and contains no helper, XPC, process, route, request-ID, or privileged session payload details.
+
 ### `teleport/XrayCore`
 
-Builds Xray JSON for System Proxy and VPN/TUN sessions.
-
-- Depends on connection and split-tunnel domain models.
-- Does not launch processes.
-- Does not change macOS proxy settings or routes.
-- Does not communicate with the privileged helper.
+Builds Xray JSON for System Proxy and VPN/TUN sessions. It does not launch processes, mutate system settings/routes, or contact the helper.
 
 ### `teleport/SystemProxy`
 
-Owns the unprivileged System Proxy execution path.
-
-- `SystemProxyConnectionProvider` is the mode-specific provider facade selected by the app.
-- `SystemProxyConnectionBackend` is the transitional synchronous adapter below that provider.
-- `XrayRuntimeManager` owns the user-level Xray child process and logs.
-- `SystemProxyService` reads and changes macOS network proxy settings.
+Owns the unprivileged System Proxy provider, its transitional backend, the user-level Xray process, and macOS proxy settings.
 
 ### `teleport/VPN`
 
-Owns app-side VPN/TUN orchestration.
+Owns app-side root-Xray orchestration:
 
-- `RootXrayConnectionProvider` is the mode-specific provider facade selected by the app.
-- `XrayTunConnectionBackend` is the transitional synchronous adapter that prepares and starts VPN sessions below the provider.
-- `PrivilegedXrayRuntimeManager` coordinates helper installation, IPC, and app-side session state.
-- `PrivilegedHelperClient` implements the JSON-over-Unix-socket client.
-- `XrayTunRouteInspector` performs read-only network inspection before startup.
-- `XrayTunSessionState` contains app-side launch and cached-state values.
+- `RootXrayConnectionProvider` is the provider facade.
+- `XrayTunConnectionBackend` remains the transitional synchronous backend.
+- `PrivilegedXrayRuntimeManager` coordinates installation preflight, typed helper calls, and app-side cached correlation state.
+- `VPNHelperTransport` hides transport details from higher layers.
+- `XPCVPNHelperTransport` owns `NSXPCConnection`, deadlines, interruption/invalidation handling, generation-safe replacement, and exactly-once completion.
+- `PrivilegedHelperClient` encodes exact-revision typed messages and performs one bounded status reconciliation after an indeterminate mutating reply. It never automatically retransmits start or stop.
+- `XrayTunSessionState` persists app-side correlation needed for later stop attempts. It is not authoritative root ownership.
 
-This directory contains no root-executed code. The helper is authoritative for privileged operations.
+This directory contains no root-executed code.
 
 ### `teleport/HelperInstallation`
 
-Owns deployment and verification of bundled privileged artifacts.
-
-- `BundledArtifactPolicy` contains the approved signing requirement and Xray digest.
-- `BundledArtifactVerifier` verifies the app, helper, and bundled Xray runtime.
-- `PrivilegedHelperInstaller` installs the helper, runtime, geodata, and LaunchDaemon.
-- `PrivilegedShellRunner` is the current administrator-authorization bridge used only during installation or update.
+Owns bundled artifact verification and the current administrator-authorized installation path. `PrivilegedHelperInstaller` installs the helper/runtime/assets and a LaunchDaemon exposing the XPC Mach service. This installer remains transitional; `SMAppService` is not implemented in Phase 3.
 
 ### `teleport/Geodata`
 
-Owns geodata source selection, downloads, and resolved asset preparation. Geodata is consumed by configuration generation and copied into the helper-owned asset directory during privileged installation.
-
-### `teleport/Connection`
-
-Contains the provider-oriented API consumed by upper application layers:
-
-- `ConnectionProvider` defines asynchronous connect/disconnect operations and one `ConnectionState` stream.
-- `ConnectionRequest` carries provider-neutral connection and split-tunnel inputs.
-- `ConnectionProviderFactory` selects the System Proxy or root-Xray provider for the persisted mode.
-- `BackendConnectionProvider` serializes lifecycle work and adapts the current synchronous implementations.
-- `ConnectionBackend` remains a transitional Phase 2 adapter below providers; it is not consumed by `AppViewModel`.
-
-`ConnectionSession.id` is currently generated in the app provider layer and identifies a UI connected interval only. It is not yet an authoritative helper-owned VPN session identifier.
+Owns geodata selection, downloads, and resolved assets consumed by configuration generation and privileged installation.
 
 ## Privileged helper target
 
-`TeleportPrivilegedHelper` remains a separate executable target and the explicit root trust boundary.
+`TeleportPrivilegedHelper` remains a separate root executable and explicit trust boundary.
 
 ### `IPC`
 
-- Defines helper request and response messages.
-- Authenticates the console-user client and its code signature.
-- Owns the Unix-domain socket server and command dispatch.
+- `ClientAuthenticator` requires the active console UID and configures the approved code-signing requirement before XPC activation.
+- `HelperXPCListenerDelegate` accepts only authenticated Mach-service connections and installs the bounded `Data`/`NSError` interface.
+- `HelperXPCService` provides the four explicit XPC methods and exactly-once replies.
+- `HelperCommandDispatcher` decodes typed command-specific payloads, serializes execution, and tracks the best same-daemon session correlation.
+- `HelperRequestLedger` bounds deduplication to 128 entries and ten minutes. Completed duplicates return identical bytes; in-progress duplicates and request-ID conflicts do not execute again.
+
+The former UNIX-domain socket server and duplicate socket message model have been removed. XPC is the only privileged command ingress.
 
 ### `Session`
 
-`XrayTunController` validates request fields, manages root-owned state files, and preserves the ordering of start, stop, and log operations.
+`XrayTunController` validates request fields and preserves the existing synchronous start/stop/status/diagnostics ordering and cleanup behavior.
 
 ### `Xray`
 
-`ManagedXrayProcess` validates PID files and executable paths, then performs the existing SIGTERM, bounded wait, and SIGKILL lifecycle.
+`ManagedXrayProcess` validates PID files and executable paths, then retains the existing SIGTERM, bounded wait, and SIGKILL lifecycle.
 
 ### `Routing`
 
-`XrayTunScriptBuilder` generates the current shell commands for TUN readiness, protected host and DNS routes, split default routes, and cleanup.
+`XrayTunScriptBuilder` generates the current IPv4 TUN readiness, protected-host, DNS, split-default-route, and cleanup commands.
 
 ### `Support`
 
-Contains module-wide constants, platform helpers, and bounded shell execution support used by the helper components.
+Contains shared helper configuration, platform lookups, and bounded shell execution support.
 
 ### `main.swift`
 
-Contains only process bootstrap behavior: ignore `SIGPIPE`, start `HelperServer`, report a fatal startup error, and exit.
+Bootstraps `NSXPCListener` for `VPNHelperProtocol.machServiceName`, installs the authenticated delegate, resumes the listener, and runs the process loop.
 
 ## Shared source
 
-`Shared/PrivilegedHelperConstants.swift` is compiled into both targets. It is the single source for protocol compatibility version, socket path, helper label, and root-owned installation paths.
+The `Shared` directory is compiled into both existing targets:
+
+- `PrivilegedHelperConstants.swift` contains installation compatibility and root-owned paths.
+- `VPNHelperXPCProtocol.swift` defines the Foundation-only XPC surface, exact revision 8, Mach-service name, and payload bounds.
+- `VPNHelperMessages.swift` defines typed Codable request/response values.
+- `VPNHelperProtocolError.swift` validates exact revisions, command payloads, session shapes, and encoded sizes.
 
 ## Dependency direction
 
 ```text
 AppViewModel
     -> ConnectionProvider / ConnectionRequest / ConnectionState
-        -> ConnectionProviderFactory
-            -> SystemProxyConnectionProvider
-                -> BackendConnectionProvider -> SystemProxyConnectionBackend
-            -> RootXrayConnectionProvider
-                -> BackendConnectionProvider -> XrayTunConnectionBackend
-                    -> HelperInstallation
+        -> mode-specific provider
+            -> BackendConnectionProvider -> transitional backend
+                -> PrivilegedXrayRuntimeManager
                     -> PrivilegedHelperClient
-
-XrayCore <- SystemProxy and VPN configuration preparation
-Geodata  <- app settings and helper installation
-
-PrivilegedHelperClient
-    -> authenticated helper IPC
-        -> XrayTunController
-            -> ManagedXrayProcess
-            -> HelperShellRunner
-            -> XrayTunScriptBuilder
+                        -> VPNHelperTransport / XPCVPNHelperTransport
+                            -> authenticated XPC Mach service
+                                -> HelperCommandDispatcher
+                                    -> XrayTunController
+                                        -> process / shell / route components
 ```
 
-`AppViewModel` consumes one provider state stream and does not coordinate process, proxy, helper, or route details directly. App code must not import helper implementation files. Root-only process and route mutations must not move into the app target.
+## Current limits and future phases
 
-The current root path still uses JSON over a Unix-domain socket, app-generated session identity, the existing privileged installer, and synchronous backend adapters. XPC/Mach services, authoritative helper-owned sessions, reconciliation, and `SMAppService` registration are future architecture phases and are not shipping behavior in this layout.
+Phase 3 session UUIDs provide correlation, not persisted authoritative helper ownership. The helper ledger and observed session identity are memory-only and are lost when the daemon restarts. Root process/route lifecycle remains synchronous and route cleanup is not journaled or session-owned.
+
+Phase 4 is responsible for authoritative persisted helper sessions, reconciliation, and route journals. Phase 5 is responsible for replacing the administrator installer with `SMAppService`. IPv6 routing, Network Extension migration, startup optimization, and auto-connect are not part of the current implementation.
 
 ## Verification
 
-Run the complete build and smoke-test suite:
+Run:
 
 ```bash
 just verify
 ```
 
-The `verify-architecture-layout` recipe guards required source locations, rejects obsolete mixed-responsibility files, and verifies that helper `main.swift` remains entry-only.
+`verify-architecture-layout` requires the XPC source boundaries, rejects legacy socket symbols/files, and prevents XPC details from crossing into provider/UI layers.

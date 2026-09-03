@@ -24,6 +24,8 @@ System Proxy mode starts the bundled Xray runtime as the current user, exposes l
 
 VPN mode starts Xray with its TUN inbound through Teleport's privileged helper. Teleport asks macOS for an admin password the first time it installs or updates the helper because creating a TUN interface and changing routes requires root access. After the helper is installed, normal connect/disconnect operations do not store or require the admin password.
 
+Normal privileged commands use an authenticated launchd XPC Mach service with an exact-revision typed protocol. The helper validates the active console user and Teleport code signature before accepting the connection. Requests and responses are size-bounded and correlated by UUID; after an indeterminate start/stop reply, the app performs one status query and never automatically repeats the mutation.
+
 VPN mode installs split default IPv4 routes:
 
 ```text
@@ -75,7 +77,9 @@ You can also open `teleport.xcodeproj` in Xcode and run the `teleport` scheme.
 
 ## Runtime architecture
 
-`AppViewModel` drives both connection modes through the asynchronous `ConnectionProvider` API and one shared `ConnectionState` stream. Mode-specific providers keep System Proxy and privileged root-Xray lifecycle details below that boundary.
+`AppViewModel` drives both connection modes through the asynchronous `ConnectionProvider` API and one shared `ConnectionState` stream. Mode-specific providers keep System Proxy and privileged root-Xray lifecycle details below that boundary. The VPN layer hides `NSXPCConnection`, helper revisions, request IDs, and privileged session payloads from providers and UI code.
+
+Phase 3 correlation and helper request deduplication are memory-bounded, not authoritative persisted root ownership. Authoritative sessions/route journals and `SMAppService` installation remain separate future phases.
 
 See [`docs/runtime-source-layout.md`](docs/runtime-source-layout.md) for the app/helper source boundaries, transitional backend adapters, current trust boundary, future-phase exclusions, dependency direction, and verification entry points.
 

@@ -14,6 +14,7 @@ private enum VerifyHelperRequestLedger {
         try verifyLookupLifecycleAndConflicts()
         try verifyCountEvictsOldestCompletedEntry()
         try verifyAgeEvictsExpiredEntries()
+        try verifyInProgressEntriesAgeOnlyAfterCompletion()
         try verifyCapacityPreservesInProgressEntries()
         print("verify_helper_request_ledger: all checks passed")
     }
@@ -72,6 +73,27 @@ private enum VerifyHelperRequestLedger {
         ledger.complete(requestID: requestID, fingerprint: fingerprint, responseData: Data("result".utf8))
         clock.now.addTimeInterval(601)
 
+        precondition(ledger.lookup(requestID: requestID, fingerprint: fingerprint) == .unknown)
+    }
+
+    private static func verifyInProgressEntriesAgeOnlyAfterCompletion() throws {
+        let clock = MutableTestClock(now: Date(timeIntervalSince1970: 1_000))
+        var ledger = HelperRequestLedger(maximumEntries: 2, maximumAge: 600, now: { clock.now })
+        let requestID = UUID()
+        let fingerprint = HelperRequestFingerprint(command: .startSession, payload: Data("slow".utf8))
+        let conflict = HelperRequestFingerprint(command: .startSession, payload: Data("different".utf8))
+        let response = Data("result".utf8)
+
+        try ledger.begin(requestID: requestID, fingerprint: fingerprint)
+        clock.now.addTimeInterval(601)
+        precondition(ledger.lookup(requestID: requestID, fingerprint: fingerprint) == .inProgress)
+        precondition(ledger.lookup(requestID: requestID, fingerprint: conflict) == .conflict)
+
+        ledger.complete(requestID: requestID, fingerprint: fingerprint, responseData: response)
+        precondition(ledger.lookup(requestID: requestID, fingerprint: fingerprint) == .completed(response))
+        clock.now.addTimeInterval(600)
+        precondition(ledger.lookup(requestID: requestID, fingerprint: fingerprint) == .completed(response))
+        clock.now.addTimeInterval(1)
         precondition(ledger.lookup(requestID: requestID, fingerprint: fingerprint) == .unknown)
     }
 

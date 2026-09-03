@@ -415,7 +415,8 @@ private enum VerifyPrivilegedHelperClient {
     private static func verifyDispatcherPublishesMemoryOnlyCorrelation() throws {
         let source = try String(contentsOfFile: "TeleportPrivilegedHelper/IPC/HelperCommandDispatcher.swift", encoding: .utf8)
         precondition(source.contains("observedSessionID"))
-        precondition(source.contains("responseSessionID: observedSessionID"))
+        precondition(source.contains("queuedSessionID"))
+        precondition(source.contains("queuedSessionID ?? observedSessionID"))
         precondition(source.contains("observedSessionID = successfulSessionID"))
     }
 
