@@ -10,6 +10,9 @@ actor HelperCommandDispatcher {
     private let executor: any HelperCommandExecuting
     private var ledger: HelperRequestLedger
     private var executionTail: Task<Void, Never>?
+    /// Same-daemon correlation only. PID/process evidence remains owned by the executor,
+    /// and a helper restart intentionally loses this observation.
+    private var observedSessionID: UUID?
 
     init(
         executor: any HelperCommandExecuting,
@@ -97,7 +100,8 @@ actor HelperCommandDispatcher {
                 return try await execute(
                     command: command,
                     requestID: request.requestID,
-                    sessionID: request.sessionID,
+                    responseSessionID: observedSessionID,
+                    successfulSessionID: nil,
                     fingerprint: fingerprint
                 ) { [executor] in
                     try executor.status(request: request.payload)
@@ -110,7 +114,8 @@ actor HelperCommandDispatcher {
                 return try await execute(
                     command: command,
                     requestID: request.requestID,
-                    sessionID: sessionID,
+                    responseSessionID: sessionID,
+                    successfulSessionID: sessionID,
                     fingerprint: fingerprint
                 ) { [executor] in
                     try executor.start(request: request.payload, sessionID: sessionID)
@@ -123,7 +128,8 @@ actor HelperCommandDispatcher {
                 return try await execute(
                     command: command,
                     requestID: request.requestID,
-                    sessionID: sessionID,
+                    responseSessionID: sessionID,
+                    successfulSessionID: sessionID,
                     fingerprint: fingerprint
                 ) { [executor] in
                     try executor.stop(request: request.payload, sessionID: sessionID)
@@ -133,7 +139,8 @@ actor HelperCommandDispatcher {
                 return try await execute(
                     command: command,
                     requestID: request.requestID,
-                    sessionID: request.sessionID,
+                    responseSessionID: nil,
+                    successfulSessionID: nil,
                     fingerprint: fingerprint
                 ) { [executor] in
                     try executor.readDiagnostics(request: request.payload)
@@ -156,7 +163,8 @@ actor HelperCommandDispatcher {
     private func execute<Response>(
         command: VPNHelperCommand,
         requestID: UUID,
-        sessionID: UUID?,
+        responseSessionID: UUID?,
+        successfulSessionID: UUID?,
         fingerprint: HelperRequestFingerprint,
         operation: @escaping @Sendable () throws -> Response
     ) async throws -> Data where Response: Codable & Sendable & Equatable {
@@ -168,7 +176,7 @@ actor HelperCommandDispatcher {
                 metadata: RequestMetadata(
                     revision: VPNHelperProtocol.revision,
                     requestID: requestID,
-                    sessionID: sessionID
+                    sessionID: responseSessionID
                 ),
                 failure: failure(
                     code: .inProgress,
@@ -179,27 +187,30 @@ actor HelperCommandDispatcher {
         }
 
         let precedingExecution = executionTail
-        let execution = Task.detached { () -> Data in
+        let execution = Task.detached { () -> (data: Data, succeeded: Bool) in
             await precedingExecution?.value
             do {
                 let payload = try operation()
                 let response = VPNHelperResponseEnvelope(
                     revision: VPNHelperProtocol.revision,
                     requestID: requestID,
-                    sessionID: sessionID,
+                    sessionID: responseSessionID,
                     payload: payload,
                     failure: nil
                 )
-                return try VPNHelperCodec.encodeResponse(response)
+                return (try VPNHelperCodec.encodeResponse(response), true)
             } catch {
-                return Self.encodeFailure(
-                    requestID: requestID,
-                    sessionID: sessionID,
-                    payloadType: Response.self,
-                    failure: Self.failure(
-                        code: .commandFailed,
-                        summary: "The privileged helper command failed"
-                    )
+                return (
+                    Self.encodeFailure(
+                        requestID: requestID,
+                        sessionID: responseSessionID,
+                        payloadType: Response.self,
+                        failure: Self.failure(
+                            code: .commandFailed,
+                            summary: "The privileged helper command failed"
+                        )
+                    ),
+                    false
                 )
             }
         }
@@ -207,13 +218,16 @@ actor HelperCommandDispatcher {
             _ = await execution.value
         }
 
-        let responseData = await execution.value
+        let result = await execution.value
+        if result.succeeded, let successfulSessionID {
+            observedSessionID = successfulSessionID
+        }
         ledger.complete(
             requestID: requestID,
             fingerprint: fingerprint,
-            responseData: responseData
+            responseData: result.data
         )
-        return responseData
+        return result.data
     }
 
     private func failureResponse(

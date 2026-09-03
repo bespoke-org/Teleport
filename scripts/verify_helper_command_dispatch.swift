@@ -28,6 +28,7 @@ private struct SecretFailingExecutor: HelperCommandExecuting, Sendable {
 private final class RecordingExecutor: HelperCommandExecuting, @unchecked Sendable {
     private let lock = NSLock()
     private var recordedCommands: [VPNHelperCommand] = []
+    private var statusPhase: VPNHelperSessionPhase = .idle
     private let blockStart: Bool
     let startEntered = DispatchSemaphore(value: 0)
     let releaseStart = DispatchSemaphore(value: 0)
@@ -43,12 +44,18 @@ private final class RecordingExecutor: HelperCommandExecuting, @unchecked Sendab
     }
 
     func status(request: StatusRequest) throws -> StatusResponse {
-        record(.status)
-        return StatusResponse(helperVersion: "8", phase: .idle, summary: nil, details: nil)
+        lock.lock()
+        recordedCommands.append(.status)
+        let phase = statusPhase
+        lock.unlock()
+        return StatusResponse(helperVersion: "8", phase: phase, summary: nil, details: nil)
     }
 
     func start(request: StartSessionRequest, sessionID: UUID) throws -> StartSessionResponse {
-        record(.startSession)
+        lock.lock()
+        recordedCommands.append(.startSession)
+        statusPhase = .running
+        lock.unlock()
         if blockStart {
             startEntered.signal()
             precondition(releaseStart.wait(timeout: .now() + 5) == .success)
@@ -57,7 +64,10 @@ private final class RecordingExecutor: HelperCommandExecuting, @unchecked Sendab
     }
 
     func stop(request: StopSessionRequest, sessionID: UUID) throws -> StopSessionResponse {
-        record(.stopSession)
+        lock.lock()
+        recordedCommands.append(.stopSession)
+        statusPhase = .idle
+        lock.unlock()
         return StopSessionResponse(phase: .idle, summary: nil, details: nil)
     }
 
@@ -80,6 +90,7 @@ private enum VerifyHelperCommandDispatch {
         try await verifyMalformedOversizedAndMismatchedRequestsNeverExecute()
         try await verifyEveryMismatchedPayloadIsRejected()
         try await verifyRevisionMismatchIsStructured()
+        try await verifySameDaemonStatusCorrelation()
         try await verifyCommandFailureDoesNotExposeSecrets()
         try verifyLegacySocketAdapterPreservesValidatedPID()
         try await verifyCompletedDuplicateReturnsExactBytesOnce()
@@ -194,6 +205,38 @@ private enum VerifyHelperCommandDispatch {
         let response = await dispatcher.dispatch(command: .status, requestData: rawData)
         try assertFailure(response, as: StatusResponse.self, code: .incompatibleService)
         precondition(executor.commands.isEmpty)
+    }
+
+    private static func verifySameDaemonStatusCorrelation() async throws {
+        let freshDispatcher = HelperCommandDispatcher(executor: RecordingExecutor())
+        let freshStatus: VPNHelperResponseEnvelope<StatusResponse> = try VPNHelperCodec.decodeResponse(
+            await freshDispatcher.dispatch(command: .status, requestData: try makeStatusData(requestID: UUID()))
+        )
+        precondition(freshStatus.sessionID == nil)
+        precondition(freshStatus.payload?.phase == .idle)
+
+        let executor = RecordingExecutor()
+        let dispatcher = HelperCommandDispatcher(executor: executor)
+        let sessionID = UUID()
+        _ = await dispatcher.dispatch(
+            command: .startSession,
+            requestData: try makeStartData(requestID: UUID(), sessionID: sessionID, protectedHost: "example.com")
+        )
+        let running: VPNHelperResponseEnvelope<StatusResponse> = try VPNHelperCodec.decodeResponse(
+            await dispatcher.dispatch(command: .status, requestData: try makeStatusData(requestID: UUID()))
+        )
+        precondition(running.sessionID == sessionID)
+        precondition(running.payload?.phase == .running)
+
+        _ = await dispatcher.dispatch(
+            command: .stopSession,
+            requestData: try makeStopData(requestID: UUID(), sessionID: sessionID)
+        )
+        let idle: VPNHelperResponseEnvelope<StatusResponse> = try VPNHelperCodec.decodeResponse(
+            await dispatcher.dispatch(command: .status, requestData: try makeStatusData(requestID: UUID()))
+        )
+        precondition(idle.sessionID == sessionID)
+        precondition(idle.payload?.phase == .idle)
     }
 
     private static func verifyCommandFailureDoesNotExposeSecrets() async throws {

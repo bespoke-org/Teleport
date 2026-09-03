@@ -209,7 +209,7 @@ struct PrivilegedHelperInstaller: Sendable {
         done
 
         launchctl bootout "system/$LABEL" >/dev/null 2>&1 || true
-        rm -f \(q(PrivilegedHelperClient.socketPath))
+        rm -f \(q(PrivilegedHelperConstants.socketPath))
         mv -f "$tmp_helper" "$HELPER_DST"
         mv -f "$tmp_xray" "$XRAY_DST"
         chown root:wheel "$HELPER_DST" "$XRAY_DST"

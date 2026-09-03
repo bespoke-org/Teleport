@@ -4,7 +4,8 @@ import Foundation
 /// This is useful for UI restoration, but it is not authoritative root state:
 /// the helper/Xray process may have changed after this snapshot was written.
 struct XrayTunSessionState: Codable, Sendable {
-    var pid: Int32
+    var sessionID: UUID
+    var pid: Int32?
     var protectedHost: String
     var tunnelInterfaceName: String
     var outboundInterface: String

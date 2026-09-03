@@ -38,14 +38,9 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
 
         do {
             try helperInstaller.ensureInstalled(runtimeURL: runtimeURL)
-            // TODO(gpt-5.6-sol): Make `start` an idempotent operation identified by
-            // a session UUID. If IPC times out after sending the request, or if the
-            // local state write fails after the helper succeeds, query authoritative
-            // helper state and either adopt or stop that exact session before
-            // reporting failure. Today either path can leave root Xray active while
-            // the app has no corresponding session record.
-            let pid = try helperClient.start(session: session, paths: paths)
-            try persistSessionState(for: session, pid: pid)
+            let sessionID = UUID()
+            let pid = try helperClient.start(session: session, paths: paths, sessionID: sessionID)
+            try persistSessionState(for: session, sessionID: sessionID, pid: pid)
         } catch {
             throw XrayTunRuntimeError.startFailed(summary: readableSummary(from: error), details: diagnosticDetails(from: error))
         }
@@ -62,13 +57,11 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
         return false
     }
 
-    // TODO(gpt-5.6-sol): Ask the helper for the managed process/session state.
-    // `kill(pid, 0)` proves only that some process currently owns this numeric PID;
-    // it does not verify the executable or guard against PID reuse. The fallback
-    // PID file is below the helper's root-only 0700 directory and is normally
-    // unreadable by this user process anyway.
     func isRunning() -> Bool {
-        guard let pid = readSessionState().map(\.pid) ?? readPID() else { return false }
+        if let status = try? helperClient.status() {
+            return status.version == PrivilegedHelperClient.expectedVersion && status.phase == .running
+        }
+        guard let pid = readSessionState()?.pid ?? readPID() else { return false }
         if kill(pid, 0) == 0 {
             return true
         }
@@ -77,11 +70,17 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
 
     func stop() throws {
         let sessionState = readSessionState()
-        let pid = sessionState.map(\.pid) ?? readPID()
+        let pid = sessionState?.pid ?? readPID()
         let protectedHost = sessionState?.protectedHost ?? readProtectedHost()
         let outboundInterface = sessionState?.outboundInterface
+        let sessionID = sessionState?.sessionID ?? UUID()
         do {
-            try helperClient.stop(paths: paths, protectedHost: protectedHost, outboundInterface: outboundInterface)
+            try helperClient.stop(
+                paths: paths,
+                protectedHost: protectedHost,
+                outboundInterface: outboundInterface,
+                sessionID: sessionID
+            )
             removeSessionState()
         } catch PrivilegedHelperClientError.unavailable(_) where pid == nil && protectedHost == nil {
             return
@@ -91,7 +90,12 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
                     throw XrayRuntimeManager.RuntimeError.binaryNotFound
                 }
                 try helperInstaller.ensureInstalled(runtimeURL: runtimeURL)
-                try helperClient.stop(paths: paths, protectedHost: protectedHost, outboundInterface: outboundInterface)
+                try helperClient.stop(
+                    paths: paths,
+                    protectedHost: protectedHost,
+                    outboundInterface: outboundInterface,
+                    sessionID: sessionID
+                )
                 removeSessionState()
             } catch {
                 throw XrayTunRuntimeError.stopFailed(summary: readableSummary(from: error), details: diagnosticDetails(from: error))
@@ -111,7 +115,13 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
         let sessionState = readSessionState()
         let protectedHost = sessionState?.protectedHost ?? readProtectedHost() ?? fallbackProtectedHost
         let outboundInterface = sessionState?.outboundInterface
-        if (try? helperClient.stop(paths: paths, protectedHost: protectedHost, outboundInterface: outboundInterface)) != nil {
+        let sessionID = sessionState?.sessionID ?? UUID()
+        if (try? helperClient.stop(
+            paths: paths,
+            protectedHost: protectedHost,
+            outboundInterface: outboundInterface,
+            sessionID: sessionID
+        )) != nil {
             removeSessionState()
         }
     }
@@ -128,9 +138,9 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
         return details
     }
 
-    private func persistSessionState(for session: XrayTunLaunchSession, pid: pid_t?) throws {
-        guard let pid else { return }
+    private func persistSessionState(for session: XrayTunLaunchSession, sessionID: UUID, pid: pid_t?) throws {
         let state = XrayTunSessionState(
+            sessionID: sessionID,
             pid: pid,
             protectedHost: session.protectedHost,
             tunnelInterfaceName: session.tunnelInterfaceName,

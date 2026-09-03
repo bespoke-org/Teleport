@@ -7,7 +7,7 @@ helper_name := "dev.x.teleport.PrivilegedHelper"
 derived_data := "build/DerivedData"
 dist_dir := "build/dist"
 destination := "platform=macOS,arch=arm64"
-verify_sources := "teleport/TeleportModels.swift teleport/App/*.swift teleport/Connection/*.swift teleport/Parsing/*.swift teleport/Persistence/*.swift teleport/Subscriptions/*.swift teleport/XrayCore/*.swift teleport/SystemProxy/*.swift teleport/VPN/*.swift teleport/HelperInstallation/*.swift teleport/Geodata/*.swift teleport/Health/*.swift teleport/ViewModels/*.swift Shared/PrivilegedHelperConstants.swift"
+verify_sources := "teleport/TeleportModels.swift teleport/App/*.swift teleport/Connection/*.swift teleport/Parsing/*.swift teleport/Persistence/*.swift teleport/Subscriptions/*.swift teleport/XrayCore/*.swift teleport/SystemProxy/*.swift teleport/VPN/*.swift teleport/HelperInstallation/*.swift teleport/Geodata/*.swift teleport/Health/*.swift teleport/ViewModels/*.swift Shared/*.swift"
 
 # List available recipes
 default:
@@ -148,7 +148,7 @@ package-open: package
 
 # Run all verification scripts after an Xcode build, so the privileged helper target
 # and app copy/sign phases are checked alongside the lightweight Swift scripts.
-verify: build-debug verify-core verify-subscription-support verify-connection-health verify-connection-provider verify-split-tunneling verify-geodata verify-persistence verify-xpc-protocol verify-helper-request-ledger verify-helper-command-dispatch verify-helper-xpc-endpoint verify-xpc-transport verify-architecture-layout
+verify: build-debug verify-core verify-subscription-support verify-connection-health verify-connection-provider verify-split-tunneling verify-geodata verify-persistence verify-xpc-protocol verify-helper-request-ledger verify-helper-command-dispatch verify-helper-xpc-endpoint verify-xpc-transport verify-privileged-helper-client verify-architecture-layout
 
 # Run core parser/config verification
 verify-core:
@@ -209,6 +209,11 @@ verify-helper-xpc-endpoint:
 verify-xpc-transport:
     swiftc Shared/*.swift teleport/VPN/VPNHelperTransport.swift teleport/VPN/XPCVPNHelperTransport.swift scripts/verify_xpc_transport.swift -o /tmp/teleport-verify-xpc-transport
     /tmp/teleport-verify-xpc-transport
+
+# Verify the typed privileged-helper client and bounded reconciliation
+verify-privileged-helper-client:
+    swiftc Shared/*.swift teleport/VPN/XrayTunSessionState.swift teleport/VPN/VPNHelperTransport.swift teleport/VPN/XPCVPNHelperTransport.swift teleport/VPN/PrivilegedHelperClient.swift scripts/verify_privileged_helper_client.swift -o /tmp/teleport-verify-privileged-helper-client
+    /tmp/teleport-verify-privileged-helper-client
 
 # Guard the Phase 1 Xray and privileged-helper source boundaries
 verify-architecture-layout:

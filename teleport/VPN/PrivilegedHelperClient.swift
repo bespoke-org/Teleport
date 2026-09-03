@@ -1,221 +1,320 @@
 import Foundation
-import Darwin
 
-/// User-side endpoint of the privileged-helper protocol. Each method opens one
-/// Unix-domain socket, sends one JSON request, half-closes the write side to mark
-/// end-of-request, and then waits for one JSON response from the root helper.
-struct PrivilegedHelperClient: Sendable {
+/// User-side typed facade for the privileged helper. XPC connection ownership and
+/// reply races remain contained in the injected transport.
+nonisolated struct PrivilegedHelperClient: Sendable {
     static let expectedVersion = PrivilegedHelperConstants.version
     static let label = PrivilegedHelperConstants.label
-    static let socketPath = PrivilegedHelperConstants.socketPath
     static let installedToolPath = PrivilegedHelperConstants.installedToolPath
     static let installedXrayPath = PrivilegedHelperConstants.installedXrayPath
     static let launchDaemonPlistPath = PrivilegedHelperConstants.launchDaemonPlistPath
 
-    /// Prevents a dead helper from blocking the app's serial operation queue forever.
-    // TODO(gpt-5.6-sol): The same five-second receive deadline is also treated as the
-    // completion deadline for `start`, while the helper may spend at least ten seconds
-    // waiting for a TUN interface. A socket timeout does not cancel root-side work, so
-    // the app can report failure while Xray and its routes become active. Introduce a
-    // session/request ID, command-specific deadlines, and post-timeout reconciliation
-    // that adopts or stops the matching helper-owned session.
-    private static let socketIOTimeout = timeval(tv_sec: 5, tv_usec: 0)
-
-    func status() throws -> PrivilegedHelperResponse {
-        try send(PrivilegedHelperRequest(command: "status"))
+    private enum ResponseSessionRule {
+        case absent
+        case exact(UUID)
+        case observed
     }
 
-    func start(session: XrayTunLaunchSession, paths: XrayTunRuntimePaths) throws -> pid_t? {
-        let response = try send(PrivilegedHelperRequest(
-            command: "start",
+    private let transport: any VPNHelperTransport
+
+    init(transport: any VPNHelperTransport = XPCVPNHelperTransport()) {
+        self.transport = transport
+    }
+
+    func status() throws -> PrivilegedHelperStatus {
+        let requestID = UUID()
+        do {
+            let response: VPNHelperResponseEnvelope<StatusResponse> = try exchange(
+                command: .status,
+                requestID: requestID,
+                sessionID: nil,
+                payload: StatusRequest(),
+                timeout: 3,
+                responseSessionRule: .observed
+            )
+            guard let payload = response.payload else {
+                throw PrivilegedHelperClientError.invalidResponse("The privileged helper status response has no payload")
+            }
+            return PrivilegedHelperStatus(
+                version: payload.helperVersion,
+                phase: payload.phase,
+                sessionID: response.sessionID,
+                summary: payload.summary,
+                details: payload.details
+            )
+        } catch {
+            throw mapClientError(error)
+        }
+    }
+
+    func start(
+        session: XrayTunLaunchSession,
+        paths: XrayTunRuntimePaths,
+        sessionID: UUID
+    ) throws -> pid_t? {
+        let requestID = UUID()
+        let payload = StartSessionRequest(
             stateDirectoryPath: paths.stateDirectoryURL.path,
-            configPath: nil,
             configData: session.configData,
             protectedHost: session.protectedHost,
             tunnelInterfaceName: session.tunnelInterfaceName,
-            outboundInterface: session.outboundInterface,
-            pid: nil
-        ))
-        try response.validate()
-        return response.details.flatMap(pid_t.init)
+            outboundInterface: session.outboundInterface
+        )
+
+        do {
+            let response: VPNHelperResponseEnvelope<StartSessionResponse> = try exchange(
+                command: .startSession,
+                requestID: requestID,
+                sessionID: sessionID,
+                payload: payload,
+                timeout: 20,
+                responseSessionRule: .exact(sessionID)
+            )
+            guard response.payload != nil else {
+                throw PrivilegedHelperClientError.invalidResponse("The privileged helper start response has no payload")
+            }
+            return nil
+        } catch let error as VPNHelperTransportError where error.requiresMutationReconciliation {
+            try reconcileMutation(
+                command: .startSession,
+                requestID: requestID,
+                sessionID: sessionID,
+                successfulPhase: .running
+            )
+            return nil
+        } catch {
+            throw mapClientError(error)
+        }
     }
 
-    func stop(paths: XrayTunRuntimePaths, protectedHost: String?, outboundInterface: String?) throws {
-        let response = try send(PrivilegedHelperRequest(
-            command: "stop",
+    func stop(
+        paths: XrayTunRuntimePaths,
+        protectedHost: String?,
+        outboundInterface: String?,
+        sessionID: UUID
+    ) throws {
+        let requestID = UUID()
+        let payload = StopSessionRequest(
             stateDirectoryPath: paths.stateDirectoryURL.path,
-            configPath: nil,
-            configData: nil,
             protectedHost: protectedHost,
-            tunnelInterfaceName: nil,
-            outboundInterface: outboundInterface,
-            pid: nil
-        ))
-        try response.validate()
-    }
+            outboundInterface: outboundInterface
+        )
 
-    func readLog(logName: String, maxBytes: Int) throws -> PrivilegedHelperResponse {
-        try send(PrivilegedHelperRequest(
-            command: "readLog",
-            logName: logName,
-            maxBytes: maxBytes
-        ))
-    }
-
-    /// Performs the transport exchange only. Command success is checked by callers
-    /// because `status` and `readLog` also need access to unsuccessful response details.
-    private func send(_ request: PrivilegedHelperRequest) throws -> PrivilegedHelperResponse {
-        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fd >= 0 else { throw POSIXError(.init(rawValue: errno) ?? .EIO) }
-        defer { close(fd) }
-
-        var address = sockaddr_un()
-        address.sun_family = sa_family_t(AF_UNIX)
-        let pathBytes = Array(Self.socketPath.utf8)
-        guard pathBytes.count < MemoryLayout.size(ofValue: address.sun_path) else {
-            throw PrivilegedHelperClientError.unavailable("Helper socket path is too long")
-        }
-        withUnsafeMutableBytes(of: &address.sun_path) { buffer in
-            for index in buffer.indices {
-                buffer[index] = 0
+        do {
+            let response: VPNHelperResponseEnvelope<StopSessionResponse> = try exchange(
+                command: .stopSession,
+                requestID: requestID,
+                sessionID: sessionID,
+                payload: payload,
+                timeout: 15,
+                responseSessionRule: .exact(sessionID)
+            )
+            guard response.payload != nil else {
+                throw PrivilegedHelperClientError.invalidResponse("The privileged helper stop response has no payload")
             }
-            for (index, byte) in pathBytes.enumerated() {
-                buffer[index] = byte
-            }
-        }
-
-        let length = socklen_t(MemoryLayout<sa_family_t>.size + pathBytes.count + 1)
-        let connectResult = withUnsafePointer(to: &address) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPointer in
-                Darwin.connect(fd, sockaddrPointer, length)
-            }
-        }
-        guard connectResult == 0 else {
-            throw PrivilegedHelperClientError.unavailable(String(cString: strerror(errno)))
-        }
-
-        var receiveTimeout = Self.socketIOTimeout
-        var sendTimeout = Self.socketIOTimeout
-        // TODO(gpt-5.6-sol): Check both `setsockopt` return values. If either call
-        // fails, the code currently proceeds under the false assumption that I/O
-        // is bounded and can still block the operation queue indefinitely.
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &receiveTimeout, socklen_t(MemoryLayout<timeval>.size))
-        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &sendTimeout, socklen_t(MemoryLayout<timeval>.size))
-
-        let requestData = try JSONEncoder().encode(request)
-        try writeAll(requestData, to: fd)
-        shutdown(fd, SHUT_WR)
-
-        let responseData = try readAll(from: fd)
-        guard !responseData.isEmpty else {
-            throw PrivilegedHelperClientError.invalidResponse("The privileged helper returned an empty response")
-        }
-        return try JSONDecoder().decode(PrivilegedHelperResponse.self, from: responseData)
-    }
-
-    private func writeAll(_ data: Data, to fd: Int32) throws {
-        try data.withUnsafeBytes { rawBuffer in
-            guard let base = rawBuffer.baseAddress else { return }
-            var offset = 0
-            while offset < data.count {
-                let written = Darwin.write(fd, base.advanced(by: offset), data.count - offset)
-                if written > 0 {
-                    offset += written
-                } else if written < 0 && errno == EINTR {
-                    continue
-                } else if errno == EAGAIN || errno == EWOULDBLOCK {
-                    throw PrivilegedHelperClientError.unavailable("Timed out writing to the privileged helper")
-                } else {
-                    throw POSIXError(.init(rawValue: errno) ?? .EIO)
-                }
-            }
+        } catch let error as VPNHelperTransportError where error.requiresMutationReconciliation {
+            try reconcileMutation(
+                command: .stopSession,
+                requestID: requestID,
+                sessionID: sessionID,
+                successfulPhase: .idle
+            )
+        } catch {
+            throw mapClientError(error)
         }
     }
 
-    private func readAll(from fd: Int32) throws -> Data {
-        var data = Data()
-        var buffer = [UInt8](repeating: 0, count: 4096)
-        while true {
-            let count = Darwin.read(fd, &buffer, buffer.count)
-            if count > 0 {
-                data.append(contentsOf: buffer.prefix(count))
-            } else if count == 0 {
-                break
-            } else if errno == EINTR {
-                continue
-            } else if errno == EAGAIN || errno == EWOULDBLOCK {
-                throw PrivilegedHelperClientError.unavailable("Timed out reading from the privileged helper")
-            } else {
-                throw POSIXError(.init(rawValue: errno) ?? .EIO)
-            }
+    func readLog(logName: String, maxBytes: Int) throws -> PrivilegedHelperDiagnostics {
+        let log: VPNHelperLog
+        switch logName {
+        case "xray", "xray-tun.log":
+            log = .xray
+        case "control", "xray-tun-control.log":
+            log = .control
+        default:
+            throw PrivilegedHelperClientError.invalidResponse("Unsupported privileged helper log selector")
         }
-        return data
+
+        let requestID = UUID()
+        let maximumBytes = max(1, min(maxBytes, VPNHelperProtocol.maximumDiagnosticsBytes))
+        do {
+            let response: VPNHelperResponseEnvelope<DiagnosticsResponse> = try exchange(
+                command: .readDiagnostics,
+                requestID: requestID,
+                sessionID: nil,
+                payload: ReadDiagnosticsRequest(log: log, maximumBytes: maximumBytes),
+                timeout: 5,
+                responseSessionRule: .absent
+            )
+            guard let payload = response.payload else {
+                throw PrivilegedHelperClientError.invalidResponse("The privileged helper diagnostics response has no payload")
+            }
+            return PrivilegedHelperDiagnostics(payload: payload)
+        } catch {
+            throw mapClientError(error)
+        }
     }
-}
 
-/// JSON wire representation shared conceptually with `HelperRequest` in the helper.
-/// `Codable` provides JSON encoding/decoding; `Sendable` allows the value to cross
-/// Swift concurrency boundaries. The two independently compiled structs must evolve
-/// together because there is currently no capability negotiation.
-struct PrivilegedHelperRequest: Codable, Sendable {
-    var command: String
-    var stateDirectoryPath: String?
-    var configPath: String?
-    var configData: Data?
-    var protectedHost: String?
-    var tunnelInterfaceName: String?
-    var outboundInterface: String?
-    var pid: Int32?
-    var logName: String?
-    var maxBytes: Int?
-
-    init(
-        command: String,
-        stateDirectoryPath: String? = nil,
-        configPath: String? = nil,
-        configData: Data? = nil,
-        protectedHost: String? = nil,
-        tunnelInterfaceName: String? = nil,
-        outboundInterface: String? = nil,
-        pid: Int32? = nil,
-        logName: String? = nil,
-        maxBytes: Int? = nil
-    ) {
-        self.command = command
-        self.stateDirectoryPath = stateDirectoryPath
-        self.configPath = configPath
-        self.configData = configData
-        self.protectedHost = protectedHost
-        self.tunnelInterfaceName = tunnelInterfaceName
-        self.outboundInterface = outboundInterface
-        self.pid = pid
-        self.logName = logName
-        self.maxBytes = maxBytes
-    }
-}
-
-/// Generic wire response. `details` is currently overloaded as either a PID,
-/// log contents, or diagnostics depending on the command.
-struct PrivilegedHelperResponse: Codable, Sendable {
-    var success: Bool
-    var version: String?
-    var summary: String?
-    var details: String?
-
-    func validate() throws {
-        guard success else {
-            throw PrivilegedHelperClientError.commandFailed(
-                summary?.isEmpty == false ? summary! : "Privileged helper command failed",
-                details
+    private func reconcileMutation(
+        command: VPNHelperCommand,
+        requestID: UUID,
+        sessionID: UUID,
+        successfulPhase: VPNHelperSessionPhase
+    ) throws {
+        transport.invalidate()
+        do {
+            let status = try status()
+            guard status.sessionID == sessionID else {
+                throw PrivilegedHelperClientError.indeterminate(
+                    requestID: requestID,
+                    sessionID: sessionID,
+                    summary: "The privileged helper could not correlate the \(command.rawValue) result"
+                )
+            }
+            if status.phase == successfulPhase {
+                return
+            }
+            if status.phase == .failed {
+                throw PrivilegedHelperClientError.commandFailed(
+                    status.summary?.isEmpty == false ? status.summary! : "The privileged helper command failed",
+                    status.details
+                )
+            }
+            throw PrivilegedHelperClientError.indeterminate(
+                requestID: requestID,
+                sessionID: sessionID,
+                summary: "The privileged helper reported \(status.phase.rawValue) while reconciling \(command.rawValue)"
+            )
+        } catch let error as PrivilegedHelperClientError {
+            switch error {
+            case .incompatibleService, .commandFailed, .indeterminate:
+                throw error
+            default:
+                throw PrivilegedHelperClientError.indeterminate(
+                    requestID: requestID,
+                    sessionID: sessionID,
+                    summary: error.errorDescription ?? "The privileged helper result is indeterminate"
+                )
+            }
+        } catch {
+            throw PrivilegedHelperClientError.indeterminate(
+                requestID: requestID,
+                sessionID: sessionID,
+                summary: error.localizedDescription
             )
         }
     }
+
+    private func exchange<Request, Response>(
+        command: VPNHelperCommand,
+        requestID: UUID,
+        sessionID: UUID?,
+        payload: Request,
+        timeout: TimeInterval,
+        responseSessionRule: ResponseSessionRule
+    ) throws -> VPNHelperResponseEnvelope<Response>
+    where Request: Codable & Sendable & Equatable,
+          Response: Codable & Sendable & Equatable {
+        let request = VPNHelperRequestEnvelope(
+            revision: VPNHelperProtocol.revision,
+            requestID: requestID,
+            sessionID: sessionID,
+            payload: payload
+        )
+        let requestData = try VPNHelperCodec.encodeRequest(request)
+        let responseData = try transport.send(command: command, requestData: requestData, timeout: timeout)
+
+        let response: VPNHelperResponseEnvelope<Response>
+        do {
+            response = try VPNHelperCodec.decodeResponse(responseData)
+        } catch let failure as VPNHelperProtocolFailure {
+            throw mapProtocolFailure(failure)
+        }
+        guard response.requestID == requestID else {
+            throw PrivilegedHelperClientError.invalidResponse("The privileged helper response request identifier does not match")
+        }
+        switch responseSessionRule {
+        case .absent:
+            guard response.sessionID == nil else {
+                throw PrivilegedHelperClientError.invalidResponse("The privileged helper response contains an unexpected session identifier")
+            }
+        case let .exact(expected):
+            guard response.sessionID == expected else {
+                throw PrivilegedHelperClientError.invalidResponse("The privileged helper response session identifier does not match")
+            }
+        case .observed:
+            break
+        }
+        if let failure = response.failure {
+            throw mapProtocolFailure(failure)
+        }
+        return response
+    }
+
+    private func mapProtocolFailure(_ failure: VPNHelperProtocolFailure) -> PrivilegedHelperClientError {
+        switch failure.code {
+        case .incompatibleService:
+            return .incompatibleService(failure.summary, failure.details)
+        case .commandFailed:
+            return .commandFailed(failure.summary, failure.details)
+        case .inProgress:
+            return .inProgress(failure.summary, failure.details)
+        case .unavailable:
+            return .unavailable(failure.summary)
+        default:
+            return .invalidResponse(failure.details ?? failure.summary)
+        }
+    }
+
+    private func mapClientError(_ error: Error) -> Error {
+        if error is PrivilegedHelperClientError {
+            return error
+        }
+        if let transportError = error as? VPNHelperTransportError {
+            switch transportError {
+            case let .unavailable(message):
+                return PrivilegedHelperClientError.unavailable(message)
+            case .interrupted:
+                return PrivilegedHelperClientError.unavailable("The privileged helper connection was interrupted")
+            case .invalidated:
+                return PrivilegedHelperClientError.unavailable("The privileged helper connection was invalidated")
+            case .deadlineExceeded:
+                return PrivilegedHelperClientError.unavailable("The privileged helper request deadline was exceeded")
+            case let .invalidResponse(message):
+                return PrivilegedHelperClientError.invalidResponse(message)
+            }
+        }
+        if let failure = error as? VPNHelperProtocolFailure {
+            return mapProtocolFailure(failure)
+        }
+        return error
+    }
 }
 
-enum PrivilegedHelperClientError: LocalizedError {
+nonisolated struct PrivilegedHelperStatus: Sendable, Equatable {
+    let version: String?
+    let phase: VPNHelperSessionPhase
+    let sessionID: UUID?
+    let summary: String?
+    let details: String?
+    var success: Bool { true }
+}
+
+nonisolated struct PrivilegedHelperDiagnostics: Sendable, Equatable {
+    let payload: DiagnosticsResponse
+    var success: Bool { true }
+    var summary: String? { payload.metadata }
+    var details: String? { payload.text }
+    func validate() throws {}
+}
+
+nonisolated enum PrivilegedHelperClientError: LocalizedError, Equatable {
     case unavailable(String)
     case invalidResponse(String)
+    case incompatibleService(String, String?)
     case commandFailed(String, String?)
+    case inProgress(String, String?)
+    case indeterminate(requestID: UUID, sessionID: UUID, summary: String)
 
     var errorDescription: String? {
         switch self {
@@ -223,17 +322,34 @@ enum PrivilegedHelperClientError: LocalizedError {
             return "Teleport privileged helper is not running: \(message)"
         case let .invalidResponse(message):
             return message
-        case let .commandFailed(summary, _):
+        case let .incompatibleService(summary, _),
+             let .commandFailed(summary, _),
+             let .inProgress(summary, _):
+            return summary
+        case let .indeterminate(_, _, summary):
             return summary
         }
     }
 
     var failureReason: String? {
         switch self {
-        case let .commandFailed(_, details):
+        case let .incompatibleService(_, details),
+             let .commandFailed(_, details),
+             let .inProgress(_, details):
             return details
         default:
             return nil
+        }
+    }
+}
+
+private extension VPNHelperTransportError {
+    var requiresMutationReconciliation: Bool {
+        switch self {
+        case .interrupted, .invalidated, .deadlineExceeded:
+            return true
+        case .unavailable, .invalidResponse:
+            return false
         }
     }
 }
