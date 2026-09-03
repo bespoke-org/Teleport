@@ -72,7 +72,7 @@ struct PrivilegedHelperInstaller: Sendable {
     }
 
     private func install(helperURL: URL, runtimeURL: URL, assetDirectoryURL: URL) throws {
-        let plist = launchDaemonPlist()
+        let plist = Self.launchDaemonPlist()
         let script = installScript(appBundleURL: bundle.bundleURL, helperURL: helperURL, runtimeURL: runtimeURL, assetDirectoryURL: assetDirectoryURL, plist: plist)
         do {
             try shellRunner.runAdministratorShellScript(script, prompt: administratorPrompt)
@@ -209,7 +209,6 @@ struct PrivilegedHelperInstaller: Sendable {
         done
 
         launchctl bootout "system/$LABEL" >/dev/null 2>&1 || true
-        rm -f \(q(PrivilegedHelperConstants.socketPath))
         mv -f "$tmp_helper" "$HELPER_DST"
         mv -f "$tmp_xray" "$XRAY_DST"
         chown root:wheel "$HELPER_DST" "$XRAY_DST"
@@ -227,9 +226,9 @@ struct PrivilegedHelperInstaller: Sendable {
     }
 
     /// The daemon runs as root by default because no `UserName` is specified.
-    /// `KeepAlive` keeps the IPC service available; Xray itself is a separate child
+    /// `KeepAlive` keeps the XPC service available; Xray itself is a separate child
     /// launched only for an active VPN session.
-    private func launchDaemonPlist() -> String {
+    static func launchDaemonPlist() -> String {
         """
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -241,6 +240,11 @@ struct PrivilegedHelperInstaller: Sendable {
             <array>
                 <string>\(PrivilegedHelperClient.installedToolPath)</string>
             </array>
+            <key>MachServices</key>
+            <dict>
+                <key>\(VPNHelperProtocol.machServiceName)</key>
+                <true/>
+            </dict>
             <key>RunAtLoad</key>
             <true/>
             <key>KeepAlive</key>

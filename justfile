@@ -148,7 +148,7 @@ package-open: package
 
 # Run all verification scripts after an Xcode build, so the privileged helper target
 # and app copy/sign phases are checked alongside the lightweight Swift scripts.
-verify: build-debug verify-core verify-subscription-support verify-connection-health verify-connection-provider verify-split-tunneling verify-geodata verify-persistence verify-xpc-protocol verify-helper-request-ledger verify-helper-command-dispatch verify-helper-xpc-endpoint verify-xpc-transport verify-privileged-helper-client verify-architecture-layout
+verify: build-debug verify-core verify-subscription-support verify-connection-health verify-connection-provider verify-split-tunneling verify-geodata verify-persistence verify-xpc-protocol verify-helper-request-ledger verify-helper-command-dispatch verify-helper-xpc-endpoint verify-xpc-transport verify-privileged-helper-client verify-mach-service-installation verify-architecture-layout
 
 # Run core parser/config verification
 verify-core:
@@ -214,6 +214,15 @@ verify-xpc-transport:
 verify-privileged-helper-client:
     swiftc Shared/*.swift teleport/VPN/XrayTunSessionState.swift teleport/VPN/VPNHelperTransport.swift teleport/VPN/XPCVPNHelperTransport.swift teleport/VPN/PrivilegedHelperClient.swift scripts/verify_privileged_helper_client.swift -o /tmp/teleport-verify-privileged-helper-client
     /tmp/teleport-verify-privileged-helper-client
+
+# Verify the LaunchDaemon Mach service and explicit legacy reset tooling
+verify-mach-service-installation:
+    swiftc {{verify_sources}} scripts/verify_mach_service_installation.swift -o /tmp/teleport-verify-mach-service-installation
+    /tmp/teleport-verify-mach-service-installation
+
+# Explicitly remove the legacy helper installation before development cutover
+reset-legacy-privileged-helper:
+    sudo sh scripts/reset_legacy_privileged_helper.sh
 
 # Guard the Phase 1 Xray and privileged-helper source boundaries
 verify-architecture-layout:
