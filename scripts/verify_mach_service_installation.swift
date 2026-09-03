@@ -24,6 +24,9 @@ struct VerifyMachServiceInstallation {
         )
         require(plist["StandardOutPath"] as? String == "/var/log/teleport-privileged-helper.log", "stdout path changed")
         require(plist["StandardErrorPath"] as? String == "/var/log/teleport-privileged-helper.log", "stderr path changed")
+        require(plist["RunAtLoad"] as? Bool == true, "LaunchDaemon must run when loaded")
+        require(plist["KeepAlive"] as? Bool == true, "LaunchDaemon must remain available")
+        require(plist["UserName"] == nil, "LaunchDaemon must use launchd's root default")
         require(plist["Sockets"] == nil, "Legacy launchd Sockets dictionary must be absent")
 
         guard let machServices = plist["MachServices"] as? [String: Any] else {
@@ -44,7 +47,12 @@ struct VerifyMachServiceInstallation {
         require(resetSource.hasPrefix("#!/bin/sh\n"), "Reset script must use a system shell shebang")
         require(resetSource.contains("set -eu"), "Reset script must enable set -eu")
         require(resetSource.contains("$(id -u)"), "Reset script must check the effective user")
+        require(resetSource.contains("launchctl print \"system/$LABEL\""), "Reset script must detect whether the legacy daemon is loaded")
         require(resetSource.contains("launchctl bootout \"system/$LABEL\""), "Reset script must boot out the legacy daemon")
+        require(
+            !resetSource.contains("launchctl bootout \"system/$LABEL\" >/dev/null 2>&1 || true"),
+            "Reset script must not suppress bootout failures for a loaded daemon"
+        )
         require(resetSource.contains("printf '%s\\n' \"Removing $path\""), "Reset script must print every removed path")
         require(resetSource.contains("rm -rf -- \"$path\""), "Reset script must remove each declared path")
 

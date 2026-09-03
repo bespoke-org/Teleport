@@ -7,8 +7,12 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 LABEL='dev.x.teleport.PrivilegedHelper'
-printf '%s\n' "Booting out system/$LABEL"
-launchctl bootout "system/$LABEL" >/dev/null 2>&1 || true
+if launchctl print "system/$LABEL" >/dev/null 2>&1; then
+    printf '%s\n' "Booting out system/$LABEL"
+    launchctl bootout "system/$LABEL"
+else
+    printf '%s\n' "No loaded service at system/$LABEL"
+fi
 
 remove_path() {
     path=$1
