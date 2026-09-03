@@ -70,8 +70,11 @@ nonisolated struct PrivilegedHelperClient: Sendable {
                 timeout: 20,
                 responseSessionRule: .exact(sessionID)
             )
-            guard response.payload != nil else {
+            guard let responsePayload = response.payload else {
                 throw PrivilegedHelperClientError.invalidResponse("The privileged helper start response has no payload")
+            }
+            guard responsePayload.phase == .running else {
+                throw PrivilegedHelperClientError.invalidResponse("The privileged helper start response is not running")
             }
             return nil
         } catch let error as VPNHelperTransportError where error.requiresMutationReconciliation {
@@ -109,8 +112,11 @@ nonisolated struct PrivilegedHelperClient: Sendable {
                 timeout: 15,
                 responseSessionRule: .exact(sessionID)
             )
-            guard response.payload != nil else {
+            guard let responsePayload = response.payload else {
                 throw PrivilegedHelperClientError.invalidResponse("The privileged helper stop response has no payload")
+            }
+            guard responsePayload.phase == .idle else {
+                throw PrivilegedHelperClientError.invalidResponse("The privileged helper stop response is not idle")
             }
         } catch let error as VPNHelperTransportError where error.requiresMutationReconciliation {
             try reconcileMutation(
@@ -148,6 +154,9 @@ nonisolated struct PrivilegedHelperClient: Sendable {
             )
             guard let payload = response.payload else {
                 throw PrivilegedHelperClientError.invalidResponse("The privileged helper diagnostics response has no payload")
+            }
+            guard payload.log == log else {
+                throw PrivilegedHelperClientError.invalidResponse("The privileged helper diagnostics response selected a different log")
             }
             return PrivilegedHelperDiagnostics(payload: payload)
         } catch {
@@ -315,6 +324,7 @@ nonisolated enum PrivilegedHelperClientError: LocalizedError, Equatable {
     case commandFailed(String, String?)
     case inProgress(String, String?)
     case indeterminate(requestID: UUID, sessionID: UUID, summary: String)
+    case indeterminateStatus(String)
 
     var errorDescription: String? {
         switch self {
@@ -326,7 +336,8 @@ nonisolated enum PrivilegedHelperClientError: LocalizedError, Equatable {
              let .commandFailed(summary, _),
              let .inProgress(summary, _):
             return summary
-        case let .indeterminate(_, _, summary):
+        case let .indeterminate(_, _, summary),
+             let .indeterminateStatus(summary):
             return summary
         }
     }

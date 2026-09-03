@@ -212,7 +212,7 @@ verify-xpc-transport:
 
 # Verify the typed privileged-helper client and bounded reconciliation
 verify-privileged-helper-client:
-    swiftc Shared/*.swift teleport/VPN/XrayTunSessionState.swift teleport/VPN/VPNHelperTransport.swift teleport/VPN/XPCVPNHelperTransport.swift teleport/VPN/PrivilegedHelperClient.swift scripts/verify_privileged_helper_client.swift -o /tmp/teleport-verify-privileged-helper-client
+    swiftc {{verify_sources}} scripts/verify_privileged_helper_client.swift -o /tmp/teleport-verify-privileged-helper-client
     /tmp/teleport-verify-privileged-helper-client
 
 # Verify the LaunchDaemon Mach service and explicit legacy reset tooling

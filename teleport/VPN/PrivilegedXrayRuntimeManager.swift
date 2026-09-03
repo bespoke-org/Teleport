@@ -16,11 +16,12 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
         bundle: Bundle = .main,
         fileManager: FileManager = .default,
         helperClient: PrivilegedHelperClient = PrivilegedHelperClient(),
-        helperInstaller: PrivilegedHelperInstaller? = nil
+        helperInstaller: PrivilegedHelperInstaller? = nil,
+        paths: XrayTunRuntimePaths? = nil
     ) {
         self.bundle = bundle
         self.fileManager = fileManager
-        self.paths = XrayTunRuntimePaths(fileManager: fileManager)
+        self.paths = paths ?? XrayTunRuntimePaths(fileManager: fileManager)
         self.helperClient = helperClient
         self.helperInstaller = helperInstaller ?? PrivilegedHelperInstaller(bundle: bundle)
     }
@@ -79,8 +80,29 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
         let pid = sessionState?.pid ?? readPID()
         let protectedHost = sessionState?.protectedHost ?? readProtectedHost()
         let outboundInterface = sessionState?.outboundInterface
-        let sessionID = sessionState?.sessionID ?? UUID()
         do {
+            let sessionID: UUID
+            if let cachedSessionID = sessionState?.sessionID {
+                sessionID = cachedSessionID
+            } else {
+                let status = try helperClient.status()
+                if status.phase == .idle {
+                    removeSessionState()
+                    return
+                }
+                guard status.phase == .running else {
+                    throw PrivilegedHelperClientError.indeterminateStatus(
+                        "The privileged helper session state is indeterminate while stopping"
+                    )
+                }
+                guard let observedSessionID = status.sessionID else {
+                    throw PrivilegedHelperClientError.indeterminateStatus(
+                        "The running privileged helper session has no correlation identifier"
+                    )
+                }
+                sessionID = observedSessionID
+            }
+
             try helperClient.stop(
                 paths: paths,
                 protectedHost: protectedHost,
@@ -102,10 +124,30 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
         guard let response = try? helperClient.status(), response.success else {
             return
         }
+        if response.phase == .idle {
+            removeSessionState()
+            return
+        }
+        guard response.phase == .running else {
+            return
+        }
+
         let sessionState = readSessionState()
         let protectedHost = sessionState?.protectedHost ?? readProtectedHost() ?? fallbackProtectedHost
         let outboundInterface = sessionState?.outboundInterface
-        let sessionID = sessionState?.sessionID ?? UUID()
+        let sessionID: UUID
+        if let cachedSessionID = sessionState?.sessionID {
+            if let observedSessionID = response.sessionID, observedSessionID != cachedSessionID {
+                return
+            }
+            sessionID = cachedSessionID
+        } else {
+            guard let observedSessionID = response.sessionID else {
+                return
+            }
+            sessionID = observedSessionID
+        }
+
         if (try? helperClient.stop(
             paths: paths,
             protectedHost: protectedHost,

@@ -136,6 +136,7 @@ private final class LostStopReplyConnectionFactory: @unchecked Sendable {
 private enum VerifyPrivilegedHelperClient {
     static func main() throws {
         try verifyDeadlinesPayloadsAndNormalMapping()
+        try verifyCommandSpecificSuccessPayloadValidation()
         try verifyResponseIdentityAndRevisionValidation()
         try verifyStructuredCommandFailureMapping()
         try verifyLostStartReconcilesOnce()
@@ -146,6 +147,8 @@ private enum VerifyPrivilegedHelperClient {
         try verifyStartCorrelationPersistenceOrderingAndFailureRetention()
         try verifyLostXPCStopReplyDoesNotReplayMutation()
         try verifyRuntimePersistsSessionCorrelation()
+        try verifyRuntimeResolvesMissingSessionWithoutInventingIdentity()
+        try verifyInvalidStopResponsePreservesCachedState()
         try verifyClientContainsNoSocketTransport()
         print("verify_privileged_helper_client: all checks passed")
     }
@@ -218,6 +221,52 @@ private enum VerifyPrivilegedHelperClient {
             }
         }
         precondition(Set(requestIDs).count == requestIDs.count)
+    }
+
+    private static func verifyCommandSpecificSuccessPayloadValidation() throws {
+        let sessionID = UUID()
+        let invalidStart = ScriptedTransport { _, data, _, _ in
+            let request: VPNHelperRequestEnvelope<StartSessionRequest> = try VPNHelperCodec.decodeRequest(data)
+            return try response(
+                requestID: request.requestID,
+                sessionID: sessionID,
+                payload: StartSessionResponse(phase: .idle, summary: nil, details: nil)
+            )
+        }
+        try assertInvalidResponse {
+            _ = try PrivilegedHelperClient(transport: invalidStart).start(
+                session: launchSession(), paths: XrayTunRuntimePaths(), sessionID: sessionID
+            )
+        }
+
+        let invalidStop = ScriptedTransport { _, data, _, _ in
+            let request: VPNHelperRequestEnvelope<StopSessionRequest> = try VPNHelperCodec.decodeRequest(data)
+            return try response(
+                requestID: request.requestID,
+                sessionID: sessionID,
+                payload: StopSessionResponse(phase: .running, summary: nil, details: nil)
+            )
+        }
+        try assertInvalidResponse {
+            try PrivilegedHelperClient(transport: invalidStop).stop(
+                paths: XrayTunRuntimePaths(), protectedHost: nil, outboundInterface: nil, sessionID: sessionID
+            )
+        }
+
+        let mismatchedDiagnostics = ScriptedTransport { _, data, _, _ in
+            let request: VPNHelperRequestEnvelope<ReadDiagnosticsRequest> = try VPNHelperCodec.decodeRequest(data)
+            precondition(request.payload.log == .xray)
+            return try response(
+                requestID: request.requestID,
+                sessionID: nil,
+                payload: DiagnosticsResponse(log: .control, text: "wrong log", metadata: "meta", wasTruncated: false)
+            )
+        }
+        try assertInvalidResponse {
+            _ = try PrivilegedHelperClient(transport: mismatchedDiagnostics).readLog(
+                logName: "xray-tun.log", maxBytes: 1_024
+            )
+        }
     }
 
     private static func verifyResponseIdentityAndRevisionValidation() throws {
@@ -437,6 +486,191 @@ private enum VerifyPrivilegedHelperClient {
         )!.lowerBound
         let stopSource = managerSource[stopStart..<stopEnd]
         precondition(stopSource.components(separatedBy: "helperClient.stop(").count - 1 == 1)
+    }
+
+    private static func verifyRuntimeResolvesMissingSessionWithoutInventingIdentity() throws {
+        let idlePaths = try temporaryRuntimePaths(named: "idle")
+        defer { removeTemporaryRuntimePaths(idlePaths) }
+        let idleTransport = ScriptedTransport { command, data, _, _ in
+            precondition(command == .status)
+            let request: VPNHelperRequestEnvelope<StatusRequest> = try VPNHelperCodec.decodeRequest(data)
+            return try response(
+                requestID: request.requestID,
+                sessionID: nil,
+                payload: StatusResponse(helperVersion: "8", phase: .idle, summary: nil, details: nil)
+            )
+        }
+        let idleManager = PrivilegedXrayRuntimeManager(
+            helperClient: PrivilegedHelperClient(transport: idleTransport),
+            paths: idlePaths
+        )
+        try idleManager.stop()
+        try idleManager.stop()
+        precondition(idleTransport.calls.map(\.0) == [.status, .status])
+
+        let observedSessionID = UUID()
+        let runningPaths = try temporaryRuntimePaths(named: "running")
+        defer { removeTemporaryRuntimePaths(runningPaths) }
+        let runningTransport = ScriptedTransport { command, data, _, _ in
+            switch command {
+            case .status:
+                let request: VPNHelperRequestEnvelope<StatusRequest> = try VPNHelperCodec.decodeRequest(data)
+                return try response(
+                    requestID: request.requestID,
+                    sessionID: observedSessionID,
+                    payload: StatusResponse(helperVersion: "8", phase: .running, summary: nil, details: nil)
+                )
+            case .stopSession:
+                let request: VPNHelperRequestEnvelope<StopSessionRequest> = try VPNHelperCodec.decodeRequest(data)
+                precondition(request.sessionID == observedSessionID)
+                return try response(
+                    requestID: request.requestID,
+                    sessionID: observedSessionID,
+                    payload: StopSessionResponse(phase: .idle, summary: nil, details: nil)
+                )
+            default:
+                preconditionFailure("Unexpected command: \(command)")
+            }
+        }
+        let runningManager = PrivilegedXrayRuntimeManager(
+            helperClient: PrivilegedHelperClient(transport: runningTransport),
+            paths: runningPaths
+        )
+        try runningManager.stop()
+        precondition(runningTransport.calls.map(\.0) == [.status, .stopSession])
+
+        let cleanupPaths = try temporaryRuntimePaths(named: "cleanup")
+        defer { removeTemporaryRuntimePaths(cleanupPaths) }
+        let cleanupTransport = ScriptedTransport { command, data, _, _ in
+            switch command {
+            case .status:
+                let request: VPNHelperRequestEnvelope<StatusRequest> = try VPNHelperCodec.decodeRequest(data)
+                return try response(
+                    requestID: request.requestID,
+                    sessionID: observedSessionID,
+                    payload: StatusResponse(helperVersion: "8", phase: .running, summary: nil, details: nil)
+                )
+            case .stopSession:
+                let request: VPNHelperRequestEnvelope<StopSessionRequest> = try VPNHelperCodec.decodeRequest(data)
+                precondition(request.sessionID == observedSessionID)
+                return try response(
+                    requestID: request.requestID,
+                    sessionID: observedSessionID,
+                    payload: StopSessionResponse(phase: .idle, summary: nil, details: nil)
+                )
+            default:
+                preconditionFailure("Unexpected command: \(command)")
+            }
+        }
+        PrivilegedXrayRuntimeManager(
+            helperClient: PrivilegedHelperClient(transport: cleanupTransport),
+            paths: cleanupPaths
+        ).cleanupIfHelperAvailable()
+        precondition(cleanupTransport.calls.map(\.0) == [.status, .stopSession])
+
+        let unidentifiedPaths = try temporaryRuntimePaths(named: "unidentified")
+        defer { removeTemporaryRuntimePaths(unidentifiedPaths) }
+        let unidentifiedTransport = ScriptedTransport { command, data, _, _ in
+            precondition(command == .status)
+            let request: VPNHelperRequestEnvelope<StatusRequest> = try VPNHelperCodec.decodeRequest(data)
+            return try response(
+                requestID: request.requestID,
+                sessionID: nil,
+                payload: StatusResponse(helperVersion: "8", phase: .running, summary: nil, details: nil)
+            )
+        }
+        let unidentifiedManager = PrivilegedXrayRuntimeManager(
+            helperClient: PrivilegedHelperClient(transport: unidentifiedTransport),
+            paths: unidentifiedPaths
+        )
+        do {
+            try unidentifiedManager.stop()
+            preconditionFailure("Expected an indeterminate unidentified-session failure")
+        } catch let XrayTunRuntimeError.stopFailed(summary, _) {
+            precondition(summary.localizedCaseInsensitiveContains("session"))
+        }
+        precondition(unidentifiedTransport.calls.map(\.0) == [.status])
+
+        let cleanupUnidentifiedPaths = try temporaryRuntimePaths(named: "cleanup-unidentified")
+        defer { removeTemporaryRuntimePaths(cleanupUnidentifiedPaths) }
+        let cleanupUnidentifiedTransport = ScriptedTransport { command, data, _, _ in
+            precondition(command == .status)
+            let request: VPNHelperRequestEnvelope<StatusRequest> = try VPNHelperCodec.decodeRequest(data)
+            return try response(
+                requestID: request.requestID,
+                sessionID: nil,
+                payload: StatusResponse(helperVersion: "8", phase: .running, summary: nil, details: nil)
+            )
+        }
+        PrivilegedXrayRuntimeManager(
+            helperClient: PrivilegedHelperClient(transport: cleanupUnidentifiedTransport),
+            paths: cleanupUnidentifiedPaths
+        ).cleanupIfHelperAvailable()
+        precondition(cleanupUnidentifiedTransport.calls.map(\.0) == [.status])
+    }
+
+    private static func verifyInvalidStopResponsePreservesCachedState() throws {
+        let paths = try temporaryRuntimePaths(named: "invalid-stop")
+        defer { removeTemporaryRuntimePaths(paths) }
+        let sessionID = UUID()
+        let state = XrayTunSessionState(
+            sessionID: sessionID,
+            pid: nil,
+            protectedHost: "example.com",
+            tunnelInterfaceName: "utun9",
+            outboundInterface: "en0",
+            configPath: paths.configFileURL.path,
+            startedAt: Date()
+        )
+        try JSONEncoder().encode(state).write(to: paths.sessionStateFileURL, options: .atomic)
+
+        let transport = ScriptedTransport { command, data, _, _ in
+            precondition(command == .stopSession)
+            let request: VPNHelperRequestEnvelope<StopSessionRequest> = try VPNHelperCodec.decodeRequest(data)
+            return try response(
+                requestID: request.requestID,
+                sessionID: sessionID,
+                payload: StopSessionResponse(phase: .running, summary: nil, details: nil)
+            )
+        }
+        let manager = PrivilegedXrayRuntimeManager(
+            helperClient: PrivilegedHelperClient(transport: transport),
+            paths: paths
+        )
+        do {
+            try manager.stop()
+            preconditionFailure("Expected invalid stop response")
+        } catch XrayTunRuntimeError.stopFailed {}
+        precondition(FileManager.default.fileExists(atPath: paths.sessionStateFileURL.path))
+        precondition(transport.calls.map(\.0) == [.stopSession])
+    }
+
+    private static func temporaryRuntimePaths(named name: String) throws -> XrayTunRuntimePaths {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("teleport-task6-\(name)-\(UUID().uuidString)", isDirectory: true)
+        let stateDirectory = URL(
+            fileURLWithPath: "/Users/teleport-task6/Library/Application Support/teleport",
+            isDirectory: true
+        )
+        let helperDirectory = root.appendingPathComponent("helper-state", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: helperDirectory, withIntermediateDirectories: true)
+        return XrayTunRuntimePaths(
+            stateDirectoryURL: stateDirectory,
+            helperStateDirectoryURL: helperDirectory,
+            sessionStateFileURL: root.appendingPathComponent("xray-tun-session.json")
+        )
+    }
+
+    private static func removeTemporaryRuntimePaths(_ paths: XrayTunRuntimePaths) {
+        try? FileManager.default.removeItem(at: paths.sessionStateFileURL.deletingLastPathComponent())
+    }
+
+    private static func assertInvalidResponse(_ operation: () throws -> Void) throws {
+        do {
+            try operation()
+            preconditionFailure("Expected invalid response")
+        } catch PrivilegedHelperClientError.invalidResponse {}
     }
 
     private static func verifyClientContainsNoSocketTransport() throws {
