@@ -1,12 +1,12 @@
 import Foundation
 
-/// Bridges genuinely blocking leaf work — `Process` waits, `networksetup`, TCP
-/// readiness polling — off the cooperative thread pool.
+/// Bridges genuinely blocking leaf work — `Process` waits, `networksetup`, disk
+/// writes of tens of megabytes — off the cooperative thread pool.
 ///
-/// The connection boundary is asynchronous, but the macOS APIs underneath it are
-/// not. Running those waits directly inside an `async` call would park a
-/// cooperative thread for seconds. Operations are already serialized by
-/// `BackendConnectionProvider`, so one private serial queue is enough.
+/// Swift concurrency assumes `async` functions suspend rather than block, and its
+/// pool is only about as wide as the machine has cores. The macOS APIs underneath
+/// this app do not all have asynchronous forms, so the blocking ones run here, on a
+/// private serial queue, instead of parking a cooperative thread for seconds.
 nonisolated enum BlockingWork {
     private static let queue = DispatchQueue(
         label: "dev.x.teleport.blocking-work",
@@ -21,11 +21,10 @@ nonisolated enum BlockingWork {
         }
     }
 
-    static func run(_ work: @escaping @Sendable () -> Void) async {
+    static func run<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {
         await withCheckedContinuation { continuation in
             queue.async {
-                work()
-                continuation.resume()
+                continuation.resume(returning: work())
             }
         }
     }

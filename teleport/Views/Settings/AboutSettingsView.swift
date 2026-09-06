@@ -3,14 +3,10 @@ import Foundation
 import SwiftUI
 
 struct AboutSettingsView: View {
-    @State private var xrayVersion: String
+    @State private var xrayVersion = "Checking\u{2026}"
 
     private let sourceCodeURL = URL(string: "https://codeberg.org/chernigin/teleport")!
     private let issuesURL = URL(string: "https://codeberg.org/chernigin/teleport/issues")!
-
-    init() {
-        _xrayVersion = State(initialValue: Self.readXrayVersion())
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -53,6 +49,9 @@ struct AboutSettingsView: View {
         .padding(.horizontal, 16)
         .padding(.bottom, 16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .task {
+            xrayVersion = await Self.readXrayVersion()
+        }
     }
 
     private var appVersion: String {
@@ -77,53 +76,74 @@ struct AboutSettingsView: View {
         }
     }
 
-    private nonisolated static func readXrayVersion() -> String {
+    private enum XrayVersionProbe: Sendable {
+        case version(String)
+        case failure(String)
+    }
+
+    private nonisolated static func readXrayVersion() async -> String {
         guard let xrayURL = Bundle.main.url(forResource: "xray", withExtension: nil) else {
             return "Bundled xray not found"
         }
 
-        return runXrayVersionCommand(xrayURL, arguments: ["version"])
-            ?? runXrayVersionCommand(xrayURL, arguments: ["--version"])
-            ?? "Unavailable"
+        // Current Xray builds accept `version`, older ones only `--version`. Failures
+        // must report themselves as failures so the second spelling is actually
+        // tried, rather than surfacing "Timed out" as if it were a version string.
+        var lastFailure: String?
+        for arguments in [["version"], ["--version"]] {
+            switch await runXrayVersionCommand(xrayURL, arguments: arguments) {
+            case let .version(version):
+                return version
+            case let .failure(reason):
+                lastFailure = reason
+            }
+        }
+        return lastFailure ?? "Unavailable"
     }
 
-    private nonisolated static func runXrayVersionCommand(_ xrayURL: URL, arguments: [String]) -> String? {
-        let process = Process()
-        let outputPipe = Pipe()
+    private nonisolated static func runXrayVersionCommand(
+        _ xrayURL: URL,
+        arguments: [String]
+    ) async -> XrayVersionProbe {
+        // Spawning a process and waiting for it to exit has no asynchronous form,
+        // so it runs off the cooperative pool instead of on the main actor, where it
+        // used to freeze the Settings window for up to two seconds per attempt.
+        await BlockingWork.run {
+            let process = Process()
+            let outputPipe = Pipe()
 
-        process.executableURL = xrayURL
-        process.arguments = arguments
-        process.standardOutput = outputPipe
-        process.standardError = outputPipe
+            process.executableURL = xrayURL
+            process.arguments = arguments
+            process.standardOutput = outputPipe
+            process.standardError = outputPipe
 
-        do {
-            try process.run()
-        } catch {
-            return nil
+            do {
+                try process.run()
+            } catch {
+                return .failure("Unavailable")
+            }
+
+            let deadline = Date().addingTimeInterval(2)
+            while process.isRunning && Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+
+            if process.isRunning {
+                process.terminate()
+                return .failure("Timed out")
+            }
+
+            let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
+            let output = String(decoding: data, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            guard process.terminationStatus == 0 else {
+                return .failure("Unavailable (xray exited with status \(process.terminationStatus))")
+            }
+            guard let firstLine = output.split(separator: "\n").first else {
+                return .failure("Unavailable")
+            }
+            return .version(String(firstLine))
         }
-
-        let deadline = Date().addingTimeInterval(2)
-        while process.isRunning && Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.05)
-        }
-
-        if process.isRunning {
-            process.terminate()
-            return "Timed out"
-        }
-
-        let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
-        let output = String(data: data, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
-        if let firstLine = output.split(separator: "\n").first {
-            return String(firstLine)
-        }
-
-        if process.terminationStatus != 0 {
-            return "Unavailable (xray exited with status \(process.terminationStatus))"
-        }
-
-        return nil
     }
 }
