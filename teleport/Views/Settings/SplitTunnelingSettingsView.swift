@@ -205,6 +205,8 @@ struct SplitTunnelingSettingsView: View {
             }
         } header: {
             Text("Test a domain or IP")
+        } footer: {
+            Text("Domain and geosite rules match the server name that Xray sniffs from TLS, HTTP, and QUIC traffic. Connections without a recognizable hostname are matched by IP and geoip rules only, so a domain match here is not a guarantee for every protocol.")
         }
     }
 
