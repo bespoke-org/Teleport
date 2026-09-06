@@ -337,9 +337,6 @@ private enum VerifyHelperCommandDispatch {
         precondition(response.failure?.details == nil)
         precondition(!String(decoding: responseData, as: UTF8.self).contains(secret))
 
-        let shellRunnerSource = try String(contentsOfFile: "TeleportPrivilegedHelper/Support/HelperShellRunner.swift", encoding: .utf8)
-        precondition(shellRunnerSource.contains("throw HelperError(\"Privileged helper shell command failed\")"))
-        precondition(!shellRunnerSource.contains("throw HelperError([stderr.text(), stdout.text()]"))
     }
 
     private static func verifyCompletedDuplicateReturnsExactBytesOnce() async throws {

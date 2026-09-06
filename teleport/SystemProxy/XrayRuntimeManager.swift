@@ -1,10 +1,6 @@
-import AppKit
-import CFNetwork
-import Combine
 import Darwin
 import Foundation
 import Network
-import SystemConfiguration
 
 /// Runs bundled Xray as the logged-in user for System Proxy mode. This manager
 /// owns only the child process and its logs; `SystemProxyService` separately owns

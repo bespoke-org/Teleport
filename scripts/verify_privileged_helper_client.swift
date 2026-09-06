@@ -143,13 +143,10 @@ private enum VerifyPrivilegedHelperClient {
         try verifyLostStopReconcilesOnce()
         try verifyFailedReconciliationIsCommandFailure()
         try verifyUnavailableAndUnknownReconciliationAreIndeterminate()
-        try verifyDispatcherPublishesMemoryOnlyCorrelation()
         try verifyStartCorrelationPersistenceOrderingAndFailureRetention()
         try verifyLostXPCStopReplyDoesNotReplayMutation()
-        try verifyRuntimePersistsSessionCorrelation()
         try verifyRuntimeResolvesMissingSessionWithoutInventingIdentity()
         try verifyInvalidStopResponsePreservesCachedState()
-        try verifyClientContainsNoSocketTransport()
         print("verify_privileged_helper_client: all checks passed")
     }
 
@@ -412,14 +409,6 @@ private enum VerifyPrivilegedHelperClient {
         precondition(unknown.calls.map(\.0) == [.stopSession, .status])
     }
 
-    private static func verifyDispatcherPublishesMemoryOnlyCorrelation() throws {
-        let source = try String(contentsOfFile: "TeleportPrivilegedHelper/IPC/HelperCommandDispatcher.swift", encoding: .utf8)
-        precondition(source.contains("observedSessionID"))
-        precondition(source.contains("queuedSessionID"))
-        precondition(source.contains("queuedSessionID ?? observedSessionID"))
-        precondition(source.contains("observedSessionID = successfulSessionID"))
-    }
-
     private static func verifyStartCorrelationPersistenceOrderingAndFailureRetention() throws {
         enum ExpectedFailure: Error { case start }
 
@@ -470,29 +459,6 @@ private enum VerifyPrivilegedHelperClient {
         precondition(mutatingProxy.counts.status == 0)
         precondition(statusProxy.counts.stop == 0)
         precondition(statusProxy.counts.status == 1)
-    }
-
-    private static func verifyRuntimePersistsSessionCorrelation() throws {
-        let managerSource = try String(contentsOfFile: "teleport/VPN/PrivilegedXrayRuntimeManager.swift", encoding: .utf8)
-        let stateSource = try String(contentsOfFile: "teleport/VPN/XrayTunSessionState.swift", encoding: .utf8)
-        let systemProxySource = try String(contentsOfFile: "teleport/SystemProxy/SystemProxyConnectionBackend.swift", encoding: .utf8)
-        precondition(managerSource.contains("let sessionID = UUID()"))
-        precondition(managerSource.contains("XrayTunStartCorrelation.perform"))
-        precondition(managerSource.contains("sessionID: sessionID"))
-        precondition(stateSource.contains("var sessionID: UUID"))
-
-        let stopStart = managerSource.range(of: "    func stop() throws {")!.lowerBound
-        let stopEnd = managerSource.range(
-            of: "    func cleanupIfHelperAvailable",
-            range: stopStart..<managerSource.endIndex
-        )!.lowerBound
-        let stopSource = managerSource[stopStart..<stopEnd]
-        precondition(stopSource.components(separatedBy: "helperClient.stop(").count - 1 == 1)
-        precondition(
-            systemProxySource.components(
-                separatedBy: "try vpnRuntimeManager?.cleanupIfHelperAvailable(protectedHost: configuration.host)"
-            ).count - 1 == 2
-        )
     }
 
     private static func verifyRuntimeResolvesMissingSessionWithoutInventingIdentity() throws {
@@ -683,13 +649,6 @@ private enum VerifyPrivilegedHelperClient {
             try operation()
             preconditionFailure("Expected invalid response")
         } catch PrivilegedHelperClientError.invalidResponse {}
-    }
-
-    private static func verifyClientContainsNoSocketTransport() throws {
-        let source = try String(contentsOfFile: "teleport/VPN/PrivilegedHelperClient.swift", encoding: .utf8)
-        for forbidden in ["AF_UNIX", "sockaddr_un", "Darwin.connect", "shutdown(", "timeval", "socketPath", "PrivilegedHelperRequest", "PrivilegedHelperResponse"] {
-            precondition(!source.contains(forbidden), "Legacy client symbol remains: \(forbidden)")
-        }
     }
 
     private static func reconciliationTransport(

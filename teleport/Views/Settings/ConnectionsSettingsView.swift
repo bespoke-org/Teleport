@@ -1,5 +1,4 @@
 import AppKit
-import CoreImage.CIFilterBuiltins
 import SwiftUI
 
 struct ConnectionsSettingsView: View {

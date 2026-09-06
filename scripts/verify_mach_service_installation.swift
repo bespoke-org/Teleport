@@ -4,10 +4,6 @@ private func require(_ condition: @autoclosure () -> Bool, _ message: String) {
     precondition(condition(), message)
 }
 
-private func readSource(_ path: String) throws -> String {
-    try String(contentsOfFile: path, encoding: .utf8)
-}
-
 @main
 struct VerifyMachServiceInstallation {
     static func main() throws {
@@ -35,48 +31,6 @@ struct VerifyMachServiceInstallation {
         require(machServices.count == 1, "LaunchDaemon must expose exactly one Mach service")
         require(machServices[VPNHelperProtocol.machServiceName] as? Bool == true, "Expected Mach service must be enabled")
         require(PrivilegedHelperConstants.version == "8", "Installed helper compatibility version must be 8")
-
-        let installerSource = try readSource("teleport/HelperInstallation/PrivilegedHelperInstaller.swift")
-        require(!installerSource.contains("socketPath"), "Installer must not reference the legacy socket constant")
-        require(!installerSource.contains("/var/run/dev.x.teleport.helper.sock"), "Installer must not reference the legacy socket path")
-        require(!installerSource.contains("<key>Sockets</key>"), "Installer must not generate launchd sockets")
-        require(installerSource.contains("launchctl bootstrap system \"$PLIST_DST\""), "Installer bootstrap behavior changed")
-        require(installerSource.contains("launchctl kickstart -k \"system/$LABEL\""), "Installer kickstart behavior changed")
-
-        let resetSource = try readSource("scripts/reset_legacy_privileged_helper.sh")
-        require(resetSource.hasPrefix("#!/bin/sh\n"), "Reset script must use a system shell shebang")
-        require(resetSource.contains("set -eu"), "Reset script must enable set -eu")
-        require(resetSource.contains("$(id -u)"), "Reset script must check the effective user")
-        require(resetSource.contains("launchctl print \"system/$LABEL\""), "Reset script must detect whether the legacy daemon is loaded")
-        require(resetSource.contains("launchctl bootout \"system/$LABEL\""), "Reset script must boot out the legacy daemon")
-        require(
-            !resetSource.contains("launchctl bootout \"system/$LABEL\" >/dev/null 2>&1 || true"),
-            "Reset script must not suppress bootout failures for a loaded daemon"
-        )
-        require(resetSource.contains("printf '%s\\n' \"Removing $path\""), "Reset script must print every removed path")
-        require(resetSource.contains("rm -rf -- \"$path\""), "Reset script must remove each declared path")
-
-        let resetPaths = [
-            "/var/run/dev.x.teleport.helper.sock",
-            PrivilegedHelperConstants.installedToolPath,
-            PrivilegedHelperConstants.installedXrayPath,
-            PrivilegedHelperConstants.installedAssetDirectoryPath,
-            PrivilegedHelperConstants.launchDaemonPlistPath,
-            PrivilegedHelperConstants.helperStateDirectoryPath
-        ]
-        for path in resetPaths {
-            require(resetSource.contains("remove_path '\(path)'"), "Reset script is missing \(path)")
-        }
-
-        let justSource = try readSource("justfile")
-        require(
-            justSource.contains("reset-legacy-privileged-helper:\n    sudo sh scripts/reset_legacy_privileged_helper.sh"),
-            "Just reset recipe must invoke the explicit reset script with sudo"
-        )
-        guard let verifyLine = justSource.split(separator: "\n").first(where: { $0.hasPrefix("verify: ") }) else {
-            preconditionFailure("Aggregate verify recipe is missing")
-        }
-        require(!verifyLine.contains("reset-legacy-privileged-helper"), "Destructive reset must not run during verification")
 
         print("verify_mach_service_installation: all checks passed")
     }

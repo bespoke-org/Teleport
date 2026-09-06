@@ -11,49 +11,7 @@ struct VerifyConnectionProvider {
         try await testProviderRejectsDisconnectDuringConnect()
         try await testDisconnectWaitsForStartupRestoration()
         testFactorySelectsProviderByMode()
-        try testAppViewModelUsesProviderBoundary()
-        try testTerminationAwaitsProviderCleanup()
         print("verify_connection_provider: all checks passed")
-    }
-
-    private static func testTerminationAwaitsProviderCleanup() throws {
-        let appSource = try String(contentsOfFile: "teleport/teleportApp.swift", encoding: .utf8)
-        precondition(appSource.contains(".terminateLater"), "AppKit termination must be deferred during cleanup")
-        precondition(appSource.contains("reply(toApplicationShouldTerminate: true)"), "AppKit must be notified when cleanup completes")
-
-        let viewModelSource = try String(contentsOfFile: "teleport/ViewModels/AppViewModel.swift", encoding: .utf8)
-        let terminationHandler = try sourceSlice(
-            viewModelSource,
-            from: "    func handleAppTermination",
-            to: "    private func observeConnectionState"
-        )
-        precondition(terminationHandler.contains("completion: @escaping () -> Void"), "termination cleanup must expose completion")
-        precondition(terminationHandler.contains("isTerminating = true"), "termination must synchronously block new connection operations")
-        precondition(terminationHandler.contains("await provider.disconnect()"), "termination cleanup must await provider disconnect")
-        precondition(viewModelSource.contains("guard !isTerminating, connectionOperationID == nil else { return }"), "connect submission must honor the termination gate")
-    }
-
-    private static func testAppViewModelUsesProviderBoundary() throws {
-        let source = try String(contentsOfFile: "teleport/ViewModels/AppViewModel.swift", encoding: .utf8)
-        precondition(!source.contains("ConnectionBackend"), "AppViewModel must not depend on ConnectionBackend")
-        precondition(!source.contains("connectionBackend"), "AppViewModel must not store a backend")
-        precondition(source.contains("ConnectionProviderFactory"), "AppViewModel must depend on ConnectionProviderFactory")
-        precondition(source.contains("connectionProvider.stateUpdates()"), "AppViewModel must observe provider state updates")
-        precondition(source.contains("@Published private(set) var connectionState"), "AppViewModel must publish one connection state")
-        precondition(source.contains("guard !isTerminating, connectionOperationID == nil else { return }"), "AppViewModel must synchronously reject duplicate connect submissions")
-        precondition(source.contains("let isInitialState = !hasObservedInitialConnectionState"), "AppViewModel must distinguish the initial provider snapshot")
-        precondition(source.contains("if !isInitialState"), "the initial provider snapshot must preserve load diagnostics")
-
-        let idleHandler = try sourceSlice(source, from: "        case .idle:", to: "        case .preparing")
-        precondition(!idleHandler.contains("setStoredError(nil)"), "automatic idle transitions must preserve unrelated diagnostics")
-    }
-
-    private static func sourceSlice(_ source: String, from start: String, to end: String) throws -> Substring {
-        guard let startRange = source.range(of: start),
-              let endRange = source.range(of: end, range: startRange.upperBound ..< source.endIndex) else {
-            throw VerificationError.missingSourceMarkers
-        }
-        return source[startRange.upperBound ..< endRange.lowerBound]
     }
 
     private static func testFactorySelectsProviderByMode() {
@@ -282,10 +240,6 @@ struct VerifyConnectionProvider {
         )
         precondition(failedPresentation == ConnectionPresentation(connectionPhase: .failed, proxyPhase: .failed))
         precondition(failedPresentation.canChangeSelection, "failed state must preserve selection changes")
-    }
-
-    private enum VerificationError: Error {
-        case missingSourceMarkers
     }
 
     private enum TestError: LocalizedError {

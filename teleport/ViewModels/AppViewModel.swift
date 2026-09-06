@@ -1,10 +1,5 @@
-import AppKit
-import CFNetwork
 import Combine
-import Darwin
 import Foundation
-import Network
-import SystemConfiguration
 
 struct ConnectionPickerItem: Identifiable, Equatable {
     let id: UUID

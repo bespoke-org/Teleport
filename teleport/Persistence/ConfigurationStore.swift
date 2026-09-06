@@ -1,11 +1,5 @@
-import AppKit
-import CFNetwork
-import Combine
-import Darwin
 import Foundation
-import Network
 import Security
-import SystemConfiguration
 
 final class ConfigurationStore {
     private let fileManager: FileManager

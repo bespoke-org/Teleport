@@ -1,10 +1,4 @@
-import AppKit
-import CFNetwork
-import Combine
-import Darwin
 import Foundation
-import Network
-import SystemConfiguration
 
 /// Builds Xray JSON for two distinct execution models: an unprivileged local
 /// SOCKS/HTTP proxy and a root-owned TUN process. Dynamic dictionaries mirror
