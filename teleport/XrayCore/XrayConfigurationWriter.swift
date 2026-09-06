@@ -256,6 +256,8 @@ nonisolated struct XrayConfigurationWriter {
                     "settings": [:]
                 ]
             ],
+            // Deliberately no "mux" on the proxy outbound: multiplexing defeats
+            // Vision's traffic shaping and is itself a recognizable pattern.
             "outbounds": [
                 [
                     "tag": "proxy",
@@ -479,8 +481,12 @@ nonisolated struct XrayConfigurationWriter {
         }
 
         if configuration.security == .tls {
+            // Without an explicit fingerprint Xray speaks TLS with Go's own stack,
+            // whose ClientHello is a well-known DPI signature for proxy tooling.
+            // Mimic a browser by default, exactly as the REALITY branch does.
             var tlsSettings: [String: Any] = [
-                "serverName": configuration.serverName ?? configuration.host
+                "serverName": configuration.serverName ?? configuration.host,
+                "fingerprint": configuration.fingerprint ?? "chrome"
             ]
 
             if !configuration.alpn.isEmpty {

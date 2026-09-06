@@ -66,32 +66,6 @@ final class ConnectionHealthProbeService: @unchecked Sendable {
         )
     }
 
-    private func tcpAvailabilityCheck(_ connection: SavedConnection) async -> (isReachable: Bool, latencyMilliseconds: Int?, failureSummary: String?) {
-        guard let rawPort = UInt16(exactly: connection.configuration.port),
-              let port = NWEndpoint.Port(rawValue: rawPort) else {
-            return (false, nil, "Invalid port")
-        }
-
-        let host = NWEndpoint.Host(connection.configuration.host)
-        var successfulLatencies: [Int] = []
-        var lastFailureSummary: String?
-
-        for _ in 0..<attemptCount {
-            let sample = await tcpLatencySample(host: host, port: port, connectionID: connection.id)
-            if sample.isReachable, let latency = sample.latencyMilliseconds {
-                successfulLatencies.append(latency)
-            } else {
-                lastFailureSummary = sample.failureSummary
-            }
-        }
-
-        guard !successfulLatencies.isEmpty else {
-            return (false, nil, lastFailureSummary ?? "Unavailable")
-        }
-
-        return (true, Self.bestObservedLatency(successfulLatencies), nil)
-    }
-
     private func proxyLatencyCheck(_ connection: SavedConnection) async -> (latencyMilliseconds: Int?, failureSummary: String?) {
         let probeEndpoint = temporaryProbeEndpoint()
         let runtimeManager = XrayRuntimeManager(bundle: bundle)

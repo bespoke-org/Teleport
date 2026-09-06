@@ -37,6 +37,19 @@ struct VerifyCore {
         let permissions = (attributes[.posixPermissions] as? NSNumber)?.intValue ?? -1
         precondition(permissions & 0o777 == 0o600, "expected the credential-bearing Xray config to be user-only")
 
+        // Plain TLS must mimic a browser fingerprint; a link's fp wins, chrome is the default.
+        let tlsWithoutFingerprint = try parser.parse("vless://123e4567-e89b-12d3-a456-426614174000@example.com:443?encryption=none&security=tls&sni=example.com&type=tcp#TLS")
+        let tlsWriter = XrayConfigurationWriter(proxyEndpoint: .default)
+        let tlsDefault = try JSONSerialization.jsonObject(with: try tlsWriter.tunnelConfigData(for: tlsWithoutFingerprint, interfaceName: "utun9")) as? [String: Any]
+        let tlsDefaultProxy = (tlsDefault?["outbounds"] as? [[String: Any]])?.first { $0["tag"] as? String == "proxy" }
+        let tlsDefaultSettings = (tlsDefaultProxy?["streamSettings"] as? [String: Any])?["tlsSettings"] as? [String: Any]
+        precondition(tlsDefaultSettings?["fingerprint"] as? String == "chrome", "plain TLS must default to a browser fingerprint")
+        precondition(tlsDefaultProxy?["mux"] == nil, "mux must never be enabled on the proxy outbound")
+        let tlsWithFingerprint = try parser.parse("vless://123e4567-e89b-12d3-a456-426614174000@example.com:443?encryption=none&security=tls&sni=example.com&fp=firefox&type=tcp#TLS")
+        let tlsCustom = try JSONSerialization.jsonObject(with: try tlsWriter.tunnelConfigData(for: tlsWithFingerprint, interfaceName: "utun9")) as? [String: Any]
+        let tlsCustomProxy = (tlsCustom?["outbounds"] as? [[String: Any]])?.first { $0["tag"] as? String == "proxy" }
+        precondition(((tlsCustomProxy?["streamSettings"] as? [String: Any])?["tlsSettings"] as? [String: Any])?["fingerprint"] as? String == "firefox")
+
         let realityLink = "vless://123e4567-e89b-12d3-a456-426614174000@example.com:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.microsoft.com&fp=chrome&pbk=abc123abc123abc123abc123abc123abc123abc123&sid=a1b2c3d4&type=tcp#Reality"
         let realityConfiguration = try parser.parse(realityLink)
         precondition(realityConfiguration.vlessFlow == "xtls-rprx-vision")
