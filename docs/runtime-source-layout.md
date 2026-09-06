@@ -43,7 +43,7 @@ Owns bundled artifact verification and the current administrator-authorized inst
 
 ### `teleport/Geodata`
 
-Owns geodata selection, downloads, and resolved assets consumed by configuration generation and privileged installation.
+Owns geodata selection, downloads, and the resolved asset directory consumed by configuration generation. The helper reads that directory from the console user's Application Support at session start after validating its path, ownership, and permissions; geodata is not part of the administrator installation.
 
 ## Privileged helper target
 

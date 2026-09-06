@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Installs the helper, Xray binary, and LaunchDaemon into root-owned locations.
@@ -6,8 +7,12 @@ import Foundation
 /// runs only when installed executable content differs or the helper is
 /// unavailable; ordinary VPN lifecycle commands use `PrivilegedHelperClient`.
 struct PrivilegedHelperInstaller: Sendable {
+    /// Written next to the installed helper by the admin transaction. The helper
+    /// binary hash is what detects a rebuilt helper whose protocol version did not
+    /// change; the version alone would keep a stale root daemon running.
     private struct InstallationManifest: Codable, Equatable {
         let helperVersion: String
+        let helperSHA256: String
         let xraySHA256: String
     }
 
@@ -33,19 +38,20 @@ struct PrivilegedHelperInstaller: Sendable {
             throw PrivilegedHelperInstallerError.bundledHelperMissing
         }
 
-        if await isInstalledAndRunning() {
+        let manifest = try expectedInstallationManifest(helperURL: helperURL)
+        if await isInstalledAndRunning(expecting: manifest) {
             return
         }
         try verifyBundleArtifacts(helperURL: helperURL, runtimeURL: runtimeURL)
-        try install(helperURL: helperURL, runtimeURL: runtimeURL)
+        try install(helperURL: helperURL, runtimeURL: runtimeURL, manifest: manifest)
         try await waitUntilRunning()
     }
 
-    private func isInstalledAndRunning() async -> Bool {
+    private func isInstalledAndRunning(expecting manifest: InstallationManifest) async -> Bool {
         let fileManager = FileManager.default
         guard fileManager.isExecutableFile(atPath: PrivilegedHelperClient.installedToolPath),
               fileManager.isExecutableFile(atPath: PrivilegedHelperClient.installedXrayPath),
-              installationManifestMatches() else {
+              installedManifest() == manifest else {
             return false
         }
         guard let response = try? await PrivilegedHelperClient().status(), response.success else {
@@ -54,24 +60,33 @@ struct PrivilegedHelperInstaller: Sendable {
         return response.version == PrivilegedHelperClient.expectedVersion
     }
 
-    private var expectedInstallationManifest: InstallationManifest {
-        InstallationManifest(
+    /// The bundled helper is well under a megabyte, so hashing it in-process on
+    /// every connect is cheap and avoids spawning `shasum`.
+    private func expectedInstallationManifest(helperURL: URL) throws -> InstallationManifest {
+        let helperData: Data
+        do {
+            helperData = try Data(contentsOf: helperURL)
+        } catch {
+            throw PrivilegedHelperInstallerError.bundledHelperMissing
+        }
+        let helperDigest = SHA256.hash(data: helperData).map { String(format: "%02x", $0) }.joined()
+        return InstallationManifest(
             helperVersion: PrivilegedHelperClient.expectedVersion,
+            helperSHA256: helperDigest,
             xraySHA256: artifactPolicy.xraySHA256
         )
     }
 
-    private func installationManifestMatches() -> Bool {
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: PrivilegedHelperConstants.installationManifestPath)),
-              let manifest = try? JSONDecoder().decode(InstallationManifest.self, from: data) else {
-            return false
+    private func installedManifest() -> InstallationManifest? {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: PrivilegedHelperConstants.installationManifestPath)) else {
+            return nil
         }
-        return manifest == expectedInstallationManifest
+        return try? JSONDecoder().decode(InstallationManifest.self, from: data)
     }
 
-    private func install(helperURL: URL, runtimeURL: URL) throws {
+    private func install(helperURL: URL, runtimeURL: URL, manifest: InstallationManifest) throws {
         let plist = Self.launchDaemonPlist()
-        let script = installScript(appBundleURL: bundle.bundleURL, helperURL: helperURL, runtimeURL: runtimeURL, plist: plist)
+        let script = installScript(appBundleURL: bundle.bundleURL, helperURL: helperURL, runtimeURL: runtimeURL, manifest: manifest, plist: plist)
         do {
             try shellRunner.runAdministratorShellScript(script, prompt: administratorPrompt)
         } catch {
@@ -134,12 +149,11 @@ struct PrivilegedHelperInstaller: Sendable {
     // is notarized, and provide a matching unregister/uninstall operation.
     // TODO(gpt-5.6-sol): Make activation rollback-safe. A failure after `bootout`
     // can currently leave a stopped daemon or a mixture of old and new helper,
-    // runtime, assets, and plist files because only the temporary directory is
+    // runtime, manifest, and plist files because only the temporary directory is
     // cleaned up.
-    private func installScript(appBundleURL: URL, helperURL: URL, runtimeURL: URL, plist: String) -> String {
+    private func installScript(appBundleURL: URL, helperURL: URL, runtimeURL: URL, manifest: InstallationManifest, plist: String) -> String {
         let q = PrivilegedShellRunner.shellQuote
-        let manifest = expectedInstallationManifest
-        let manifestJSON = "{\"helperVersion\":\"\(manifest.helperVersion)\",\"xraySHA256\":\"\(manifest.xraySHA256)\"}"
+        let manifestJSON = "{\"helperVersion\":\"\(manifest.helperVersion)\",\"helperSHA256\":\"\(manifest.helperSHA256)\",\"xraySHA256\":\"\(manifest.xraySHA256)\"}"
         return """
         set -eu
         APP_BUNDLE=\(q(appBundleURL.path))
@@ -148,6 +162,7 @@ struct PrivilegedHelperInstaller: Sendable {
         HELPER_DST=\(q(PrivilegedHelperClient.installedToolPath))
         XRAY_DST=\(q(PrivilegedHelperClient.installedXrayPath))
         MANIFEST_DST=\(q(PrivilegedHelperConstants.installationManifestPath))
+        LEGACY_ASSET_DIR=\(q(PrivilegedHelperConstants.installedAssetDirectoryPath))
         INSTALL_MANIFEST=\(q(manifestJSON))
         PLIST_DST=\(q(PrivilegedHelperClient.launchDaemonPlistPath))
         LABEL=\(q(PrivilegedHelperClient.label))
@@ -204,6 +219,7 @@ struct PrivilegedHelperInstaller: Sendable {
         mv -f "$tmp_manifest" "$MANIFEST_DST"
         chown root:wheel "$MANIFEST_DST"
         chmod 644 "$MANIFEST_DST"
+        rm -rf "$LEGACY_ASSET_DIR"
         cat > "$PLIST_DST" <<'TELEPORT_HELPER_PLIST'
         \(plist)
         TELEPORT_HELPER_PLIST
