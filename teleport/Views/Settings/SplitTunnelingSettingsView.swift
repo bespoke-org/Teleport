@@ -159,9 +159,19 @@ struct SplitTunnelingSettingsView: View {
 
     private var testerSection: some View {
         Section {
-            TextField("e.g. maps.google.com or 10.0.0.5", text: $testerValue)
+            LabeledContent {
+                TextField("Destination", text: $testerValue, prompt: Text("maps.google.com or 10.0.0.5"))
+                    .labelsHidden()
+                    .textFieldStyle(.roundedBorder)
+            } label: {
+                Label("Destination", systemImage: "magnifyingglass")
+            }
 
-            if !testerValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if testerValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text("Type a domain or IP. The matching rule and its action appear here as you type.")
+                    .foregroundStyle(.secondary)
+                    .font(.caption)
+            } else {
                 if viewModel.hasEnabledSplitTunnelGeodataRules, !viewModel.isSplitTunnelGeodataReady {
                     Label(
                         "Loading geosite/geoip data for the tester…",
@@ -202,11 +212,13 @@ struct SplitTunnelingSettingsView: View {
                     .foregroundStyle(.secondary)
                     .font(.caption)
                 }
+
+                Text("Domain rules apply when Xray can sniff the server name (TLS, HTTP, QUIC); other flows are matched by IP rules only.")
+                    .foregroundStyle(.tertiary)
+                    .font(.caption)
             }
         } header: {
             Text("Test a domain or IP")
-        } footer: {
-            Text("Domain and geosite rules match the server name that Xray sniffs from TLS, HTTP, and QUIC traffic. Connections without a recognizable hostname are matched by IP and geoip rules only, so a domain match here is not a guarantee for every protocol.")
         }
     }
 
