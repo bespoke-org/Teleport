@@ -2,9 +2,6 @@ import Foundation
 import Security
 
 final class ConfigurationStore {
-    private let fileManager: FileManager
-    private let fileURL: URL
-    private let directoryURL: URL
     private let keychainService: String
     private let keychainAccount: String
     private let encoder = JSONEncoder()
@@ -12,7 +9,6 @@ final class ConfigurationStore {
 
     private static let defaultKeychainService = "dev.x.teleport.configuration"
     private static let defaultKeychainAccount = "app-snapshot"
-    private static let stateFilePlaceholder = "{\"storage\":\"keychain\",\"version\":2}\n"
 
     /// `keychainService`/`keychainAccount` are overridable so verification scripts can
     /// exercise this store against an isolated Keychain item instead of the real one
@@ -22,14 +18,12 @@ final class ConfigurationStore {
         keychainService: String = ConfigurationStore.defaultKeychainService,
         keychainAccount: String = ConfigurationStore.defaultKeychainAccount
     ) {
-        self.fileManager = fileManager
         self.keychainService = keychainService
         self.keychainAccount = keychainAccount
         let baseURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        directoryURL = baseURL.appendingPathComponent("teleport", isDirectory: true)
+        let directoryURL = baseURL.appendingPathComponent("teleport", isDirectory: true)
         try? fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
         try? fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directoryURL.path)
-        fileURL = directoryURL.appendingPathComponent("state.json")
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     }
 
@@ -51,7 +45,7 @@ final class ConfigurationStore {
     }
 
     var hasSavedSnapshot: Bool {
-        keychainSnapshotData() != nil || fileManager.fileExists(atPath: fileURL.path)
+        keychainSnapshotData() != nil
     }
 
     func load() -> AppSnapshot {
@@ -69,15 +63,6 @@ final class ConfigurationStore {
             return AppSnapshot(savedConnections: [], subscriptionSources: [], selectedConnectionID: nil, proxyEndpoint: .default)
         }
 
-        guard let data = try? Data(contentsOf: fileURL) else {
-            return AppSnapshot(savedConnections: [], subscriptionSources: [], selectedConnectionID: nil, proxyEndpoint: .default)
-        }
-
-        if let snapshot = decodeSnapshot(from: data) {
-            try? save(snapshot)
-            return snapshot
-        }
-
         return AppSnapshot(savedConnections: [], subscriptionSources: [], selectedConnectionID: nil, proxyEndpoint: .default)
     }
 
@@ -87,26 +72,10 @@ final class ConfigurationStore {
         }
         let data = try encoder.encode(snapshot)
         try saveKeychainSnapshotData(data)
-        try writeStatePlaceholder()
     }
 
     private func decodeSnapshot(from data: Data) -> AppSnapshot? {
-        if let snapshot = try? decoder.decode(AppSnapshot.self, from: data) {
-            return snapshot
-        }
-
-        if let legacySnapshot = try? decoder.decode(LegacyAppSnapshot.self, from: data) {
-            return legacySnapshot.asAppSnapshot
-        }
-
-        return nil
-    }
-
-    private func writeStatePlaceholder() throws {
-        try fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
-        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directoryURL.path)
-        try Data(Self.stateFilePlaceholder.utf8).write(to: fileURL, options: .atomic)
-        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
+        try? decoder.decode(AppSnapshot.self, from: data)
     }
 
     enum KeychainSnapshotResult: Equatable {

@@ -695,16 +695,8 @@ struct AppSnapshot: Codable, Equatable {
         case geodataSettings
     }
 
-    // Legacy (pre-profiles) key: a flat rule list with no profile grouping. Kept
-    // in a separate enum (rather than a CodingKeys case) so it doesn't need a
-    // matching stored property for Encodable synthesis.
-    private enum LegacyCodingKeys: String, CodingKey {
-        case splitTunnelRules
-    }
-
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        let legacyContainer = try decoder.container(keyedBy: LegacyCodingKeys.self)
         savedConnections = try container.decodeIfPresent([SavedConnection].self, forKey: .savedConnections) ?? []
         subscriptionSources = try container.decodeIfPresent([SubscriptionSource].self, forKey: .subscriptionSources) ?? []
         selectedConnectionID = try container.decodeIfPresent(UUID.self, forKey: .selectedConnectionID)
@@ -716,10 +708,6 @@ struct AppSnapshot: Codable, Equatable {
 
         if let profiles = try container.decodeIfPresent([SplitTunnelProfile].self, forKey: .splitTunnelProfiles), !profiles.isEmpty {
             splitTunnelProfiles = profiles
-        } else if let legacyRules = try legacyContainer.decodeIfPresent([SplitTunnelRule].self, forKey: .splitTunnelRules) {
-            // Upgrading from the pre-profiles single rule list: preserve the user's
-            // existing rules as their first profile instead of discarding them.
-            splitTunnelProfiles = [SplitTunnelProfile(name: "Default", rules: legacyRules)]
         } else {
             splitTunnelProfiles = [SplitTunnelProfile(name: "Default")]
         }
@@ -801,84 +789,5 @@ enum SubscriptionError: LocalizedError, Equatable {
         case .noSupportedEntries:
             return "Subscription does not contain any supported VLESS or Trojan links"
         }
-    }
-}
-
-struct LegacyVLESSConfiguration: Codable, Equatable {
-    let rawLink: String
-    let id: UUID
-    let userID: String
-    let host: String
-    let port: Int
-    let remarks: String?
-    let security: ConnectionSecurity
-    let transport: ConnectionTransport
-    let flow: String?
-    let path: String?
-    let serverName: String?
-    let alpn: [String]
-    let fingerprint: String?
-    let publicKey: String?
-    let shortID: String?
-    let spiderX: String?
-}
-
-struct LegacyPersistedConfiguration: Codable, Equatable {
-    let configuration: LegacyVLESSConfiguration
-    let savedAt: Date
-}
-
-struct LegacyAppSnapshot: Codable, Equatable {
-    var persistedConfiguration: LegacyPersistedConfiguration?
-    var proxyEndpoint: ProxyEndpoint
-}
-
-extension LegacyVLESSConfiguration {
-    var asConnectionConfiguration: ConnectionConfiguration {
-        ConnectionConfiguration(
-            rawLink: rawLink,
-            protocolType: .vless,
-            host: host,
-            port: port,
-            remarks: remarks,
-            security: security,
-            transport: transport,
-            path: path,
-            hostHeader: nil,
-            serverName: serverName,
-            alpn: alpn,
-            fingerprint: fingerprint,
-            publicKey: publicKey,
-            shortID: shortID,
-            spiderX: spiderX,
-            vlessUserID: userID,
-            vlessFlow: flow,
-            trojanPassword: nil,
-            allowsInsecureTLS: false,
-            grpcServiceName: nil,
-            transportMode: nil
-        )
-    }
-}
-
-extension LegacyAppSnapshot {
-    var asAppSnapshot: AppSnapshot {
-        let savedConnections = persistedConfiguration.map {
-            [
-                SavedConnection(
-                    id: $0.configuration.id,
-                    configuration: $0.configuration.asConnectionConfiguration,
-                    savedAt: $0.savedAt,
-                    source: nil
-                )
-            ]
-        } ?? []
-
-        return AppSnapshot(
-            savedConnections: savedConnections,
-            subscriptionSources: [],
-            selectedConnectionID: savedConnections.first?.id,
-            proxyEndpoint: proxyEndpoint
-        )
     }
 }

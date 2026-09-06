@@ -11,7 +11,6 @@ struct VerifyCore {
         try testValidTrojanRealityParsingAndConfigGeneration()
         try testValidTrojanGRPCParsingAndConfigGeneration()
         try testMalformedAndUnsupportedLinks()
-        try testLegacyStateMigration()
         try testRuntimeStartupFailureWithoutBundledBinary()
         try testBundledArtifactVerifierAcceptsExpectedHash()
         print("verify_core: all checks passed")
@@ -238,39 +237,6 @@ struct VerifyCore {
                 fatalError("Unexpected error: \(error)")
             }
         }
-    }
-
-    private static func testLegacyStateMigration() throws {
-        let legacy = LegacyAppSnapshot(
-            persistedConfiguration: LegacyPersistedConfiguration(
-                configuration: LegacyVLESSConfiguration(
-                    rawLink: "vless://123e4567-e89b-12d3-a456-426614174000@example.com:443?security=tls&type=tcp&sni=example.com#Legacy",
-                    id: UUID(uuidString: "123e4567-e89b-12d3-a456-426614174000")!,
-                    userID: "123e4567-e89b-12d3-a456-426614174000",
-                    host: "example.com",
-                    port: 443,
-                    remarks: "Legacy",
-                    security: .tls,
-                    transport: .tcp,
-                    flow: nil,
-                    path: nil,
-                    serverName: "example.com",
-                    alpn: [],
-                    fingerprint: nil,
-                    publicKey: nil,
-                    shortID: nil,
-                    spiderX: nil
-                ),
-                savedAt: Date(timeIntervalSince1970: 0)
-            ),
-            proxyEndpoint: .default
-        )
-
-        let migrated = legacy.asAppSnapshot
-        precondition(migrated.savedConnections.count == 1)
-        precondition(migrated.savedConnections[0].configuration.protocolType == .vless)
-        precondition(migrated.savedConnections[0].configuration.vlessUserID == "123e4567-e89b-12d3-a456-426614174000")
-        precondition(migrated.savedConnections[0].configuration.rawLink.contains("vless://"))
     }
 
     private static func testRuntimeStartupFailureWithoutBundledBinary() throws {

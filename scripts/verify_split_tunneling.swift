@@ -24,7 +24,6 @@ struct VerifySplitTunneling {
         try testTunnelSniffingIncludesQUIC()
         try testTunnelConfigExposesLocalSocksAndHTTPPorts()
         try testLegacySnapshotWithoutSplitTunnelFieldsDefaults()
-        try testPreProfilesSnapshotMigratesFlatRulesIntoDefaultProfile()
         try testSnapshotRoundTripPreservesSplitTunnelProfiles()
         try testSelectingUnknownProfileIDFallsBackToFirstProfile()
         print("verify_split_tunneling: all checks passed")
@@ -272,29 +271,6 @@ struct VerifySplitTunneling {
         precondition(decoded.splitTunnelProfiles[0].rules.isEmpty, "expected the default profile to start with no rules")
         precondition(decoded.selectedSplitTunnelProfileID == decoded.splitTunnelProfiles[0].id)
         precondition(decoded.isSplitTunnelEnabled == false, "expected legacy snapshot to default split tunneling to disabled")
-    }
-
-    private static func testPreProfilesSnapshotMigratesFlatRulesIntoDefaultProfile() throws {
-        // Snapshots saved before profiles existed had a flat `splitTunnelRules`
-        // list; upgrading must preserve those rules rather than discard them.
-        let legacyJSON = """
-        {
-          "savedConnections": [],
-          "subscriptionSources": [],
-          "proxyEndpoint": { "host": "127.0.0.1", "httpPort": 8080, "socksPort": 1080 },
-          "isSplitTunnelEnabled": true,
-          "splitTunnelRules": [
-            { "id": "11111111-1111-1111-1111-111111111111", "value": "example.com", "kind": "domain", "action": "proxy", "isEnabled": false }
-          ]
-        }
-        """
-        let decoded = try JSONDecoder().decode(AppSnapshot.self, from: Data(legacyJSON.utf8))
-        precondition(decoded.splitTunnelProfiles.count == 1, "expected legacy flat rules to migrate into a single profile")
-        precondition(decoded.splitTunnelProfiles[0].rules.count == 1)
-        precondition(decoded.splitTunnelProfiles[0].rules[0].value == "example.com")
-        precondition(decoded.splitTunnelProfiles[0].rules[0].action == .proxy)
-        precondition(decoded.selectedSplitTunnelProfileID == decoded.splitTunnelProfiles[0].id)
-        precondition(decoded.isSplitTunnelEnabled == true)
     }
 
     private static func testSnapshotRoundTripPreservesSplitTunnelProfiles() throws {
