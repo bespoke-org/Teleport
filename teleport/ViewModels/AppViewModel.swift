@@ -945,14 +945,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private func validatedGeodataURL(_ value: String) -> URL? {
-        guard let components = URLComponents(string: value),
-              let scheme = components.scheme?.lowercased(),
-              scheme == "http" || scheme == "https",
-              let host = components.host, !host.isEmpty,
-              let url = components.url else {
-            return nil
-        }
-        return url
+        GeodataUpdateService.validatedSourceURL(value)
     }
 
     private func applyGeodataUpdateResult(kind: GeodataKind, token: UUID? = nil, error: Error?, changed: Bool = true) {

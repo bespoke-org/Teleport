@@ -2,23 +2,12 @@ import Foundation
 import Network
 
 final class SplitTunnelGeodataMatcher {
-    private struct GeositeDomain {
-        let type: Int
-        let value: String
-        let attributes: Set<String>
-    }
-
-    private struct GeoIPEntry {
-        let ranges: [(address: [UInt8], prefixLength: Int)]
-        let reverseMatch: Bool
-    }
-
     private let service: GeodataUpdateService
     private let bundle: Bundle
     private let lock = NSLock()
     private let queue = DispatchQueue(label: "dev.x.teleport.split-tunnel-geodata-matcher", qos: .utility)
-    private var geositeCache: [String: [GeositeDomain]]?
-    private var geoipCache: [String: GeoIPEntry]?
+    private var geositeCache: [String: [GeodataFormat.GeositeDomain]]?
+    private var geoipCache: [String: GeodataFormat.GeoIPEntry]?
     private var isLoading = false
     private var pendingCompletions: [() -> Void] = []
 
@@ -113,26 +102,26 @@ final class SplitTunnelGeodataMatcher {
         geoipCache = nil
     }
 
-    private func cachedGeosite() -> [String: [GeositeDomain]] {
+    private func cachedGeosite() -> [String: [GeodataFormat.GeositeDomain]] {
         lock.lock()
         defer { lock.unlock() }
         return geositeCache ?? [:]
     }
 
-    private func cachedGeoIP() -> [String: GeoIPEntry] {
+    private func cachedGeoIP() -> [String: GeodataFormat.GeoIPEntry] {
         lock.lock()
         defer { lock.unlock() }
         return geoipCache ?? [:]
     }
 
-    private func loadGeosite() throws -> [String: [GeositeDomain]] {
+    private func loadGeosite() throws -> [String: [GeodataFormat.GeositeDomain]] {
         let url = try service.resolvedAssetDirectoryURL(bundle: bundle).appendingPathComponent(GeodataKind.geosite.fileName)
-        return try parseGeositeList(Data(contentsOf: url))
+        return try GeodataFormat.parseGeositeList(Data(contentsOf: url))
     }
 
-    private func loadGeoIP() throws -> [String: GeoIPEntry] {
+    private func loadGeoIP() throws -> [String: GeodataFormat.GeoIPEntry] {
         let url = try service.resolvedAssetDirectoryURL(bundle: bundle).appendingPathComponent(GeodataKind.geoip.fileName)
-        return try parseGeoIPList(Data(contentsOf: url))
+        return try GeodataFormat.parseGeoIPList(Data(contentsOf: url))
     }
 
     private func geodataToken(_ value: String, prefix: String) -> (category: String, attribute: String?)? {
@@ -145,7 +134,7 @@ final class SplitTunnelGeodataMatcher {
         return (category, attribute)
     }
 
-    private func geositeDomainMatches(_ domain: GeositeDomain, candidate: String) -> Bool {
+    private func geositeDomainMatches(_ domain: GeodataFormat.GeositeDomain, candidate: String) -> Bool {
         let value = domain.value.lowercased()
         switch domain.type {
         case 0: // Plain
@@ -159,121 +148,6 @@ final class SplitTunnelGeodataMatcher {
         default:
             return false
         }
-    }
-
-    private func parseGeositeList(_ data: Data) throws -> [String: [GeositeDomain]] {
-        var reader = ProtobufReader(data)
-        var result: [String: [GeositeDomain]] = [:]
-        while let field = try reader.nextField() {
-            guard field.number == 1, field.wireType == 2 else {
-                try reader.skip(field)
-                continue
-            }
-            var siteReader = try ProtobufReader(reader.readLengthDelimited())
-            var code = ""
-            var domains: [GeositeDomain] = []
-            while let siteField = try siteReader.nextField() {
-                switch (siteField.number, siteField.wireType) {
-                case (1, 2):
-                    code = try siteReader.readString().lowercased()
-                case (2, 2):
-                    domains.append(try parseGeositeDomain(siteReader.readLengthDelimited()))
-                default:
-                    try siteReader.skip(siteField)
-                }
-            }
-            if !code.isEmpty { result[code] = domains }
-        }
-        return result
-    }
-
-    private func parseGeositeDomain(_ data: Data) throws -> GeositeDomain {
-        var reader = ProtobufReader(data)
-        var type = 0
-        var value = ""
-        var attributes: Set<String> = []
-        while let field = try reader.nextField() {
-            switch (field.number, field.wireType) {
-            case (1, 0):
-                type = Int(try reader.readVarint())
-            case (2, 2):
-                value = try reader.readString()
-            case (3, 2):
-                if let attribute = try parseGeositeAttribute(reader.readLengthDelimited()) {
-                    attributes.insert(attribute)
-                }
-            default:
-                try reader.skip(field)
-            }
-        }
-        return GeositeDomain(type: type, value: value, attributes: attributes)
-    }
-
-    private func parseGeositeAttribute(_ data: Data) throws -> String? {
-        var reader = ProtobufReader(data)
-        while let field = try reader.nextField() {
-            if field.number == 1, field.wireType == 2 {
-                return try reader.readString().lowercased()
-            }
-            try reader.skip(field)
-        }
-        return nil
-    }
-
-    private func parseGeoIPList(_ data: Data) throws -> [String: GeoIPEntry] {
-        var reader = ProtobufReader(data)
-        var result: [String: GeoIPEntry] = [:]
-        while let field = try reader.nextField() {
-            guard field.number == 1, field.wireType == 2 else {
-                try reader.skip(field)
-                continue
-            }
-            let parsed = try parseGeoIP(reader.readLengthDelimited())
-            if !parsed.code.isEmpty {
-                result[parsed.code] = GeoIPEntry(ranges: parsed.ranges, reverseMatch: parsed.reverseMatch)
-            }
-        }
-        return result
-    }
-
-    private func parseGeoIP(_ data: Data) throws -> (code: String, ranges: [(address: [UInt8], prefixLength: Int)], reverseMatch: Bool) {
-        var reader = ProtobufReader(data)
-        var code = ""
-        var ranges: [(address: [UInt8], prefixLength: Int)] = []
-        var reverseMatch = false
-        while let field = try reader.nextField() {
-            switch (field.number, field.wireType) {
-            case (1, 2):
-                code = try reader.readString().lowercased()
-            case (2, 2):
-                if let range = try parseCIDR(reader.readLengthDelimited()) {
-                    ranges.append(range)
-                }
-            case (3, 0):
-                reverseMatch = try reader.readVarint() != 0
-            default:
-                try reader.skip(field)
-            }
-        }
-        return (code, ranges, reverseMatch)
-    }
-
-    private func parseCIDR(_ data: Data) throws -> (address: [UInt8], prefixLength: Int)? {
-        var reader = ProtobufReader(data)
-        var address: [UInt8] = []
-        var prefixLength: Int?
-        while let field = try reader.nextField() {
-            switch (field.number, field.wireType) {
-            case (1, 2):
-                address = [UInt8](try reader.readLengthDelimited())
-            case (2, 0):
-                prefixLength = Int(try reader.readVarint())
-            default:
-                try reader.skip(field)
-            }
-        }
-        guard !address.isEmpty else { return nil }
-        return (address, prefixLength ?? address.count * 8)
     }
 
     private func addressData(_ value: String) -> [UInt8]? {
@@ -295,75 +169,3 @@ final class SplitTunnelGeodataMatcher {
     }
 }
 
-private struct ProtobufReader {
-    struct Field {
-        let number: Int
-        let wireType: Int
-    }
-
-    private let bytes: [UInt8]
-    private var offset = 0
-
-    init(_ data: Data) {
-        bytes = [UInt8](data)
-    }
-
-    mutating func nextField() throws -> Field? {
-        guard offset < bytes.count else { return nil }
-        let key = try readVarint()
-        return Field(number: Int(key >> 3), wireType: Int(key & 0x7))
-    }
-
-    mutating func readVarint() throws -> UInt64 {
-        var result: UInt64 = 0
-        var shift: UInt64 = 0
-        while offset < bytes.count, shift < 64 {
-            let byte = bytes[offset]
-            offset += 1
-            result |= UInt64(byte & 0x7F) << shift
-            if byte & 0x80 == 0 { return result }
-            shift += 7
-        }
-        throw ProtobufError.malformed
-    }
-
-    mutating func readLengthDelimited() throws -> Data {
-        let length = Int(try readVarint())
-        guard length >= 0, offset + length <= bytes.count else { throw ProtobufError.malformed }
-        let start = offset
-        offset += length
-        return Data(bytes[start ..< offset])
-    }
-
-    mutating func readString() throws -> String {
-        guard let string = String(data: try readLengthDelimited(), encoding: .utf8) else {
-            throw ProtobufError.malformed
-        }
-        return string
-    }
-
-    mutating func skip(_ field: Field) throws {
-        switch field.wireType {
-        case 0:
-            _ = try readVarint()
-        case 1:
-            try advance(8)
-        case 2:
-            _ = try readLengthDelimited()
-        case 5:
-            try advance(4)
-        default:
-            throw ProtobufError.unsupportedWireType
-        }
-    }
-
-    private mutating func advance(_ count: Int) throws {
-        guard count >= 0, offset + count <= bytes.count else { throw ProtobufError.malformed }
-        offset += count
-    }
-}
-
-private enum ProtobufError: Error {
-    case malformed
-    case unsupportedWireType
-}

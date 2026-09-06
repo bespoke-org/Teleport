@@ -8,6 +8,9 @@ struct VerifyGeodata {
         try testGeodataKindFileNames()
         try testGeodataUpdateErrorDescriptionsAreNonEmpty()
         try testStoreReportsWhetherBytesChanged()
+        try testSourceURLRequiresHTTPS()
+        try testFormatValidationRejectsUnusablePayloads()
+        try testFormatValidationRejectsTheOtherKind()
         print("verify_geodata: all checks passed")
     }
 
@@ -98,6 +101,84 @@ struct VerifyGeodata {
         precondition(decoded.geodataSettings.geoipLastError == "Download failed with status 404")
     }
 
+    // MARK: - Protobuf fixtures
+
+    private static func varint(_ value: Int) -> [UInt8] {
+        var remaining = value
+        var bytes: [UInt8] = []
+        repeat {
+            var byte = UInt8(remaining & 0x7F)
+            remaining >>= 7
+            if remaining != 0 { byte |= 0x80 }
+            bytes.append(byte)
+        } while remaining != 0
+        return bytes
+    }
+
+    private static func tag(_ field: Int, _ wireType: Int) -> [UInt8] {
+        varint(field << 3 | wireType)
+    }
+
+    private static func lengthDelimited(_ field: Int, _ payload: [UInt8]) -> [UInt8] {
+        tag(field, 2) + varint(payload.count) + payload
+    }
+
+    /// One `geosite.dat` entry: country "test" holding the domain "example.com".
+    private static func geositeFixture() -> Data {
+        let domain = tag(1, 0) + varint(2) + lengthDelimited(2, Array("example.com".utf8))
+        let site = lengthDelimited(1, Array("test".utf8)) + lengthDelimited(2, domain)
+        return Data(lengthDelimited(1, site))
+    }
+
+    /// One `geoip.dat` entry: country "cn" holding the range 1.2.3.4/24.
+    private static func geoipFixture() -> Data {
+        let cidr = lengthDelimited(1, [1, 2, 3, 4]) + tag(2, 0) + varint(24)
+        let country = lengthDelimited(1, Array("cn".utf8)) + lengthDelimited(2, cidr)
+        return Data(lengthDelimited(1, country))
+    }
+
+    // MARK: - Tests
+
+    private static func testSourceURLRequiresHTTPS() throws {
+        precondition(GeodataUpdateService.validatedSourceURL("https://example.com/geosite.dat") != nil)
+        precondition(
+            GeodataUpdateService.validatedSourceURL("http://example.com/geosite.dat") == nil,
+            "plain http must be refused: geodata decides which traffic leaves the tunnel"
+        )
+        precondition(GeodataUpdateService.validatedSourceURL("HTTPS://example.com/x.dat") != nil, "scheme match must be case-insensitive")
+        precondition(GeodataUpdateService.validatedSourceURL("file:///etc/passwd") == nil)
+        precondition(GeodataUpdateService.validatedSourceURL("https:///no-host.dat") == nil)
+        precondition(GeodataUpdateService.validatedSourceURL("not a url") == nil)
+    }
+
+    private static func testFormatValidationRejectsUnusablePayloads() throws {
+        try GeodataFormat.validate(geositeFixture(), kind: .geosite)
+        try GeodataFormat.validate(geoipFixture(), kind: .geoip)
+
+        for kind in GeodataKind.allCases {
+            expectRejected(Data("<!DOCTYPE html><html><body>404</body></html>".utf8), kind: kind, what: "an HTML error page")
+            expectRejected(Data(), kind: kind, what: "an empty payload")
+            expectRejected(geositeFixture().prefix(3), kind: kind, what: "a truncated transfer")
+        }
+    }
+
+    /// Each kind's records skip cleanly as the other's, so a cross-kind file parses
+    /// into a dictionary of empty entries rather than failing outright. Requiring
+    /// real content is what catches it.
+    private static func testFormatValidationRejectsTheOtherKind() throws {
+        expectRejected(geoipFixture(), kind: .geosite, what: "a geoip file offered as geosite")
+        expectRejected(geositeFixture(), kind: .geoip, what: "a geosite file offered as geoip")
+    }
+
+    private static func expectRejected(_ data: Data, kind: GeodataKind, what: String) {
+        do {
+            try GeodataFormat.validate(data, kind: kind)
+            preconditionFailure("expected \(what) to be rejected as \(kind.fileName)")
+        } catch {
+            // Expected.
+        }
+    }
+
     private static func testGeodataKindFileNames() throws {
         precondition(GeodataKind.geosite.fileName == "geosite.dat")
         precondition(GeodataKind.geoip.fileName == "geoip.dat")
@@ -111,6 +192,10 @@ struct VerifyGeodata {
             .invalidResponse,
             .emptyPayload,
             .tooSmall,
+            .tooLarge,
+            .insecureURL,
+            .unreadablePayload(.geosite),
+            .unreadablePayload(.geoip),
             .bundledDefaultMissing
         ]
         for error in errors {

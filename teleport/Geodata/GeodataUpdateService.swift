@@ -16,16 +16,21 @@ enum GeodataKind: String, CaseIterable {
 
 enum GeodataUpdateError: LocalizedError {
     case invalidURL
+    case insecureURL
     case networkFailure(String)
     case invalidResponse
     case emptyPayload
     case tooSmall
+    case tooLarge
+    case unreadablePayload(GeodataKind)
     case bundledDefaultMissing
 
     var errorDescription: String? {
         switch self {
         case .invalidURL:
-            return "Enter a valid http:// or https:// URL."
+            return "Enter a valid https:// URL."
+        case .insecureURL:
+            return "Geodata must be downloaded over https://. Plain http can be rewritten in transit, and these files decide which traffic leaves the tunnel."
         case let .networkFailure(message):
             return message
         case .invalidResponse:
@@ -34,6 +39,10 @@ enum GeodataUpdateError: LocalizedError {
             return "The downloaded file was empty."
         case .tooSmall:
             return "The downloaded file is too small to be valid geodata. Check the URL."
+        case .tooLarge:
+            return "The download exceeded the size limit for geodata. Check the URL."
+        case let .unreadablePayload(kind):
+            return "The downloaded file is not readable \(kind.displayName) data. Check that the URL points at \(kind.fileName)."
         case .bundledDefaultMissing:
             return "Teleport's bundled geodata is missing. Reinstall Teleport."
         }
@@ -46,19 +55,38 @@ enum GeodataUpdateError: LocalizedError {
 /// (custom override if present, otherwise the bundled default) and is what
 /// gets delivered to the privileged helper for VPN mode.
 struct GeodataUpdateService {
-    /// Real geosite.dat/geoip.dat files are several megabytes; this is a floor
-    /// well below that meant only to catch obviously-wrong downloads (HTML
-    /// error pages, truncated transfers), not to validate the format itself.
-    // TODO(gpt-5.6-sol): Size is not an integrity or format check. These bytes are
-    // later parsed by a root Xray process, so accept HTTPS only and validate the
-    // expected protobuf structure plus a trusted digest/signature before storing
-    // or copying an update across the privilege boundary.
+    /// A floor well below real geodata size, kept as a cheap first rejection; the
+    /// actual check is `GeodataFormat.validate`.
+    ///
+    /// Note on what is and is not guaranteed: downloads are HTTPS-only and must
+    /// parse as the expected kind before being stored, which covers corruption,
+    /// error pages and wrong URLs. It is not authenticity — a well-formed file from
+    /// a source you should not have trusted parses fine. A pinned digest cannot fix
+    /// that either, since geodata legitimately changes and the URL is user-supplied,
+    /// so the source itself remains the thing being trusted.
     private static let minimumPlausibleByteCount = 4096
+
+    /// Real geodata is a few megabytes; this ceiling only stops a wrong or hostile
+    /// URL from making the app read an unbounded file into memory.
+    private static let maximumPlausibleByteCount = 64 * 1024 * 1024
 
     private let fileManager: FileManager
 
     init(fileManager: FileManager = .default) {
         self.fileManager = fileManager
+    }
+
+    /// The single rule for what counts as a geodata source. https only: these files
+    /// decide which traffic leaves the tunnel, so a payload that can be rewritten in
+    /// transit is not acceptable.
+    static func validatedSourceURL(_ value: String) -> URL? {
+        guard let components = URLComponents(string: value),
+              components.scheme?.lowercased() == "https",
+              let host = components.host, !host.isEmpty,
+              let url = components.url else {
+            return nil
+        }
+        return url
     }
 
     func customFileURL(for kind: GeodataKind) -> URL {
@@ -74,6 +102,9 @@ struct GeodataUpdateService {
         let data = try await downloadData(from: url)
         guard !data.isEmpty else { throw GeodataUpdateError.emptyPayload }
         guard data.count >= Self.minimumPlausibleByteCount else { throw GeodataUpdateError.tooSmall }
+        // Parse before storing: these bytes are about to be written where a root
+        // Xray process will read them.
+        try GeodataFormat.validate(data, kind: kind)
         return data
     }
 
@@ -111,6 +142,14 @@ struct GeodataUpdateService {
                fileManager.contentsEqual(atPath: sourceURL.path, andPath: destinationURL.path) {
                 continue
             }
+            // Custom files live in a user-writable directory and are only checked at
+            // download time, so re-validate whatever actually changed before it is
+            // copied into the directory the privileged helper is pointed at. Bundled
+            // defaults are covered by the app signature and skipped, which also keeps
+            // the common (unchanged) path free of any parsing.
+            if sourceURL == customFileURL(for: kind) {
+                try GeodataFormat.validate(Data(contentsOf: sourceURL), kind: kind)
+            }
             try? fileManager.removeItem(at: destinationURL)
             try fileManager.copyItem(at: sourceURL, to: destinationURL)
         }
@@ -129,21 +168,25 @@ struct GeodataUpdateService {
         return bundledURL
     }
 
-    // TODO(gpt-5.6-sol): `data(for:)` still buffers the whole response in memory.
-    // Stream it with `bytes(for:)` and a byte cap so a wrong or hostile URL cannot
-    // make the app allocate without bound.
     /// Cancellable by construction: cancelling the surrounding `Task` propagates into
     /// `URLSession`, so the UI's Cancel action stops the transfer itself rather than
     /// discarding a download that keeps running.
     private func downloadData(from url: URL) async throws -> Data {
+        guard url.scheme?.lowercased() == "https" else {
+            throw GeodataUpdateError.insecureURL
+        }
+
         let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 60)
         let session = URLSession(configuration: .ephemeral)
         defer { session.finishTasksAndInvalidate() }
 
-        let data: Data
+        // `download(for:)` streams to a temporary file, so the size can be rejected
+        // before anything is read into memory. `data(for:)` would have to buffer the
+        // whole response first, which is precisely what the ceiling exists to stop.
+        let temporaryURL: URL
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: request)
+            (temporaryURL, response) = try await session.download(for: request)
         } catch let error as URLError where error.code == .cancelled {
             throw CancellationError()
         } catch is CancellationError {
@@ -151,6 +194,7 @@ struct GeodataUpdateService {
         } catch {
             throw GeodataUpdateError.networkFailure(error.localizedDescription)
         }
+        defer { try? fileManager.removeItem(at: temporaryURL) }
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw GeodataUpdateError.invalidResponse
@@ -160,11 +204,15 @@ struct GeodataUpdateService {
             throw GeodataUpdateError.networkFailure("Download failed with status \(httpResponse.statusCode)")
         }
 
-        guard !data.isEmpty else {
-            throw GeodataUpdateError.emptyPayload
+        let attributes = try? fileManager.attributesOfItem(atPath: temporaryURL.path)
+        guard let byteCount = attributes?[.size] as? Int else {
+            throw GeodataUpdateError.invalidResponse
+        }
+        guard byteCount <= Self.maximumPlausibleByteCount else {
+            throw GeodataUpdateError.tooLarge
         }
 
-        return data
+        return try Data(contentsOf: temporaryURL)
     }
 
     private var customDirectoryURL: URL {
