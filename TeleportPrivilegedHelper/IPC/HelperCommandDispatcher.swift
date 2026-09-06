@@ -388,12 +388,12 @@ actor HelperCommandDispatcher {
                 "stateDirectoryPath",
                 "assetDirectoryPath",
                 "configData",
-                "protectedHost",
+                "protectedHosts",
                 "tunnelInterfaceName",
                 "outboundInterface"
             ]
         case .stopSession:
-            allowedPayloadKeys = ["stateDirectoryPath", "protectedHost", "outboundInterface"]
+            allowedPayloadKeys = ["stateDirectoryPath", "protectedHosts", "outboundInterface"]
         case .readDiagnostics:
             allowedPayloadKeys = ["log", "maximumBytes"]
         }

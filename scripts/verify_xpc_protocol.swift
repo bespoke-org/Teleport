@@ -14,7 +14,7 @@ struct XPCProtocolVerification {
     }
 
     private static func verifyExactRevisionAndStartRoundTrip() throws {
-        precondition(VPNHelperProtocol.revision == 8)
+        precondition(VPNHelperProtocol.revision == 9)
 
         let requestID = UUID()
         let sessionID = UUID()
@@ -26,7 +26,7 @@ struct XPCProtocolVerification {
                 stateDirectoryPath: "/var/db/dev.x.teleport",
                 assetDirectoryPath: "/Users/test/Library/Application Support/teleport/geodata-resolved",
                 configData: Data("{}".utf8),
-                protectedHost: "example.com",
+                protectedHosts: ["example.com"],
                 tunnelInterfaceName: "utun9",
                 outboundInterface: "en0"
             )
@@ -120,7 +120,7 @@ struct XPCProtocolVerification {
                 stateDirectoryPath: "/var/db/dev.x.teleport",
                 assetDirectoryPath: "/Users/test/Library/Application Support/teleport/geodata-resolved",
                 configData: Data("{}".utf8),
-                protectedHost: "example.com",
+                protectedHosts: ["example.com"],
                 tunnelInterfaceName: "utun1",
                 outboundInterface: "en0"
             )
@@ -131,7 +131,7 @@ struct XPCProtocolVerification {
             sessionID: nil,
             payload: StopSessionRequest(
                 stateDirectoryPath: "/var/db/dev.x.teleport",
-                protectedHost: "example.com",
+                protectedHosts: ["example.com"],
                 outboundInterface: "en0"
             )
         ))
@@ -178,7 +178,7 @@ struct XPCProtocolVerification {
                 stateDirectoryPath: "/var/db/dev.x.teleport",
                 assetDirectoryPath: "/Users/test/Library/Application Support/teleport/geodata-resolved",
                 configData: configData,
-                protectedHost: "example.com",
+                protectedHosts: ["example.com"],
                 tunnelInterfaceName: "utun1",
                 outboundInterface: "en0"
             )

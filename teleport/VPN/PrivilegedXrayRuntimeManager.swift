@@ -97,7 +97,7 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
     func stop() async throws {
         let sessionState = readSessionState()
         let pid = sessionState?.pid ?? readPID()
-        let protectedHost = sessionState?.protectedHost ?? readProtectedHost()
+        let protectedHosts = sessionState?.protectedHosts ?? readProtectedHosts()
         let outboundInterface = sessionState?.outboundInterface
         var resolvedSessionID = sessionState?.sessionID
         do {
@@ -122,10 +122,10 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
 
             try await stopSession(
                 sessionID: resolvedSessionID!,
-                protectedHost: protectedHost,
+                protectedHosts: protectedHosts,
                 outboundInterface: outboundInterface
             )
-        } catch PrivilegedHelperClientError.unavailable(_) where pid == nil && protectedHost == nil {
+        } catch PrivilegedHelperClientError.unavailable(_) where pid == nil && protectedHosts == nil {
             return
         } catch let clientError as PrivilegedHelperClientError {
             switch clientError {
@@ -137,7 +137,7 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
                     try await ensureHelperInstalled(runtimeURL)
                     try await stopSession(
                         sessionID: resolvedSessionID ?? UUID(),
-                        protectedHost: protectedHost,
+                        protectedHosts: protectedHosts,
                         outboundInterface: outboundInterface
                     )
                 } catch {
@@ -151,7 +151,7 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
         }
     }
 
-    func cleanupIfHelperAvailable(protectedHost fallbackProtectedHost: String? = nil) async throws {
+    func cleanupIfHelperAvailable(protectedHosts fallbackProtectedHosts: [String] = []) async throws {
         if let runtimeURL = runtimeURL() {
             try? await ensureHelperInstalled(runtimeURL)
         }
@@ -177,11 +177,11 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
                 "The running privileged helper session does not match the cached correlation identifier"
             )
         }
-        let protectedHost = sessionState?.protectedHost ?? readProtectedHost() ?? fallbackProtectedHost
+        let protectedHosts = sessionState?.protectedHosts ?? readProtectedHosts() ?? fallbackProtectedHosts
         let outboundInterface = sessionState?.outboundInterface
         try await helperClient.stop(
             paths: paths,
-            protectedHost: protectedHost,
+            protectedHosts: protectedHosts,
             outboundInterface: outboundInterface,
             sessionID: observedSessionID
         )
@@ -190,12 +190,12 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
 
     private func stopSession(
         sessionID: UUID,
-        protectedHost: String?,
+        protectedHosts: [String]?,
         outboundInterface: String?
     ) async throws {
         try await helperClient.stop(
             paths: paths,
-            protectedHost: protectedHost,
+            protectedHosts: protectedHosts,
             outboundInterface: outboundInterface,
             sessionID: sessionID
         )
@@ -214,7 +214,7 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
         }
         try? await stopSession(
             sessionID: sessionID,
-            protectedHost: session.protectedHost,
+            protectedHosts: session.protectedHosts,
             outboundInterface: session.outboundInterface
         )
     }
@@ -231,7 +231,7 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
         let state = XrayTunSessionState(
             sessionID: sessionID,
             pid: pid,
-            protectedHost: session.protectedHost,
+            protectedHosts: session.protectedHosts,
             tunnelInterfaceName: session.tunnelInterfaceName,
             outboundInterface: session.outboundInterface,
             configPath: paths.configFileURL.path,
@@ -260,9 +260,16 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
         return pid
     }
 
-    private func readProtectedHost() -> String? {
-        try? String(contentsOf: paths.protectedHostFileURL, encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+    /// The helper writes one protected host per line.
+    private func readProtectedHosts() -> [String]? {
+        guard let contents = try? String(contentsOf: paths.protectedHostFileURL, encoding: .utf8) else {
+            return nil
+        }
+        let hosts = contents
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        return hosts.isEmpty ? nil : hosts
     }
 
     private func readableSummary(from error: Error) -> String {

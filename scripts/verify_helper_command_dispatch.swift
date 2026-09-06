@@ -149,7 +149,7 @@ private enum VerifyHelperCommandDispatch {
         let decodedStatus: VPNHelperResponseEnvelope<StatusResponse> = try VPNHelperCodec.decodeResponse(statusResponse)
         precondition(decodedStatus.payload?.phase == .idle)
 
-        let startData = try makeStartData(requestID: UUID(), sessionID: sessionID, protectedHost: "example.com")
+        let startData = try makeStartData(requestID: UUID(), sessionID: sessionID, protectedHosts: ["example.com"])
         let startResponse = await dispatcher.dispatch(command: .startSession, requestData: startData)
         let decodedStart: VPNHelperResponseEnvelope<StartSessionResponse> = try VPNHelperCodec.decodeResponse(startResponse)
         precondition(decodedStart.payload?.phase == .running)
@@ -160,7 +160,7 @@ private enum VerifyHelperCommandDispatch {
             sessionID: sessionID,
             payload: StopSessionRequest(
                 stateDirectoryPath: "/Users/test/Library/Application Support/teleport",
-                protectedHost: "example.com",
+                protectedHosts: ["example.com"],
                 outboundInterface: "en0"
             )
         ))
@@ -212,7 +212,7 @@ private enum VerifyHelperCommandDispatch {
         let sessionID = UUID()
         let requests: [(VPNHelperCommand, Data)] = [
             (.status, try makeStatusData(requestID: UUID())),
-            (.startSession, try makeStartData(requestID: UUID(), sessionID: sessionID, protectedHost: "example.com")),
+            (.startSession, try makeStartData(requestID: UUID(), sessionID: sessionID, protectedHosts: ["example.com"])),
             (.stopSession, try makeStopData(requestID: UUID(), sessionID: sessionID)),
             (.readDiagnostics, try makeDiagnosticsData(requestID: UUID()))
         ]
@@ -255,7 +255,7 @@ private enum VerifyHelperCommandDispatch {
         let sessionID = UUID()
         _ = await dispatcher.dispatch(
             command: .startSession,
-            requestData: try makeStartData(requestID: UUID(), sessionID: sessionID, protectedHost: "example.com")
+            requestData: try makeStartData(requestID: UUID(), sessionID: sessionID, protectedHosts: ["example.com"])
         )
         let running: VPNHelperResponseEnvelope<StatusResponse> = try VPNHelperCodec.decodeResponse(
             await dispatcher.dispatch(command: .status, requestData: try makeStatusData(requestID: UUID()))
@@ -281,7 +281,7 @@ private enum VerifyHelperCommandDispatch {
             if command == .status { statusAdmitted.signal() }
         }
         let sessionID = UUID()
-        let startData = try makeStartData(requestID: UUID(), sessionID: sessionID, protectedHost: "example.com")
+        let startData = try makeStartData(requestID: UUID(), sessionID: sessionID, protectedHosts: ["example.com"])
         let statusData = try makeStatusData(requestID: UUID())
 
         async let startResponseData = dispatcher.dispatch(command: .startSession, requestData: startData)
@@ -331,7 +331,7 @@ private enum VerifyHelperCommandDispatch {
             requestData: try makeStartData(
                 requestID: UUID(),
                 sessionID: activeSessionID,
-                protectedHost: "example.com"
+                protectedHosts: ["example.com"]
             )
         )
 
@@ -357,7 +357,7 @@ private enum VerifyHelperCommandDispatch {
 
         _ = await dispatcher.dispatch(
             command: .startSession,
-            requestData: try makeStartData(requestID: UUID(), sessionID: previousSessionID, protectedHost: "example.com")
+            requestData: try makeStartData(requestID: UUID(), sessionID: previousSessionID, protectedHosts: ["example.com"])
         )
         _ = await dispatcher.dispatch(
             command: .stopSession,
@@ -366,7 +366,7 @@ private enum VerifyHelperCommandDispatch {
 
         let failedStart = await dispatcher.dispatch(
             command: .startSession,
-            requestData: try makeStartData(requestID: UUID(), sessionID: failedSessionID, protectedHost: "example.com")
+            requestData: try makeStartData(requestID: UUID(), sessionID: failedSessionID, protectedHosts: ["example.com"])
         )
         try assertFailure(failedStart, as: StartSessionResponse.self, code: .commandFailed)
 
@@ -416,7 +416,7 @@ private enum VerifyHelperCommandDispatch {
     private static func verifyCompletedDuplicateReturnsExactBytesOnce() async throws {
         let executor = RecordingExecutor()
         let dispatcher = HelperCommandDispatcher(executor: executor)
-        let data = try makeStartData(requestID: UUID(), sessionID: UUID(), protectedHost: "example.com")
+        let data = try makeStartData(requestID: UUID(), sessionID: UUID(), protectedHosts: ["example.com"])
 
         let first = await dispatcher.dispatch(command: .startSession, requestData: data)
         let second = await dispatcher.dispatch(command: .startSession, requestData: data)
@@ -428,7 +428,7 @@ private enum VerifyHelperCommandDispatch {
     private static func verifyInProgressDuplicateIsDeterministic() async throws {
         let executor = RecordingExecutor(blockStart: true)
         let dispatcher = HelperCommandDispatcher(executor: executor)
-        let data = try makeStartData(requestID: UUID(), sessionID: UUID(), protectedHost: "example.com")
+        let data = try makeStartData(requestID: UUID(), sessionID: UUID(), protectedHosts: ["example.com"])
 
         async let firstResponse = dispatcher.dispatch(command: .startSession, requestData: data)
         precondition(executor.startEntered.wait(timeout: .now() + 5) == .success)
@@ -446,8 +446,8 @@ private enum VerifyHelperCommandDispatch {
         let dispatcher = HelperCommandDispatcher(executor: executor)
         let requestID = UUID()
         let sessionID = UUID()
-        let first = try makeStartData(requestID: requestID, sessionID: sessionID, protectedHost: "example.com")
-        let changed = try makeStartData(requestID: requestID, sessionID: sessionID, protectedHost: "other.example.com")
+        let first = try makeStartData(requestID: requestID, sessionID: sessionID, protectedHosts: ["example.com"])
+        let changed = try makeStartData(requestID: requestID, sessionID: sessionID, protectedHosts: ["other.example.com"])
 
         _ = await dispatcher.dispatch(command: .startSession, requestData: first)
         let response = await dispatcher.dispatch(command: .startSession, requestData: changed)
@@ -465,7 +465,7 @@ private enum VerifyHelperCommandDispatch {
         ))
     }
 
-    private static func makeStartData(requestID: UUID, sessionID: UUID, protectedHost: String) throws -> Data {
+    private static func makeStartData(requestID: UUID, sessionID: UUID, protectedHosts: [String]) throws -> Data {
         try VPNHelperCodec.encodeRequest(VPNHelperRequestEnvelope(
             revision: VPNHelperProtocol.revision,
             requestID: requestID,
@@ -474,7 +474,7 @@ private enum VerifyHelperCommandDispatch {
                 stateDirectoryPath: "/Users/test/Library/Application Support/teleport",
                 assetDirectoryPath: "/Users/test/Library/Application Support/teleport/geodata-resolved",
                 configData: Data("{}".utf8),
-                protectedHost: protectedHost,
+                protectedHosts: protectedHosts,
                 tunnelInterfaceName: "utun9",
                 outboundInterface: "en0"
             )
@@ -488,7 +488,7 @@ private enum VerifyHelperCommandDispatch {
             sessionID: sessionID,
             payload: StopSessionRequest(
                 stateDirectoryPath: "/Users/test/Library/Application Support/teleport",
-                protectedHost: "example.com",
+                protectedHosts: ["example.com"],
                 outboundInterface: "en0"
             )
         ))

@@ -63,7 +63,15 @@ extension StartSessionRequest: VPNHelperPayloadValidating {
         guard configData.count <= VPNHelperProtocol.maximumConfigurationBytes else {
             throw protocolFailure(.payloadTooLarge, "The Xray configuration exceeds the protocol limit")
         }
-        try validateNonEmpty(protectedHost, field: "protectedHost")
+        guard !protectedHosts.isEmpty else {
+            throw protocolFailure(.malformedPayload, "The session has no protected hosts")
+        }
+        guard protectedHosts.count <= VPNHelperProtocol.maximumProtectedHosts else {
+            throw protocolFailure(.payloadTooLarge, "The session exceeds the protected host limit")
+        }
+        for protectedHost in protectedHosts {
+            try validateNonEmpty(protectedHost, field: "protectedHosts")
+        }
         try validateNonEmpty(tunnelInterfaceName, field: "tunnelInterfaceName")
         try validateNonEmpty(outboundInterface, field: "outboundInterface")
     }
@@ -74,8 +82,13 @@ extension StopSessionRequest: VPNHelperPayloadValidating {
 
     fileprivate func validate() throws {
         try validateStateDirectoryPath(stateDirectoryPath)
-        if let protectedHost {
-            try validateNonEmpty(protectedHost, field: "protectedHost")
+        if let protectedHosts {
+            guard protectedHosts.count <= VPNHelperProtocol.maximumProtectedHosts else {
+                throw protocolFailure(.payloadTooLarge, "The session exceeds the protected host limit")
+            }
+            for protectedHost in protectedHosts {
+                try validateNonEmpty(protectedHost, field: "protectedHosts")
+            }
         }
         if let outboundInterface {
             try validateNonEmpty(outboundInterface, field: "outboundInterface")

@@ -34,7 +34,7 @@ final class SystemProxyConnectionBackend: ConnectionBackend, @unchecked Sendable
 
     func start(_ request: ConnectionRequest) async throws {
         do {
-            try await vpnRuntimeManager?.cleanupIfHelperAvailable(protectedHost: request.configuration.host)
+            try await vpnRuntimeManager?.cleanupIfHelperAvailable(protectedHosts: [request.configuration.host])
             try await startRuntime(request)
             try await BlockingWork.run { [self] in
                 try proxyService.enableProxy(endpoint: request.localProxy)
@@ -51,7 +51,7 @@ final class SystemProxyConnectionBackend: ConnectionBackend, @unchecked Sendable
                 try proxyService.disableProxy()
                 runtimeManager.stop()
             }
-            try await vpnRuntimeManager?.cleanupIfHelperAvailable(protectedHost: request.configuration.host)
+            try await vpnRuntimeManager?.cleanupIfHelperAvailable(protectedHosts: [request.configuration.host])
             try await startRuntime(request)
             try await BlockingWork.run { [self] in
                 try proxyService.enableProxy(endpoint: request.localProxy)

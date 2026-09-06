@@ -58,7 +58,7 @@ nonisolated struct PrivilegedHelperClient: Sendable {
             stateDirectoryPath: paths.stateDirectoryURL.path,
             assetDirectoryPath: (assetDirectoryURL ?? paths.stateDirectoryURL.appendingPathComponent("geodata-resolved", isDirectory: true)).path,
             configData: session.configData,
-            protectedHost: session.protectedHost,
+            protectedHosts: session.protectedHosts,
             tunnelInterfaceName: session.tunnelInterfaceName,
             outboundInterface: session.outboundInterface
         )
@@ -94,14 +94,14 @@ nonisolated struct PrivilegedHelperClient: Sendable {
 
     func stop(
         paths: XrayTunRuntimePaths,
-        protectedHost: String?,
+        protectedHosts: [String]?,
         outboundInterface: String?,
         sessionID: UUID
     ) async throws {
         let requestID = UUID()
         let payload = StopSessionRequest(
             stateDirectoryPath: paths.stateDirectoryURL.path,
-            protectedHost: protectedHost,
+            protectedHosts: protectedHosts,
             outboundInterface: outboundInterface
         )
 

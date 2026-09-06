@@ -27,6 +27,7 @@ struct VerifySplitTunneling {
         try testHelperAddsScopedDirectRoutes()
         try testTunnelConfigIncludesIPv6()
         try testHelperRoutesIPv6AndDoesNotBypassDNS()
+        try testHelperProtectsEveryProxyServerRoute()
         try testGeneratedHelperScriptsHaveValidShellSyntax()
         testProxyAddressResolutionIncludesIPv4AndIPv6()
         testInterfaceInventoryReadsKernelFacts()
@@ -580,7 +581,64 @@ struct VerifySplitTunneling {
         precondition(helperSource.contains("route delete -inet6 -net ::/1"))
         precondition(helperSource.contains("route delete -inet6 -net 8000::/1"))
         precondition(!helperSource.contains("scutil --dns"), "expected system DNS to follow the TUN instead of receiving physical-gateway bypass routes")
-        precondition(helperSource.contains("PROTECTED_ROUTE_FAMILY=\"-inet6\""), "expected IPv6 proxy endpoints to receive an IPv6 protected route")
+        // The route family is now derived per protected host rather than once per
+        // session, since a session may dial servers of both families.
+        precondition(helperSource.contains("case \"$1\" in *:*) printf '%s' \"-inet6\""), "expected IPv6 proxy endpoints to receive an IPv6 protected route")
+    }
+
+    /// Every proxy server in a session needs its own host route pinned to the
+    /// uplink, and all four phases (start, readiness re-application, failure
+    /// cleanup, stop) must walk the same list.
+    private static func testHelperProtectsEveryProxyServerRoute() throws {
+        let builder = XrayTunScriptBuilder(installedXrayPath: "/Library/PrivilegedHelperTools/xray")
+        let script = builder.makeStartScript(
+            helperStateDirectoryPath: "/var/db/dev.x.teleport",
+            configPath: "/var/db/dev.x.teleport/xray-tun-config.json",
+            assetDirectoryPath: "/tmp/geodata-resolved",
+            protectedHosts: ["203.0.113.7", "2001:db8::7"],
+            tunnelInterfaceName: "utun9",
+            outboundInterface: "en0",
+            installsIPv6Routes: true
+        )
+        try assertValidShell(script)
+        precondition(script.contains("PROTECTED_HOSTS='203.0.113.7\n2001:db8::7'"), "expected every proxy server to reach the helper")
+        precondition(script.contains("\"$PROTECTED_HOSTS\" > \"$PROTECTED_HOST_FILE\""))
+
+        // Gateways must be captured while the physical default routes still exist;
+        // reading them back afterwards would return the TUN and pin each server
+        // inside the tunnel it carries.
+        guard let captureIndex = script.range(of: "capture_host_gateways\n")?.lowerBound,
+              let tunRouteIndex = script.range(of: "route add -net 0.0.0.0/1 -interface")?.lowerBound else {
+            fatalError("expected the start script to capture gateways and install TUN routes")
+        }
+        precondition(captureIndex < tunRouteIndex, "expected proxy gateways to be captured before the TUN default routes exist")
+
+        // No phase may fall back to a single-host variable.
+        precondition(!script.contains("$PROTECTED_HOST\""), "expected no single-host protected route handling to remain")
+        precondition(script.contains("protect_host_routes"))
+        precondition(script.contains("cleanup_host_routes"))
+        precondition(script.contains("first_tunneled_protected_host"))
+
+        let stopScript = builder.makeStopScript(
+            helperStateDirectoryPath: "/var/db/dev.x.teleport",
+            protectedHosts: ["203.0.113.7", "2001:db8::7"],
+            outboundInterface: "en0"
+        )
+        try assertValidShell(stopScript)
+        precondition(stopScript.contains("delete_host_route '203.0.113.7'"))
+        precondition(stopScript.contains("delete_host_route '2001:db8::7'"))
+        // A stop after a helper restart knows no hosts, so the helper's own file
+        // is always walked as well.
+        precondition(stopScript.contains("cleanup_host_routes"))
+        precondition(stopScript.contains("rm -f '/var/db/dev.x.teleport/xray-tun-protected-gateways'"))
+
+        let fileOnlyStop = builder.makeStopScript(
+            helperStateDirectoryPath: "/var/db/dev.x.teleport",
+            protectedHosts: nil,
+            outboundInterface: nil
+        )
+        try assertValidShell(fileOnlyStop)
+        precondition(fileOnlyStop.contains("cleanup_host_routes"))
     }
 
     private static func testGeneratedHelperScriptsHaveValidShellSyntax() throws {
@@ -589,7 +647,7 @@ struct VerifySplitTunneling {
             helperStateDirectoryPath: "/var/db/dev.x.teleport",
             configPath: "/var/db/dev.x.teleport/xray-tun-config.json",
             assetDirectoryPath: "/tmp/geodata-resolved",
-            protectedHost: "2001:db8::7",
+            protectedHosts: ["2001:db8::7"],
             tunnelInterfaceName: "utun9",
             outboundInterface: "en0",
             installsIPv6Routes: true
@@ -598,7 +656,7 @@ struct VerifySplitTunneling {
             helperStateDirectoryPath: "/var/db/dev.x.teleport",
             configPath: "/var/db/dev.x.teleport/xray-tun-config.json",
             assetDirectoryPath: "/tmp/geodata-resolved",
-            protectedHost: "203.0.113.7",
+            protectedHosts: ["203.0.113.7"],
             tunnelInterfaceName: "utun9",
             outboundInterface: "en0",
             installsIPv6Routes: false
@@ -607,7 +665,7 @@ struct VerifySplitTunneling {
         precondition(ipv4OnlyScript.contains("INSTALL_IPV6_ROUTES=0"), "uplink without global IPv6 must not claim IPv6 routes")
         try assertValidShell(builder.makeStopScript(
             helperStateDirectoryPath: "/var/db/dev.x.teleport",
-            protectedHost: "2001:db8::7",
+            protectedHosts: ["2001:db8::7"],
             outboundInterface: "en0"
         ))
     }

@@ -64,7 +64,7 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
             try systemProxyService.suspendProxyForVPN()
             return XrayTunLaunchSession(
                 configData: configData,
-                protectedHost: protectedAddress,
+                protectedHosts: [protectedAddress],
                 tunnelInterfaceName: tunnelInterfaceName,
                 outboundInterface: outboundInterface
             )

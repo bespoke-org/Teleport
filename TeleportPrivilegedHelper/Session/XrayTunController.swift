@@ -33,7 +33,7 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
     func start(request: StartSessionRequest, sessionID: UUID) throws -> StartSessionResponse {
         let stateDirectoryPath = try validatedStateDirectoryPath(request.stateDirectoryPath)
         let assetDirectoryPath = try validatedAssetDirectoryPath(request.assetDirectoryPath)
-        let protectedHost = try validatedProtectedHost(request.protectedHost, required: true)
+        let protectedHosts = try validatedProtectedHosts(request.protectedHosts, required: true)
         let tunnelInterfaceName = try validatedTunnelInterfaceName(request.tunnelInterfaceName)
         let outboundInterface = try validatedOutboundInterface(request.outboundInterface)
 
@@ -49,7 +49,7 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
             helperStateDirectoryPath: helperStateDirectoryPath,
             configPath: configPath,
             assetDirectoryPath: assetDirectoryPath,
-            protectedHost: protectedHost,
+            protectedHosts: protectedHosts,
             tunnelInterfaceName: tunnelInterfaceName,
             outboundInterface: outboundInterface,
             installsIPv6Routes: NetworkInterfaceInventory.hasGlobalIPv6Address(outboundInterface)
@@ -67,14 +67,14 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
 
     func stop(request: StopSessionRequest, sessionID: UUID) throws -> StopSessionResponse {
         let stateDirectoryPath = try validatedStateDirectoryPath(request.stateDirectoryPath)
-        let protectedHost = try validatedProtectedHost(request.protectedHost, required: false)
+        let protectedHosts = try validatedProtectedHosts(request.protectedHosts, required: false)
         let outboundInterface = try validatedOutboundInterface(request.outboundInterface)
         let helperStateDirectoryPath = try preparedHelperStateDirectoryPath()
         try managedProcess.terminateManagedXray(helperStateDirectoryPath: helperStateDirectoryPath)
         try managedProcess.terminateLegacyManagedXray(stateDirectoryPath: stateDirectoryPath)
         try shellRunner.run(scriptBuilder.makeStopScript(
             helperStateDirectoryPath: helperStateDirectoryPath,
-            protectedHost: protectedHost.isEmpty ? nil : protectedHost,
+            protectedHosts: protectedHosts.isEmpty ? nil : protectedHosts,
             outboundInterface: outboundInterface
         ))
         return StopSessionResponse(
@@ -230,6 +230,20 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
             throw HelperError("Rejected invalid \(name)")
         }
         return path
+    }
+
+    /// Each entry is validated with the same host rules as before; the list is
+    /// bounded so a client cannot ask the helper for unbounded route mutations.
+    private func validatedProtectedHosts(_ values: [String]?, required: Bool) throws -> [String] {
+        let values = values ?? []
+        guard !values.isEmpty else {
+            if required { throw HelperError("Missing protectedHosts") }
+            return []
+        }
+        guard values.count <= VPNHelperProtocol.maximumProtectedHosts else {
+            throw HelperError("Rejected too many protectedHosts")
+        }
+        return try values.map { try validatedProtectedHost($0, required: true) }
     }
 
     private func validatedProtectedHost(_ value: String?, required: Bool) throws -> String {

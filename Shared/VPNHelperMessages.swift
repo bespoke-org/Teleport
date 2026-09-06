@@ -39,14 +39,16 @@ nonisolated struct StartSessionRequest: Codable, Sendable, Equatable {
     let stateDirectoryPath: String
     let assetDirectoryPath: String
     let configData: Data
-    let protectedHost: String
+    /// Every proxy server this session dials. Each one needs a host route pinned
+    /// to the physical uplink, or the tunnel would carry its own transport.
+    let protectedHosts: [String]
     let tunnelInterfaceName: String
     let outboundInterface: String
 }
 
 nonisolated struct StopSessionRequest: Codable, Sendable, Equatable {
     let stateDirectoryPath: String
-    let protectedHost: String?
+    let protectedHosts: [String]?
     let outboundInterface: String?
 }
 

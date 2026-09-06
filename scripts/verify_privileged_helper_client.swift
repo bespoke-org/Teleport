@@ -226,7 +226,7 @@ private enum VerifyPrivilegedHelperClient {
         precondition(config.success && config.payload.log == .config && config.details == "diagnostic")
         let processIdentifier = try await client.start(session: launch, paths: paths, sessionID: sessionID)
         precondition(processIdentifier == nil)
-        try await client.stop(paths: paths, protectedHost: launch.protectedHost, outboundInterface: launch.outboundInterface, sessionID: sessionID)
+        try await client.stop(paths: paths, protectedHosts: launch.protectedHosts, outboundInterface: launch.outboundInterface, sessionID: sessionID)
 
         precondition(transport.calls.map(\.0) == [.status, .readDiagnostics, .readDiagnostics, .startSession, .stopSession])
         precondition(transport.calls.map(\.2) == [3, 5, 5, 20, 15])
@@ -275,7 +275,7 @@ private enum VerifyPrivilegedHelperClient {
         }
         try await assertInvalidResponse {
             try await PrivilegedHelperClient(transport: invalidStop).stop(
-                paths: XrayTunRuntimePaths(), protectedHost: nil, outboundInterface: nil, sessionID: sessionID
+                paths: XrayTunRuntimePaths(), protectedHosts: nil, outboundInterface: nil, sessionID: sessionID
             )
         }
 
@@ -386,7 +386,7 @@ private enum VerifyPrivilegedHelperClient {
         let client = PrivilegedHelperClient(transport: transport)
         try await client.stop(
             paths: XrayTunRuntimePaths(),
-            protectedHost: "example.com",
+            protectedHosts: ["example.com"],
             outboundInterface: "en0",
             sessionID: sessionID
         )
@@ -432,7 +432,7 @@ private enum VerifyPrivilegedHelperClient {
         let unknown = reconciliationTransport(mutating: .stopSession, sessionID: unknownSession, phase: .unknown)
         try await assertIndeterminate(sessionID: unknownSession) {
             try await PrivilegedHelperClient(transport: unknown).stop(
-                paths: XrayTunRuntimePaths(), protectedHost: nil, outboundInterface: nil, sessionID: unknownSession
+                paths: XrayTunRuntimePaths(), protectedHosts: nil, outboundInterface: nil, sessionID: unknownSession
             )
         }
         precondition(unknown.calls.map(\.0) == [.stopSession, .status])
@@ -535,7 +535,7 @@ private enum VerifyPrivilegedHelperClient {
         let state = XrayTunSessionState(
             sessionID: sessionID,
             pid: nil,
-            protectedHost: "example.com",
+            protectedHosts: ["example.com"],
             tunnelInterfaceName: "utun9",
             outboundInterface: "en0",
             configPath: paths.configFileURL.path,
@@ -582,7 +582,7 @@ private enum VerifyPrivilegedHelperClient {
 
         try await client.stop(
             paths: XrayTunRuntimePaths(),
-            protectedHost: "example.com",
+            protectedHosts: ["example.com"],
             outboundInterface: "en0",
             sessionID: sessionID
         )
@@ -726,7 +726,7 @@ private enum VerifyPrivilegedHelperClient {
         let state = XrayTunSessionState(
             sessionID: sessionID,
             pid: nil,
-            protectedHost: "example.com",
+            protectedHosts: ["example.com"],
             tunnelInterfaceName: "utun9",
             outboundInterface: "en0",
             configPath: paths.configFileURL.path,
@@ -820,7 +820,7 @@ private enum VerifyPrivilegedHelperClient {
     private static func launchSession() -> XrayTunLaunchSession {
         XrayTunLaunchSession(
             configData: Data("{}".utf8),
-            protectedHost: "example.com",
+            protectedHosts: ["example.com"],
             tunnelInterfaceName: "utun9",
             outboundInterface: "en0"
         )

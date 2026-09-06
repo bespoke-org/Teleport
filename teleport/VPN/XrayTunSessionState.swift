@@ -6,11 +6,71 @@ import Foundation
 struct XrayTunSessionState: Codable, Sendable {
     var sessionID: UUID
     var pid: Int32?
-    var protectedHost: String
+    var protectedHosts: [String]
     var tunnelInterfaceName: String
     var outboundInterface: String
     var configPath: String
     var startedAt: Date
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionID
+        case pid
+        case protectedHost
+        case protectedHosts
+        case tunnelInterfaceName
+        case outboundInterface
+        case configPath
+        case startedAt
+    }
+
+    init(
+        sessionID: UUID,
+        pid: Int32?,
+        protectedHosts: [String],
+        tunnelInterfaceName: String,
+        outboundInterface: String,
+        configPath: String,
+        startedAt: Date
+    ) {
+        self.sessionID = sessionID
+        self.pid = pid
+        self.protectedHosts = protectedHosts
+        self.tunnelInterfaceName = tunnelInterfaceName
+        self.outboundInterface = outboundInterface
+        self.configPath = configPath
+        self.startedAt = startedAt
+    }
+
+    /// A cache written by an older build holds a single `protectedHost`. Reading
+    /// it as a one-element list keeps a session started before the upgrade
+    /// stoppable afterwards instead of leaving its route behind.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sessionID = try container.decode(UUID.self, forKey: .sessionID)
+        pid = try container.decodeIfPresent(Int32.self, forKey: .pid)
+        if let hosts = try container.decodeIfPresent([String].self, forKey: .protectedHosts) {
+            protectedHosts = hosts
+        } else if let host = try container.decodeIfPresent(String.self, forKey: .protectedHost) {
+            protectedHosts = [host]
+        } else {
+            protectedHosts = []
+        }
+        tunnelInterfaceName = try container.decode(String.self, forKey: .tunnelInterfaceName)
+        outboundInterface = try container.decode(String.self, forKey: .outboundInterface)
+        configPath = try container.decode(String.self, forKey: .configPath)
+        startedAt = try container.decode(Date.self, forKey: .startedAt)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(sessionID, forKey: .sessionID)
+        try container.encodeIfPresent(pid, forKey: .pid)
+        try container.encode(protectedHosts, forKey: .protectedHosts)
+        try container.encode(tunnelInterfaceName, forKey: .tunnelInterfaceName)
+        try container.encode(outboundInterface, forKey: .outboundInterface)
+        try container.encode(configPath, forKey: .configPath)
+        try container.encode(startedAt, forKey: .startedAt)
+    }
 }
 
 /// Inputs sent across the privileged IPC boundary for one Xray TUN launch.
@@ -18,7 +78,8 @@ struct XrayTunSessionState: Codable, Sendable {
 /// its root-only state directory before starting Xray.
 struct XrayTunLaunchSession: Sendable {
     var configData: Data
-    var protectedHost: String
+    /// Every proxy server the generated config dials.
+    var protectedHosts: [String]
     var tunnelInterfaceName: String
     var outboundInterface: String
 }
