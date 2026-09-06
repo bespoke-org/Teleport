@@ -68,18 +68,18 @@ final class XrayRuntimeManager: @unchecked Sendable {
         self.process = process
     }
 
-    func waitUntilLocalProxyReady(endpoint: ProxyEndpoint, timeout: TimeInterval = 3) -> Bool {
+    func waitUntilLocalProxyReady(endpoint: ProxyEndpoint, timeout: TimeInterval = 3) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
 
         while Date() < deadline {
             guard process?.isRunning == true else { return false }
 
-            if Self.canOpenTCPConnection(host: endpoint.host, port: endpoint.httpPort, timeout: 0.2),
-               Self.canOpenTCPConnection(host: endpoint.host, port: endpoint.socksPort, timeout: 0.2) {
+            if await Self.canOpenTCPConnection(host: endpoint.host, port: endpoint.httpPort, timeout: 0.2),
+               await Self.canOpenTCPConnection(host: endpoint.host, port: endpoint.socksPort, timeout: 0.2) {
                 return true
             }
 
-            Thread.sleep(forTimeInterval: 0.1)
+            try? await Task.sleep(nanoseconds: 100_000_000)
         }
 
         return false
@@ -148,46 +148,47 @@ final class XrayRuntimeManager: @unchecked Sendable {
         bundle.url(forResource: "xray-assets", withExtension: nil)
     }
 
-    private static func canOpenTCPConnection(host: String, port: Int, timeout: TimeInterval) -> Bool {
+    private static func canOpenTCPConnection(host: String, port: Int, timeout: TimeInterval) async -> Bool {
         guard let rawPort = UInt16(exactly: port),
               let endpointPort = NWEndpoint.Port(rawValue: rawPort) else {
             return false
         }
 
-        let connection = NWConnection(host: NWEndpoint.Host(host), port: endpointPort, using: .tcp)
-        let semaphore = DispatchSemaphore(value: 0)
-        let lock = NSLock()
-        var didComplete = false
-        var isReady = false
+        return await withCheckedContinuation { continuation in
+            final class ResumeState: @unchecked Sendable {
+                let lock = NSLock()
+                var didResume = false
+            }
 
-        func finish(_ ready: Bool) {
-            lock.lock()
-            defer { lock.unlock() }
-            guard !didComplete else { return }
-            didComplete = true
-            isReady = ready
-            semaphore.signal()
-        }
+            let resumeState = ResumeState()
+            let queue = DispatchQueue(label: "dev.x.teleport.xray-readiness", qos: .userInitiated)
+            let connection = NWConnection(host: NWEndpoint.Host(host), port: endpointPort, using: .tcp)
 
-        connection.stateUpdateHandler = { state in
-            switch state {
-            case .ready:
-                finish(true)
-            case .failed, .cancelled:
+            @Sendable func finish(_ isReady: Bool) {
+                resumeState.lock.lock()
+                defer { resumeState.lock.unlock() }
+                guard !resumeState.didResume else { return }
+                resumeState.didResume = true
+                connection.cancel()
+                continuation.resume(returning: isReady)
+            }
+
+            connection.stateUpdateHandler = { state in
+                switch state {
+                case .ready:
+                    finish(true)
+                case .failed, .cancelled:
+                    finish(false)
+                default:
+                    break
+                }
+            }
+
+            connection.start(queue: queue)
+            queue.asyncAfter(deadline: .now() + timeout) {
                 finish(false)
-            default:
-                break
             }
         }
-
-        let queue = DispatchQueue(label: "dev.x.teleport.xray-readiness", qos: .userInitiated)
-        connection.start(queue: queue)
-        let waitResult = semaphore.wait(timeout: .now() + timeout)
-        if waitResult == .timedOut {
-            finish(false)
-        }
-        connection.cancel()
-        return isReady
     }
 
     enum RuntimeError: LocalizedError {

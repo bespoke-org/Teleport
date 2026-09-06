@@ -90,28 +90,21 @@ struct SubscriptionConnectionReconciler {
 }
 
 struct SubscriptionClient {
-    func fetchCandidateLinks(from url: URL) throws -> [String] {
+    func fetchCandidateLinks(from url: URL) async throws -> [String] {
         let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
         let session = URLSession(configuration: .ephemeral)
-        let semaphore = DispatchSemaphore(value: 0)
+        defer { session.finishTasksAndInvalidate() }
 
-        var responseData: Data?
-        var response: URLResponse?
-        var responseError: Error?
-
-        let task = session.dataTask(with: request) { data, urlResponse, error in
-            responseData = data
-            response = urlResponse
-            responseError = error
-            semaphore.signal()
-        }
-
-        task.resume()
-        semaphore.wait()
-        session.finishTasksAndInvalidate()
-
-        if let responseError {
-            throw SubscriptionError.networkFailure(responseError.localizedDescription)
+        let responseData: Data
+        let response: URLResponse
+        do {
+            (responseData, response) = try await session.data(for: request)
+        } catch let error as URLError where error.code == .cancelled {
+            throw CancellationError()
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw SubscriptionError.networkFailure(error.localizedDescription)
         }
 
         guard let httpResponse = response as? HTTPURLResponse else {
@@ -122,7 +115,7 @@ struct SubscriptionClient {
             throw SubscriptionError.networkFailure("Subscription request failed with status \(httpResponse.statusCode)")
         }
 
-        guard let responseData, !responseData.isEmpty else {
+        guard !responseData.isEmpty else {
             throw SubscriptionError.emptyPayload
         }
 

@@ -35,8 +35,8 @@ final class SystemProxyConnectionBackend: ConnectionBackend, @unchecked Sendable
     func start(_ request: ConnectionRequest) async throws {
         do {
             try await vpnRuntimeManager?.cleanupIfHelperAvailable(protectedHost: request.configuration.host)
+            try await startRuntime(request)
             try await BlockingWork.run { [self] in
-                try startRuntime(request)
                 try proxyService.enableProxy(endpoint: request.localProxy)
             }
         } catch {
@@ -52,8 +52,8 @@ final class SystemProxyConnectionBackend: ConnectionBackend, @unchecked Sendable
                 runtimeManager.stop()
             }
             try await vpnRuntimeManager?.cleanupIfHelperAvailable(protectedHost: request.configuration.host)
+            try await startRuntime(request)
             try await BlockingWork.run { [self] in
-                try startRuntime(request)
                 try proxyService.enableProxy(endpoint: request.localProxy)
             }
         } catch {
@@ -86,11 +86,15 @@ final class SystemProxyConnectionBackend: ConnectionBackend, @unchecked Sendable
         }
     }
 
-    private func startRuntime(_ request: ConnectionRequest) throws {
-        let configURL = try XrayConfigurationWriter(proxyEndpoint: request.localProxy)
-            .writeConfig(for: request.configuration)
-        try runtimeManager.start(configURL: configURL)
-        guard runtimeManager.waitUntilLocalProxyReady(endpoint: request.localProxy) else {
+    private func startRuntime(_ request: ConnectionRequest) async throws {
+        // Writing the config and spawning Xray block; waiting for its local ports to
+        // accept connections no longer does.
+        try await BlockingWork.run { [self] in
+            let configURL = try XrayConfigurationWriter(proxyEndpoint: request.localProxy)
+                .writeConfig(for: request.configuration)
+            try runtimeManager.start(configURL: configURL)
+        }
+        guard await runtimeManager.waitUntilLocalProxyReady(endpoint: request.localProxy) else {
             let detail = runtimeManager.capturedErrorOutput()?.trimmingCharacters(in: .whitespacesAndNewlines)
             throw XrayRuntimeManager.RuntimeError.startupTimedOut(detail)
         }

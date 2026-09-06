@@ -70,14 +70,8 @@ struct GeodataUpdateService {
     }
 
     @discardableResult
-    func downloadAndStore(kind: GeodataKind, from url: URL) throws -> Int {
-        let data = try download(kind: kind, from: url)
-        try store(data, for: kind)
-        return data.count
-    }
-
-    func download(kind: GeodataKind, from url: URL) throws -> Data {
-        let data = try downloadData(from: url)
+    func download(kind: GeodataKind, from url: URL) async throws -> Data {
+        let data = try await downloadData(from: url)
         guard !data.isEmpty else { throw GeodataUpdateError.emptyPayload }
         guard data.count >= Self.minimumPlausibleByteCount else { throw GeodataUpdateError.tooSmall }
         return data
@@ -135,32 +129,27 @@ struct GeodataUpdateService {
         return bundledURL
     }
 
-    // TODO(gpt-5.6-sol): Make downloads async, cancellable, and size-bounded while
-    // streaming. `dataTask` currently buffers an unbounded response in memory, and
-    // the UI's Cancel action only discards the eventual result; it cannot cancel
-    // this synchronous semaphore wait or the underlying network transfer.
-    private func downloadData(from url: URL) throws -> Data {
+    // TODO(gpt-5.6-sol): `data(for:)` still buffers the whole response in memory.
+    // Stream it with `bytes(for:)` and a byte cap so a wrong or hostile URL cannot
+    // make the app allocate without bound.
+    /// Cancellable by construction: cancelling the surrounding `Task` propagates into
+    /// `URLSession`, so the UI's Cancel action stops the transfer itself rather than
+    /// discarding a download that keeps running.
+    private func downloadData(from url: URL) async throws -> Data {
         let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 60)
         let session = URLSession(configuration: .ephemeral)
-        let semaphore = DispatchSemaphore(value: 0)
+        defer { session.finishTasksAndInvalidate() }
 
-        var responseData: Data?
-        var response: URLResponse?
-        var responseError: Error?
-
-        let task = session.dataTask(with: request) { data, urlResponse, error in
-            responseData = data
-            response = urlResponse
-            responseError = error
-            semaphore.signal()
-        }
-
-        task.resume()
-        semaphore.wait()
-        session.finishTasksAndInvalidate()
-
-        if let responseError {
-            throw GeodataUpdateError.networkFailure(responseError.localizedDescription)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch let error as URLError where error.code == .cancelled {
+            throw CancellationError()
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw GeodataUpdateError.networkFailure(error.localizedDescription)
         }
 
         guard let httpResponse = response as? HTTPURLResponse else {
@@ -171,11 +160,11 @@ struct GeodataUpdateService {
             throw GeodataUpdateError.networkFailure("Download failed with status \(httpResponse.statusCode)")
         }
 
-        guard let responseData, !responseData.isEmpty else {
+        guard !data.isEmpty else {
             throw GeodataUpdateError.emptyPayload
         }
 
-        return responseData
+        return data
     }
 
     private var customDirectoryURL: URL {

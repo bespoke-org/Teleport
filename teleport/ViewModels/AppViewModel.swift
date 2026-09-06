@@ -70,8 +70,6 @@ final class AppViewModel: ObservableObject {
     private let healthProbeService: ConnectionHealthProbeService
     private let splitTunnelGeodataMatcher = SplitTunnelGeodataMatcher()
     private let loginItemService = LoginItemService()
-    private let operationQueue = DispatchQueue(label: "dev.x.teleport.connection-operations", qos: .userInitiated)
-    private let geodataQueue = DispatchQueue(label: "dev.x.teleport.geodata-updates", qos: .utility, attributes: .concurrent)
     private let persistenceQueue = DispatchQueue(label: "dev.x.teleport.persistence", qos: .utility)
     private lazy var healthProbeQueue = ConnectionHealthProbeQueue(
         healthProbeService: healthProbeService,
@@ -102,6 +100,7 @@ final class AppViewModel: ObservableObject {
     private var appliedSplitTunnelRules: [SplitTunnelRule]?
     private var appliedSplitTunnelDefaultAction: SplitTunnelRuleAction?
     private var geodataUpdateTokens: [GeodataKind: UUID] = [:]
+    private var geodataUpdateTasks: [GeodataKind: Task<Void, Never>] = [:]
     private var savedConnectionsByID: [UUID: SavedConnection] = [:]
     private var importedConnectionsBySourceID: [UUID: [SavedConnection]] = [:]
     private var importedConnectionCountsBySourceID: [UUID: Int] = [:]
@@ -837,12 +836,15 @@ final class AppViewModel: ObservableObject {
 
     func cancelGeodataUpdate(kind: GeodataKind) {
         guard updatingGeodataKinds.contains(kind) else { return }
+        // Cancelling the task now aborts the transfer itself, not just its result.
+        geodataUpdateTasks.removeValue(forKey: kind)?.cancel()
         geodataUpdateTokens[kind] = UUID()
         updatingGeodataKinds.remove(kind)
     }
 
     func cancelGeodataUpdates() {
         for kind in updatingGeodataKinds {
+            geodataUpdateTasks.removeValue(forKey: kind)?.cancel()
             geodataUpdateTokens[kind] = UUID()
         }
         updatingGeodataKinds.removeAll()
@@ -860,22 +862,20 @@ final class AppViewModel: ObservableObject {
         geodataUpdateTokens[kind] = token
         updatingGeodataKinds.insert(kind)
 
-        geodataQueue.async { [weak self] in
+        geodataUpdateTasks[kind] = Task { @MainActor [weak self] in
             let service = GeodataUpdateService()
             do {
-                let data = try service.download(kind: kind, from: url)
-                // Write on the background queue — the .dat files are tens of MB, so
-                // the atomic disk write must not run on the main actor.
-                let changed = try service.store(data, for: kind)
-                Task { @MainActor [weak self] in
-                    guard self?.geodataUpdateTokens[kind] == token else { return }
-                    self?.applyGeodataUpdateResult(kind: kind, token: token, error: nil, changed: changed)
-                }
+                let data = try await service.download(kind: kind, from: url)
+                // The .dat files are tens of MB, so the atomic disk write belongs
+                // neither on the main actor nor on a cooperative thread.
+                let changed = try await BlockingWork.run { try service.store(data, for: kind) }
+                guard self?.geodataUpdateTokens[kind] == token else { return }
+                self?.applyGeodataUpdateResult(kind: kind, token: token, error: nil, changed: changed)
+            } catch is CancellationError {
+                return
             } catch {
-                Task { @MainActor [weak self] in
-                    guard self?.geodataUpdateTokens[kind] == token else { return }
-                    self?.applyGeodataUpdateResult(kind: kind, token: token, error: error)
-                }
+                guard self?.geodataUpdateTokens[kind] == token else { return }
+                self?.applyGeodataUpdateResult(kind: kind, token: token, error: error)
             }
         }
     }
@@ -1258,13 +1258,13 @@ final class AppViewModel: ObservableObject {
         let parser = parser
         let subscriptionClient = subscriptionClient
 
-        operationQueue.async { [weak self] in
+        Task { @MainActor [weak self] in
             do {
                 guard let url = URL(string: source.urlString) else {
                     throw SubscriptionError.invalidURL
                 }
 
-                let links = try subscriptionClient.fetchCandidateLinks(from: url)
+                let links = try await subscriptionClient.fetchCandidateLinks(from: url)
                 let importResult = try Self.importSubscriptionEntries(
                     links: links,
                     parser: parser,
@@ -1272,24 +1272,20 @@ final class AppViewModel: ObservableObject {
                     filterDuplicateImports: source.filterDuplicateImports
                 )
 
-                Task { @MainActor [weak self] in
-                    self?.applyImportedEntries(
-                        importResult.importedEntries,
-                        skippedCount: importResult.skippedCount,
-                        to: source.id,
-                        fetchedAt: Date(),
-                        autoSelectFirstImported: autoSelectFirstImported
-                    )
-                }
+                self?.applyImportedEntries(
+                    importResult.importedEntries,
+                    skippedCount: importResult.skippedCount,
+                    to: source.id,
+                    fetchedAt: Date(),
+                    autoSelectFirstImported: autoSelectFirstImported
+                )
             } catch {
-                Task { @MainActor [weak self] in
-                    self?.refreshingSubscriptionIDs.remove(source.id)
-                    self?.updateSubscriptionSource(source.id) {
-                        $0.lastError = error.localizedDescription
-                    }
-                    self?.applyConnectionError(error)
-                    self?.persistSettingError()
+                self?.refreshingSubscriptionIDs.remove(source.id)
+                self?.updateSubscriptionSource(source.id) {
+                    $0.lastError = error.localizedDescription
                 }
+                self?.applyConnectionError(error)
+                self?.persistSettingError()
             }
         }
     }
