@@ -30,7 +30,7 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
         bundle.url(forResource: "xray", withExtension: nil)
     }
 
-    func start(session: XrayTunLaunchSession) throws {
+    func start(session: XrayTunLaunchSession) async throws {
         try fileManager.createDirectory(at: paths.stateDirectoryURL, withIntermediateDirectories: true)
 
         guard let runtimeURL = runtimeURL() else {
@@ -38,14 +38,14 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
         }
 
         do {
-            try helperInstaller.ensureInstalled(runtimeURL: runtimeURL)
+            try await helperInstaller.ensureInstalled(runtimeURL: runtimeURL)
             let sessionID = UUID()
-            _ = try XrayTunStartCorrelation.perform(
+            _ = try await XrayTunStartCorrelation.perform(
                 persist: { pid in
                     try self.persistSessionState(for: session, sessionID: sessionID, pid: pid)
                 },
                 start: {
-                    try self.helperClient.start(session: session, paths: self.paths, sessionID: sessionID)
+                    try await self.helperClient.start(session: session, paths: self.paths, sessionID: sessionID)
                 }
             )
         } catch {
@@ -53,19 +53,19 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
         }
     }
 
-    func waitUntilRunning(timeout: TimeInterval = 3) -> Bool {
+    func waitUntilRunning(timeout: TimeInterval = 3) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            if isRunning() {
+            if await isRunning() {
                 return true
             }
-            Thread.sleep(forTimeInterval: 0.1)
+            try? await Task.sleep(nanoseconds: 100_000_000)
         }
         return false
     }
 
-    func isRunning() -> Bool {
-        if let status = try? helperClient.status() {
+    func isRunning() async -> Bool {
+        if let status = try? await helperClient.status() {
             return status.version == PrivilegedHelperClient.expectedVersion && status.phase == .running
         }
         guard let pid = readSessionState()?.pid ?? readPID() else { return false }
@@ -75,7 +75,7 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
         return errno == EPERM
     }
 
-    func stop() throws {
+    func stop() async throws {
         let sessionState = readSessionState()
         let pid = sessionState?.pid ?? readPID()
         let protectedHost = sessionState?.protectedHost ?? readProtectedHost()
@@ -85,7 +85,7 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
             if let cachedSessionID = sessionState?.sessionID {
                 sessionID = cachedSessionID
             } else {
-                let status = try helperClient.status()
+                let status = try await helperClient.status()
                 if status.phase == .idle {
                     removeSessionState()
                     return
@@ -103,7 +103,7 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
                 sessionID = observedSessionID
             }
 
-            try helperClient.stop(
+            try await helperClient.stop(
                 paths: paths,
                 protectedHost: protectedHost,
                 outboundInterface: outboundInterface,
@@ -117,11 +117,11 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
         }
     }
 
-    func cleanupIfHelperAvailable(protectedHost fallbackProtectedHost: String? = nil) throws {
+    func cleanupIfHelperAvailable(protectedHost fallbackProtectedHost: String? = nil) async throws {
         if let runtimeURL = runtimeURL() {
-            try? helperInstaller.ensureInstalled(runtimeURL: runtimeURL)
+            try? await helperInstaller.ensureInstalled(runtimeURL: runtimeURL)
         }
-        guard let response = try? helperClient.status(), response.success else {
+        guard let response = try? await helperClient.status(), response.success else {
             return
         }
         if response.phase == .idle {
@@ -145,7 +145,7 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
         }
         let protectedHost = sessionState?.protectedHost ?? readProtectedHost() ?? fallbackProtectedHost
         let outboundInterface = sessionState?.outboundInterface
-        try helperClient.stop(
+        try await helperClient.stop(
             paths: paths,
             protectedHost: protectedHost,
             outboundInterface: outboundInterface,
@@ -154,12 +154,8 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
         removeSessionState()
     }
 
-    func teardown() {
-        try? stop()
-    }
-
-    func capturedLogOutput() -> String? {
-        guard let response = try? helperClient.readLog(logName: "xray-tun.log", maxBytes: 256 * 1024),
+    func capturedLogOutput() async -> String? {
+        guard let response = try? await helperClient.readLog(logName: "xray-tun.log", maxBytes: 256 * 1024),
               response.success,
               let details = response.details,
               !details.isEmpty else { return nil }

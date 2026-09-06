@@ -212,10 +212,10 @@ private struct NerdShitSettingsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onAppear {
             selectedLog = viewModel.connectionMode == .vpn ? .vpn : .systemProxy
-            refreshLog()
+            Task { await refreshLog() }
         }
         .onChange(of: selectedLog) { _, _ in
-            refreshLog()
+            Task { await refreshLog() }
         }
     }
 
@@ -236,7 +236,7 @@ private struct NerdShitSettingsView: View {
                 Spacer(minLength: 8)
 
                 Button("Refresh", systemImage: "arrow.clockwise") {
-                    refreshLog()
+                    Task { await refreshLog() }
                 }
 
                 Button("Copy Output", systemImage: "doc.on.doc") {
@@ -263,10 +263,10 @@ private struct NerdShitSettingsView: View {
         .frame(maxHeight: .infinity, alignment: .top)
     }
 
-    private func refreshLog() {
+    private func refreshLog() async {
         if let helperLogName = selectedLog.helperLogName {
             do {
-                let response = try PrivilegedHelperClient().readLog(logName: helperLogName, maxBytes: Int(maxLogBytes))
+                let response = try await PrivilegedHelperClient().readLog(logName: helperLogName, maxBytes: Int(maxLogBytes))
                 try response.validate()
                 logText = response.details ?? ""
                 logMetadata = response.summary ?? "Private helper log: \(helperLogName)"

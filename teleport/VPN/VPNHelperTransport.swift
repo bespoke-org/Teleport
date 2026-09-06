@@ -5,7 +5,7 @@ nonisolated protocol VPNHelperTransport: Sendable {
         command: VPNHelperCommand,
         requestData: Data,
         timeout: TimeInterval
-    ) throws -> Data
+    ) async throws -> Data
 
     func invalidate()
 }

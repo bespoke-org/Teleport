@@ -1,13 +1,13 @@
 import Foundation
 
-/// Transitional synchronous adapter used only below `ConnectionProvider`.
-/// Phase 2 serializes every call through `BackendConnectionProvider`.
+/// Mode-specific side effects behind `ConnectionProvider`. Implementations own
+/// processes, proxy settings and privileged IPC; ordering and state publication
+/// belong to `BackendConnectionProvider`, so nothing here serializes itself.
 nonisolated protocol ConnectionBackend: AnyObject, Sendable {
-    func hasRestorableState() -> Bool
-    func hasActiveRuntimeSession() -> Bool
-    func restorePreviousState() throws
-    func start(configuration: ConnectionConfiguration, endpoint: ProxyEndpoint, splitTunnelRules: [SplitTunnelRule], splitTunnelDefaultAction: SplitTunnelRuleAction) throws
-    func reconnect(configuration: ConnectionConfiguration, endpoint: ProxyEndpoint, shouldDisableExistingProxy: Bool, splitTunnelRules: [SplitTunnelRule], splitTunnelDefaultAction: SplitTunnelRuleAction) throws
-    func stop(shouldDisableProxy: Bool) throws
-    func teardown()
+    func hasRestorableState() async -> Bool
+    func hasActiveRuntimeSession() async -> Bool
+    func restorePreviousState() async throws
+    func start(_ request: ConnectionRequest) async throws
+    func reconnect(_ request: ConnectionRequest) async throws
+    func stop() async throws
 }

@@ -81,33 +81,48 @@ nonisolated final class XPCVPNHelperTransport: VPNHelperTransport {
     }
 
     private final class Completion: Sendable {
-        private let state = Mutex<Result<Data, VPNHelperTransportError>?>(nil)
-        private let semaphore = DispatchSemaphore(value: 0)
+        private typealias Waiter = CheckedContinuation<Result<Data, VPNHelperTransportError>, Never>
+
+        private struct Storage {
+            var result: Result<Data, VPNHelperTransportError>?
+            var waiter: Waiter?
+        }
+
+        private let state = Mutex(Storage())
 
         @discardableResult
         func resolve(_ result: Result<Data, VPNHelperTransportError>) -> Bool {
-            let didResolve = state.withLock { storedResult in
-                guard storedResult == nil else { return false }
-                storedResult = result
-                return true
+            let (didResolve, waiter) = state.withLock { storage -> (Bool, Waiter?) in
+                guard storage.result == nil else { return (false, nil) }
+                storage.result = result
+                let waiter = storage.waiter
+                storage.waiter = nil
+                return (true, waiter)
             }
-            if didResolve {
-                semaphore.signal()
-            }
+            waiter?.resume(returning: result)
             return didResolve
         }
 
-        func wait(timeout: TimeInterval) throws -> Data {
-            let deadline = DispatchTime.now() + max(0, timeout)
-            if semaphore.wait(timeout: deadline) == .timedOut {
+        /// Suspends until the first `resolve`, failing with `.deadlineExceeded` when the
+        /// deadline arrives first. The deadline is a racing task rather than a blocked
+        /// thread, so no thread is parked for the duration of a helper command.
+        func value(timeout: TimeInterval) async throws -> Data {
+            let deadline = Task { [self] in
+                try? await Task.sleep(nanoseconds: UInt64(max(0, timeout) * 1_000_000_000))
+                guard !Task.isCancelled else { return }
                 resolve(.failure(.deadlineExceeded))
             }
+            defer { deadline.cancel() }
 
-            let result = state.withLock { $0 }
-            guard let result else {
-                throw VPNHelperTransportError.invalidResponse(
-                    "The privileged helper transport completed without a result"
-                )
+            let result = await withCheckedContinuation { (continuation: Waiter) in
+                let resolved = state.withLock { storage -> Result<Data, VPNHelperTransportError>? in
+                    if let result = storage.result { return result }
+                    storage.waiter = continuation
+                    return nil
+                }
+                if let resolved {
+                    continuation.resume(returning: resolved)
+                }
             }
             return try result.get()
         }
@@ -129,7 +144,7 @@ nonisolated final class XPCVPNHelperTransport: VPNHelperTransport {
         command: VPNHelperCommand,
         requestData: Data,
         timeout: TimeInterval
-    ) throws -> Data {
+    ) async throws -> Data {
         guard requestData.count <= VPNHelperProtocol.maximumRequestBytes else {
             throw VPNHelperTransportError.invalidResponse(
                 "The privileged helper request exceeds the protocol limit"
@@ -175,7 +190,7 @@ nonisolated final class XPCVPNHelperTransport: VPNHelperTransport {
                 error: .invalidated,
                 invalidatingConnection: true
             )
-            return try finish(
+            return try await finish(
                 completion: completion,
                 token: requestToken,
                 timeout: timeout
@@ -222,7 +237,7 @@ nonisolated final class XPCVPNHelperTransport: VPNHelperTransport {
             proxy.readDiagnostics(requestData, withReply: reply)
         }
 
-        return try finish(
+        return try await finish(
             completion: completion,
             token: requestToken,
             timeout: timeout
@@ -379,13 +394,13 @@ nonisolated final class XPCVPNHelperTransport: VPNHelperTransport {
         completion: Completion,
         token: UUID,
         timeout: TimeInterval
-    ) throws -> Data {
+    ) async throws -> Data {
         defer {
             _ = state.withLock { state in
                 state.pendingRequests.removeValue(forKey: token)
             }
         }
-        return try completion.wait(timeout: timeout)
+        return try await completion.value(timeout: timeout)
     }
 
     private func retireConnection(

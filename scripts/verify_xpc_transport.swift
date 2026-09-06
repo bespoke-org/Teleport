@@ -2,15 +2,30 @@ import Foundation
 
 private func expectTransportError(
     _ expected: VPNHelperTransportError,
-    operation: () throws -> Data
-) {
+    operation: () async throws -> Data
+) async {
     do {
-        _ = try operation()
+        _ = try await operation()
         preconditionFailure("Expected transport error: \(expected)")
     } catch let error as VPNHelperTransportError {
         precondition(error == expected, "Expected \(expected), got \(error)")
     } catch {
         preconditionFailure("Unexpected error: \(error)")
+    }
+}
+
+/// Awaits `task`, giving up after `timeout` so a regression reports a failure
+/// instead of hanging the whole verification run.
+private func value<T: Sendable>(of task: Task<T, Never>, timeout: Double) async -> T? {
+    await withTaskGroup(of: T?.self) { group in
+        group.addTask { await task.value }
+        group.addTask {
+            try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+            return nil
+        }
+        let first = await group.next() ?? nil
+        group.cancelAll()
+        return first
     }
 }
 
@@ -263,21 +278,21 @@ private final class StoredReply: @unchecked Sendable {
 
 @main
 private enum VerifyXPCTransport {
-    static func main() throws {
-        try verifiesExplicitAllowedClassesConfiguration()
-        try verifiesCommandRoutingAndNormalReplies()
-        verifiesConcurrentSendsShareConnectionCreation()
-        verifiesProxyErrorMapping()
-        verifiesNSErrorReplyMapping()
-        try verifiesSynchronousLifecycleHandlerDuringConfiguration()
-        try verifiesInterruptionRetiresOnlyItsGeneration()
-        try verifiesInvalidationCreatesOneReplacement()
-        try verifiesDeadlineAndIgnoresLateReply()
-        verifiesInvalidResponseMapping()
+    static func main() async throws {
+        try await verifiesExplicitAllowedClassesConfiguration()
+        try await verifiesCommandRoutingAndNormalReplies()
+        await verifiesConcurrentSendsShareConnectionCreation()
+        await verifiesProxyErrorMapping()
+        await verifiesNSErrorReplyMapping()
+        try await verifiesSynchronousLifecycleHandlerDuringConfiguration()
+        try await verifiesInterruptionRetiresOnlyItsGeneration()
+        try await verifiesInvalidationCreatesOneReplacement()
+        try await verifiesDeadlineAndIgnoresLateReply()
+        await verifiesInvalidResponseMapping()
         print("verify_xpc_transport: all checks passed")
     }
 
-    private static func verifiesExplicitAllowedClassesConfiguration() throws {
+    private static func verifiesExplicitAllowedClassesConfiguration() async throws {
         let source = try String(
             contentsOfFile: "teleport/VPN/XPCVPNHelperTransport.swift",
             encoding: .utf8
@@ -285,7 +300,7 @@ private enum VerifyXPCTransport {
         precondition(source.contains("interface.setClasses"))
     }
 
-    private static func verifiesCommandRoutingAndNormalReplies() throws {
+    private static func verifiesCommandRoutingAndNormalReplies() async throws {
         let response = Data("response".utf8)
         let proxy = FakeProxy { _, request, reply in
             precondition(request == Data("request".utf8))
@@ -296,7 +311,7 @@ private enum VerifyXPCTransport {
         let transport = XPCVPNHelperTransport(connectionFactory: { factory.make() })
 
         for command in [VPNHelperCommand.status, .startSession, .stopSession, .readDiagnostics] {
-            let received = try transport.send(
+            let received = try await transport.send(
                 command: command,
                 requestData: Data("request".utf8),
                 timeout: 1
@@ -310,7 +325,7 @@ private enum VerifyXPCTransport {
         precondition(connection.didConfigureAllowedClasses)
     }
 
-    private static func verifiesConcurrentSendsShareConnectionCreation() {
+    private static func verifiesConcurrentSendsShareConnectionCreation() async {
         let proxy = FakeProxy { _, _, reply in reply(Data("ok".utf8), nil) }
         let connection = FakeConnection(proxy: proxy)
         let factory = ConnectionFactory([connection])
@@ -322,28 +337,32 @@ private enum VerifyXPCTransport {
             return factory.make()
         })
         let results = StoredTransportResults()
-        let group = DispatchGroup()
 
-        for _ in 0..<8 {
-            group.enter()
-            DispatchQueue.global().async {
-                do {
-                    let data = try transport.send(
-                        command: .status,
-                        requestData: Data(),
-                        timeout: 1
-                    )
-                    results.append(.success(data))
-                } catch {
-                    results.append(.failure(error))
+        // The gate is released from the main actor, so it stays reachable even while
+        // the concurrent senders occupy cooperative threads inside connection setup.
+        let senders = Task {
+            await withTaskGroup(of: Void.self) { group in
+                for _ in 0 ..< 8 {
+                    group.addTask {
+                        do {
+                            let data = try await transport.send(
+                                command: .status,
+                                requestData: Data(),
+                                timeout: 1
+                            )
+                            results.append(.success(data))
+                        } catch {
+                            results.append(.failure(error))
+                        }
+                    }
                 }
-                group.leave()
             }
         }
 
         precondition(creationStarted.wait(timeout: .now() + 1) == .success)
         allowCreation.signal()
-        precondition(group.wait(timeout: .now() + 2) == .success)
+        let sendersFinished = await value(of: senders, timeout: 5) != nil
+        precondition(sendersFinished, "concurrent sends did not finish")
         precondition(results.load().count == 8)
         for result in results.load() {
             do {
@@ -357,7 +376,7 @@ private enum VerifyXPCTransport {
         precondition(connection.activationCount == 1)
     }
 
-    private static func verifiesProxyErrorMapping() {
+    private static func verifiesProxyErrorMapping() async {
         let error = NSError(domain: "test.proxy", code: 7, userInfo: [
             NSLocalizedDescriptionKey: "proxy unavailable"
         ])
@@ -366,12 +385,12 @@ private enum VerifyXPCTransport {
         let factory = ConnectionFactory([connection])
         let transport = XPCVPNHelperTransport(connectionFactory: { factory.make() })
 
-        expectTransportError(.unavailable("proxy unavailable")) {
-            try transport.send(command: .status, requestData: Data(), timeout: 1)
+        await expectTransportError(.unavailable("proxy unavailable")) {
+            try await transport.send(command: .status, requestData: Data(), timeout: 1)
         }
     }
 
-    private static func verifiesNSErrorReplyMapping() {
+    private static func verifiesNSErrorReplyMapping() async {
         let proxy = FakeProxy { _, _, reply in
             reply(nil, NSError(domain: "test.reply", code: 8, userInfo: [
                 NSLocalizedDescriptionKey: "reply rejected"
@@ -382,12 +401,12 @@ private enum VerifyXPCTransport {
         let factory = ConnectionFactory([connection])
         let transport = XPCVPNHelperTransport(connectionFactory: { factory.make() })
 
-        expectTransportError(.unavailable("reply rejected")) {
-            try transport.send(command: .status, requestData: Data(), timeout: 1)
+        await expectTransportError(.unavailable("reply rejected")) {
+            try await transport.send(command: .status, requestData: Data(), timeout: 1)
         }
     }
 
-    private static func verifiesSynchronousLifecycleHandlerDuringConfiguration() throws {
+    private static func verifiesSynchronousLifecycleHandlerDuringConfiguration() async throws {
         let firstProxy = FakeProxy { _, _, reply in reply(Data("unexpected".utf8), nil) }
         let firstConnection = FakeConnection(
             proxy: firstProxy,
@@ -398,36 +417,35 @@ private enum VerifyXPCTransport {
         let factory = ConnectionFactory([firstConnection, secondConnection])
         let transport = XPCVPNHelperTransport(connectionFactory: { factory.make() })
         let result = StoredTransportResult()
-        let finished = DispatchSemaphore(value: 0)
 
-        DispatchQueue.global().async {
+        let send = Task {
             do {
-                let data = try transport.send(command: .status, requestData: Data(), timeout: 1)
+                let data = try await transport.send(command: .status, requestData: Data(), timeout: 1)
                 result.store(.success(data))
             } catch {
                 result.store(.failure(error))
             }
-            finished.signal()
         }
 
+        let sendFinished = await value(of: send, timeout: 2) != nil
         precondition(
-            finished.wait(timeout: .now() + 1) == .success,
+            sendFinished,
             "Synchronous lifecycle handler deadlocked connection configuration"
         )
         guard let storedResult = result.load() else {
-            preconditionFailure("Expected the synchronous send to store a result")
+            preconditionFailure("Expected the send to store a result")
         }
-        expectTransportError(.interrupted) {
+        await expectTransportError(.interrupted) {
             try storedResult.get()
         }
         precondition(firstConnection.activationCount == 0)
 
-        let replacement = try transport.send(command: .status, requestData: Data(), timeout: 1)
+        let replacement = try await transport.send(command: .status, requestData: Data(), timeout: 1)
         precondition(replacement == Data("replacement".utf8))
         precondition(factory.creationCount == 2)
     }
 
-    private static func verifiesInterruptionRetiresOnlyItsGeneration() throws {
+    private static func verifiesInterruptionRetiresOnlyItsGeneration() async throws {
         var firstConnection: FakeConnection!
         let firstProxy = FakeProxy { _, _, _ in firstConnection.triggerInterruption() }
         firstConnection = FakeConnection(proxy: firstProxy)
@@ -437,18 +455,18 @@ private enum VerifyXPCTransport {
         let factory = ConnectionFactory([firstConnection, secondConnection])
         let transport = XPCVPNHelperTransport(connectionFactory: { factory.make() })
 
-        expectTransportError(.interrupted) {
-            try transport.send(command: .startSession, requestData: Data(), timeout: 1)
+        await expectTransportError(.interrupted) {
+            try await transport.send(command: .startSession, requestData: Data(), timeout: 1)
         }
-        let received = try transport.send(command: .status, requestData: Data(), timeout: 1)
+        let received = try await transport.send(command: .status, requestData: Data(), timeout: 1)
         precondition(received == response)
         firstConnection.triggerInvalidation()
-        let receivedAgain = try transport.send(command: .status, requestData: Data(), timeout: 1)
+        let receivedAgain = try await transport.send(command: .status, requestData: Data(), timeout: 1)
         precondition(receivedAgain == response)
         precondition(factory.creationCount == 2)
     }
 
-    private static func verifiesInvalidationCreatesOneReplacement() throws {
+    private static func verifiesInvalidationCreatesOneReplacement() async throws {
         var firstConnection: FakeConnection!
         let firstProxy = FakeProxy { _, _, _ in firstConnection.triggerInvalidation() }
         firstConnection = FakeConnection(proxy: firstProxy)
@@ -457,39 +475,39 @@ private enum VerifyXPCTransport {
         let factory = ConnectionFactory([firstConnection, secondConnection])
         let transport = XPCVPNHelperTransport(connectionFactory: { factory.make() })
 
-        expectTransportError(.invalidated) {
-            try transport.send(command: .stopSession, requestData: Data(), timeout: 1)
+        await expectTransportError(.invalidated) {
+            try await transport.send(command: .stopSession, requestData: Data(), timeout: 1)
         }
-        let received = try transport.send(command: .status, requestData: Data(), timeout: 1)
+        let received = try await transport.send(command: .status, requestData: Data(), timeout: 1)
         precondition(received == Data("ok".utf8))
         precondition(factory.creationCount == 2)
     }
 
-    private static func verifiesDeadlineAndIgnoresLateReply() throws {
+    private static func verifiesDeadlineAndIgnoresLateReply() async throws {
         let storedReply = StoredReply()
         let proxy = FakeProxy { _, _, reply in storedReply.store(reply) }
         let connection = FakeConnection(proxy: proxy)
         let factory = ConnectionFactory([connection])
         let transport = XPCVPNHelperTransport(connectionFactory: { factory.make() })
 
-        expectTransportError(.deadlineExceeded) {
-            try transport.send(command: .startSession, requestData: Data(), timeout: 0.01)
+        await expectTransportError(.deadlineExceeded) {
+            try await transport.send(command: .startSession, requestData: Data(), timeout: 0.01)
         }
         storedReply.take()?(Data("late".utf8), nil)
         proxy.handle = { _, _, reply in reply(Data("next".utf8), nil) }
-        let received = try transport.send(command: .status, requestData: Data(), timeout: 1)
+        let received = try await transport.send(command: .status, requestData: Data(), timeout: 1)
         precondition(received == Data("next".utf8))
         precondition(factory.creationCount == 1)
     }
 
-    private static func verifiesInvalidResponseMapping() {
+    private static func verifiesInvalidResponseMapping() async {
         let proxy = FakeProxy { _, _, reply in reply(nil, nil) }
         let connection = FakeConnection(proxy: proxy)
         let factory = ConnectionFactory([connection])
         let transport = XPCVPNHelperTransport(connectionFactory: { factory.make() })
 
-        expectTransportError(.invalidResponse("The privileged helper returned neither data nor an error")) {
-            try transport.send(command: .readDiagnostics, requestData: Data(), timeout: 1)
+        await expectTransportError(.invalidResponse("The privileged helper returned neither data nor an error")) {
+            try await transport.send(command: .readDiagnostics, requestData: Data(), timeout: 1)
         }
     }
 }

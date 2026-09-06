@@ -57,6 +57,7 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var isSplitTunnelGeodataReady = false
     @Published private(set) var updatingGeodataKinds: Set<GeodataKind> = []
     @Published private(set) var startsAtLogin: Bool
+    @Published private(set) var isOperationPending = false
     @Published private(set) var refreshingSubscriptionIDs: Set<UUID> = []
     @Published private(set) var refreshingHealthConnectionIDs: Set<UUID> = []
     @Published private(set) var queuedHealthConnectionIDs: Set<UUID> = []
@@ -89,14 +90,15 @@ final class AppViewModel: ObservableObject {
     )
     private var autoRefreshTimerCancellable: AnyCancellable?
     private var connectionStateTask: Task<Void, Never>?
-    private var connectionOperationTask: Task<Void, Never>?
-    private var connectionOperationID: UUID?
+    private var pendingOperationCount = 0
     private var hasObservedInitialConnectionState = false
     private var isTerminating = false
     private var persistWorkItem: DispatchWorkItem?
     private var splitTunnelApplyWorkItem: DispatchWorkItem?
     private var pendingSplitTunnelLiveApply = false
-    private var pendingConnectionRequest: (operationID: UUID, request: ConnectionRequest)?
+    /// The request whose `connect` is still running, kept so the applied split-tunnel
+    /// policy can be recorded once the provider reports `.connected`. Not a queue.
+    private var inFlightConnectionRequest: (operationID: UUID, request: ConnectionRequest)?
     private var appliedSplitTunnelRules: [SplitTunnelRule]?
     private var appliedSplitTunnelDefaultAction: SplitTunnelRuleAction?
     private var geodataUpdateTokens: [GeodataKind: UUID] = [:]
@@ -216,25 +218,25 @@ final class AppViewModel: ObservableObject {
         !isTerminating
             && hasObservedInitialConnectionState
             && selectedConfiguration != nil
-            && connectionOperationID == nil
+            && !isOperationPending
             && connectionPresentation.canConnect
     }
 
     var canDisconnect: Bool {
         !isTerminating
             && hasObservedInitialConnectionState
-            && (connectionOperationID != nil || connectionPresentation.canDisconnect)
+            && (isOperationPending || connectionPresentation.canDisconnect)
     }
 
     var canChangeSelection: Bool {
         !isTerminating
             && hasObservedInitialConnectionState
-            && connectionOperationID == nil
+            && !isOperationPending
             && connectionPresentation.canChangeSelection
     }
 
     var hasActiveConnectionSession: Bool {
-        connectionOperationID != nil || connectionPresentation.hasActiveConnectionSession
+        isOperationPending || connectionPresentation.hasActiveConnectionSession
     }
 
     var isConnected: Bool {
@@ -593,7 +595,7 @@ final class AppViewModel: ObservableObject {
         connectionProvider = connectionProviderFactory.makeProvider(for: mode)
         connectionState = .idle
         hasObservedInitialConnectionState = false
-        pendingConnectionRequest = nil
+        inFlightConnectionRequest = nil
         appliedSplitTunnelRules = nil
         appliedSplitTunnelDefaultAction = nil
         observeConnectionState()
@@ -790,7 +792,7 @@ final class AppViewModel: ObservableObject {
 
     private func applySplitTunnelRulesLiveIfNeeded() {
         guard !isTerminating, connectionMode == .vpn, hasEstablishedConnection else { return }
-        guard connectionOperationID == nil else {
+        guard !isOperationPending else {
             pendingSplitTunnelLiveApply = true
             return
         }
@@ -1029,13 +1031,9 @@ final class AppViewModel: ObservableObject {
     func disconnect() {
         guard !isTerminating else { return }
         let provider = connectionProvider
-        let precedingOperation = connectionOperationTask
         let operationID = UUID()
-        connectionOperationID = operationID
-        connectionOperationTask = Task { @MainActor [weak self] in
-            if let precedingOperation {
-                _ = await precedingOperation.result
-            }
+        beginConnectionOperation()
+        Task { @MainActor [weak self] in
             do {
                 try await provider.disconnect()
                 self?.setStoredError(nil)
@@ -1051,11 +1049,7 @@ final class AppViewModel: ObservableObject {
     func handleAppTermination(completion: @escaping () -> Void) {
         isTerminating = true
         let provider = connectionProvider
-        let precedingOperation = connectionOperationTask
-        connectionOperationTask = Task { @MainActor [weak self] in
-            if let precedingOperation {
-                _ = await precedingOperation.result
-            }
+        Task { @MainActor [weak self] in
             try? await provider.disconnect()
             self?.connectionStateTask?.cancel()
             completion()
@@ -1082,12 +1076,12 @@ final class AppViewModel: ObservableObject {
         case let .failed(failure):
             lastError = failure.summary
             lastErrorDetails = failure.details
-            pendingConnectionRequest = nil
+            inFlightConnectionRequest = nil
         case .connected:
-            if let pendingConnectionRequest {
-                appliedSplitTunnelRules = pendingConnectionRequest.request.splitTunnelPolicy.rules
-                appliedSplitTunnelDefaultAction = pendingConnectionRequest.request.splitTunnelPolicy.defaultAction
-                self.pendingConnectionRequest = nil
+            if let inFlightConnectionRequest {
+                appliedSplitTunnelRules = inFlightConnectionRequest.request.splitTunnelPolicy.rules
+                appliedSplitTunnelDefaultAction = inFlightConnectionRequest.request.splitTunnelPolicy.defaultAction
+                self.inFlightConnectionRequest = nil
                 setStoredError(nil)
             } else if appliedSplitTunnelRules == nil {
                 appliedSplitTunnelRules = activeSplitTunnelRules
@@ -1098,7 +1092,7 @@ final class AppViewModel: ObservableObject {
             }
             applyDeferredSplitTunnelRulesLiveIfNeeded()
         case .idle:
-            pendingConnectionRequest = nil
+            inFlightConnectionRequest = nil
             appliedSplitTunnelRules = nil
             appliedSplitTunnelDefaultAction = nil
             pendingSplitTunnelLiveApply = false
@@ -1122,16 +1116,16 @@ final class AppViewModel: ObservableObject {
     }
 
     private func startConnection(using configuration: ConnectionConfiguration) {
-        guard !isTerminating, connectionOperationID == nil else { return }
+        guard !isTerminating else { return }
 
         let request = makeConnectionRequest(configuration: configuration)
         let provider = connectionProvider
         let operationID = UUID()
-        connectionOperationID = operationID
-        pendingConnectionRequest = (operationID, request)
+        beginConnectionOperation()
+        inFlightConnectionRequest = (operationID, request)
         setStoredError(nil)
 
-        connectionOperationTask = Task { @MainActor [weak self] in
+        Task { @MainActor [weak self] in
             do {
                 try await provider.connect(request)
                 self?.finishConnectionOperation(operationID, discardPendingRequest: false)
@@ -1145,13 +1139,17 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    private func beginConnectionOperation() {
+        pendingOperationCount += 1
+        isOperationPending = true
+    }
+
     private func finishConnectionOperation(_ operationID: UUID, discardPendingRequest: Bool = false) {
-        if discardPendingRequest, pendingConnectionRequest?.operationID == operationID {
-            pendingConnectionRequest = nil
+        if discardPendingRequest, inFlightConnectionRequest?.operationID == operationID {
+            inFlightConnectionRequest = nil
         }
-        if connectionOperationID == operationID {
-            connectionOperationID = nil
-        }
+        pendingOperationCount = max(0, pendingOperationCount - 1)
+        isOperationPending = pendingOperationCount > 0
     }
 
     private func makeConnectionRequest(configuration: ConnectionConfiguration) -> ConnectionRequest {

@@ -1,48 +1,41 @@
 import Foundation
 
-/// Serializes the asynchronous provider contract around the current synchronous
-/// backend implementations. Concrete process, proxy, helper, and route details do
-/// not cross this boundary.
-final class BackendConnectionProvider: ConnectionProvider, @unchecked Sendable {
-    private enum OperationReservation {
-        case reserved
-        case restorationInProgress
-        case busy
-    }
-
+/// Serializes every connection operation for one mode and publishes the resulting
+/// state. Operations run in submission order: each link of the chain awaits the
+/// previous one, so a disconnect issued during a connect runs after it instead of
+/// being rejected. Concrete process, proxy, helper, and route details do not cross
+/// this boundary.
+nonisolated final class BackendConnectionProvider: ConnectionProvider, @unchecked Sendable {
     private let mode: ConnectionMode
     private let backend: ConnectionBackend
-    private let lifecycleQueue: DispatchQueue
     private let stateStore: ConnectionStateStore
-    private let operationLock = NSLock()
-    private var operationInProgress = false
-    private var restoringPreviousState = false
+    private let chainLock = NSLock()
+    private var tail: Task<Void, Never>?
 
     init(mode: ConnectionMode, backend: ConnectionBackend) {
         self.mode = mode
         self.backend = backend
-        lifecycleQueue = DispatchQueue(label: "dev.x.teleport.connection-provider.\(mode.rawValue)", qos: .userInitiated)
-
-        if backend.hasActiveRuntimeSession() {
-            stateStore = ConnectionStateStore(
-                initialState: .connected(ConnectionSession(id: UUID(), mode: mode, connectedAt: Date()))
-            )
-        } else if backend.hasRestorableState() {
-            stateStore = ConnectionStateStore(initialState: .preparing)
-            operationInProgress = true
-            restoringPreviousState = true
-            lifecycleQueue.async { [weak self] in
-                guard let self else { return }
-                do {
-                    try self.backend.restorePreviousState()
-                    self.stateStore.update(.idle)
-                } catch {
-                    self.stateStore.update(.failed(ConnectionFailure(error: error)))
-                }
-                self.releaseOperation(completedRestoration: true)
+        // Where the backend stands can only be answered asynchronously (VPN mode
+        // asks the privileged helper over XPC), so the provider starts out
+        // resolving and publishes the answer as the first queued operation.
+        stateStore = ConnectionStateStore(initialState: .preparing)
+        enqueueDetached { [backend, stateStore, mode] in
+            if await backend.hasActiveRuntimeSession() {
+                stateStore.update(
+                    .connected(ConnectionSession(id: UUID(), mode: mode, connectedAt: Date()))
+                )
+                return
             }
-        } else {
-            stateStore = ConnectionStateStore(initialState: .idle)
+            guard await backend.hasRestorableState() else {
+                stateStore.update(.idle)
+                return
+            }
+            do {
+                try await backend.restorePreviousState()
+                stateStore.update(.idle)
+            } catch {
+                stateStore.update(.failed(ConnectionFailure(error: error)))
+            }
         }
     }
 
@@ -55,115 +48,67 @@ final class BackendConnectionProvider: ConnectionProvider, @unchecked Sendable {
     }
 
     func connect(_ request: ConnectionRequest) async throws {
-        guard case .reserved = reserveOperation() else {
-            throw ConnectionProviderError.operationInProgress
-        }
+        try await enqueue { [backend, stateStore, mode] in
+            let previousState = stateStore.current()
+            stateStore.update(.preparing)
+            stateStore.update(.connecting)
 
-        let previousState = stateStore.current()
-        stateStore.update(.preparing)
-        stateStore.update(.connecting)
-
-        do {
-            try await performOnLifecycleQueue {
-                switch previousState {
-                case .connected:
-                    try self.backend.reconnect(
-                        configuration: request.configuration,
-                        endpoint: request.localProxy,
-                        shouldDisableExistingProxy: true,
-                        splitTunnelRules: request.splitTunnelPolicy.rules,
-                        splitTunnelDefaultAction: request.splitTunnelPolicy.defaultAction
-                    )
-                default:
-                    try self.backend.start(
-                        configuration: request.configuration,
-                        endpoint: request.localProxy,
-                        splitTunnelRules: request.splitTunnelPolicy.rules,
-                        splitTunnelDefaultAction: request.splitTunnelPolicy.defaultAction
-                    )
+            do {
+                if case .connected = previousState {
+                    try await backend.reconnect(request)
+                } else {
+                    try await backend.start(request)
                 }
+                stateStore.update(
+                    .connected(ConnectionSession(id: UUID(), mode: mode, connectedAt: Date()))
+                )
+            } catch {
+                stateStore.update(.failed(ConnectionFailure(error: error)))
+                throw error
             }
-            stateStore.update(
-                .connected(ConnectionSession(id: UUID(), mode: mode, connectedAt: Date()))
-            )
-            releaseOperation()
-        } catch {
-            stateStore.update(.failed(ConnectionFailure(error: error)))
-            releaseOperation()
-            throw error
         }
     }
 
     func disconnect() async throws {
-        switch reserveOperation() {
-        case .reserved:
-            break
-        case .restorationInProgress:
-            try await performOnLifecycleQueue {}
-            return try await disconnect()
-        case .busy:
-            throw ConnectionProviderError.operationInProgress
-        }
-
-        if case .idle = stateStore.current() {
-            releaseOperation()
-            return
-        }
-
-        stateStore.update(.disconnecting)
-        do {
-            try await performOnLifecycleQueue {
-                try self.backend.stop(shouldDisableProxy: true)
+        try await enqueue { [backend, stateStore] in
+            if case .idle = stateStore.current() {
+                return
             }
-            stateStore.update(.idle)
-            releaseOperation()
-        } catch {
-            stateStore.update(.failed(ConnectionFailure(error: error)))
-            releaseOperation()
-            throw error
-        }
-    }
 
-    private func reserveOperation() -> OperationReservation {
-        operationLock.lock()
-        defer { operationLock.unlock() }
-        guard !operationInProgress else {
-            return restoringPreviousState ? .restorationInProgress : .busy
-        }
-        operationInProgress = true
-        return .reserved
-    }
-
-    private func releaseOperation(completedRestoration: Bool = false) {
-        operationLock.lock()
-        operationInProgress = false
-        if completedRestoration {
-            restoringPreviousState = false
-        }
-        operationLock.unlock()
-    }
-
-    private func performOnLifecycleQueue(_ operation: @escaping @Sendable () throws -> Void) async throws {
-        try await withCheckedThrowingContinuation { continuation in
-            lifecycleQueue.async {
-                do {
-                    try operation()
-                    continuation.resume()
-                } catch {
-                    continuation.resume(throwing: error)
-                }
+            stateStore.update(.disconnecting)
+            do {
+                try await backend.stop()
+                stateStore.update(.idle)
+            } catch {
+                stateStore.update(.failed(ConnectionFailure(error: error)))
+                throw error
             }
         }
     }
-}
 
-enum ConnectionProviderError: LocalizedError, Equatable {
-    case operationInProgress
-
-    var errorDescription: String? {
-        switch self {
-        case .operationInProgress:
-            return "Another connection operation is already in progress."
+    /// Appends `operation` to the serial chain and awaits its own outcome. The
+    /// chain is unstructured on purpose: cancelling the caller must not abandon a
+    /// half-applied proxy or tunnel mutation.
+    private func enqueue<T: Sendable>(_ operation: @escaping @Sendable () async throws -> T) async throws -> T {
+        chainLock.lock()
+        let previous = tail
+        let work = Task<T, Error> {
+            await previous?.value
+            return try await operation()
         }
+        tail = Task { _ = try? await work.value }
+        chainLock.unlock()
+
+        return try await work.value
+    }
+
+    private func enqueueDetached(_ operation: @escaping @Sendable () async -> Void) {
+        chainLock.lock()
+        let previous = tail
+        tail = Task {
+            await previous?.value
+            await operation()
+        }
+        chainLock.unlock()
     }
 }

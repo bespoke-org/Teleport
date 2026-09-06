@@ -20,7 +20,7 @@ private final class ScriptedTransport: VPNHelperTransport, @unchecked Sendable {
         lock.withLock { invalidationCount }
     }
 
-    func send(command: VPNHelperCommand, requestData: Data, timeout: TimeInterval) throws -> Data {
+    func send(command: VPNHelperCommand, requestData: Data, timeout: TimeInterval) async throws -> Data {
         let index = lock.withLock { () -> Int in
             recordedCalls.append((command, requestData, timeout))
             return recordedCalls.count - 1
@@ -134,23 +134,23 @@ private final class LostStopReplyConnectionFactory: @unchecked Sendable {
 
 @main
 private enum VerifyPrivilegedHelperClient {
-    static func main() throws {
-        try verifyDeadlinesPayloadsAndNormalMapping()
-        try verifyCommandSpecificSuccessPayloadValidation()
-        try verifyResponseIdentityAndRevisionValidation()
-        try verifyStructuredCommandFailureMapping()
-        try verifyLostStartReconcilesOnce()
-        try verifyLostStopReconcilesOnce()
-        try verifyFailedReconciliationIsCommandFailure()
-        try verifyUnavailableAndUnknownReconciliationAreIndeterminate()
-        try verifyStartCorrelationPersistenceOrderingAndFailureRetention()
-        try verifyLostXPCStopReplyDoesNotReplayMutation()
-        try verifyRuntimeResolvesMissingSessionWithoutInventingIdentity()
-        try verifyInvalidStopResponsePreservesCachedState()
+    static func main() async throws {
+        try await verifyDeadlinesPayloadsAndNormalMapping()
+        try await verifyCommandSpecificSuccessPayloadValidation()
+        try await verifyResponseIdentityAndRevisionValidation()
+        try await verifyStructuredCommandFailureMapping()
+        try await verifyLostStartReconcilesOnce()
+        try await verifyLostStopReconcilesOnce()
+        try await verifyFailedReconciliationIsCommandFailure()
+        try await verifyUnavailableAndUnknownReconciliationAreIndeterminate()
+        try await verifyStartCorrelationPersistenceOrderingAndFailureRetention()
+        try await verifyLostXPCStopReplyDoesNotReplayMutation()
+        try await verifyRuntimeResolvesMissingSessionWithoutInventingIdentity()
+        try await verifyInvalidStopResponsePreservesCachedState()
         print("verify_privileged_helper_client: all checks passed")
     }
 
-    private static func verifyDeadlinesPayloadsAndNormalMapping() throws {
+    private static func verifyDeadlinesPayloadsAndNormalMapping() async throws {
         let sessionID = UUID()
         let transport = ScriptedTransport { command, data, _, _ in
             switch command {
@@ -191,13 +191,13 @@ private enum VerifyPrivilegedHelperClient {
         let paths = XrayTunRuntimePaths()
         let launch = launchSession()
 
-        let status = try client.status()
+        let status = try await client.status()
         precondition(status.success && status.version == "8" && status.phase == .idle)
-        let diagnostics = try client.readLog(logName: "xray-tun.log", maxBytes: Int.max)
+        let diagnostics = try await client.readLog(logName: "xray-tun.log", maxBytes: Int.max)
         precondition(diagnostics.success && diagnostics.details == "diagnostic")
-        let processIdentifier = try client.start(session: launch, paths: paths, sessionID: sessionID)
+        let processIdentifier = try await client.start(session: launch, paths: paths, sessionID: sessionID)
         precondition(processIdentifier == nil)
-        try client.stop(paths: paths, protectedHost: launch.protectedHost, outboundInterface: launch.outboundInterface, sessionID: sessionID)
+        try await client.stop(paths: paths, protectedHost: launch.protectedHost, outboundInterface: launch.outboundInterface, sessionID: sessionID)
 
         precondition(transport.calls.map(\.0) == [.status, .readDiagnostics, .startSession, .stopSession])
         precondition(transport.calls.map(\.2) == [3, 5, 20, 15])
@@ -220,7 +220,7 @@ private enum VerifyPrivilegedHelperClient {
         precondition(Set(requestIDs).count == requestIDs.count)
     }
 
-    private static func verifyCommandSpecificSuccessPayloadValidation() throws {
+    private static func verifyCommandSpecificSuccessPayloadValidation() async throws {
         let sessionID = UUID()
         let invalidStart = ScriptedTransport { _, data, _, _ in
             let request: VPNHelperRequestEnvelope<StartSessionRequest> = try VPNHelperCodec.decodeRequest(data)
@@ -230,8 +230,8 @@ private enum VerifyPrivilegedHelperClient {
                 payload: StartSessionResponse(phase: .idle, summary: nil, details: nil)
             )
         }
-        try assertInvalidResponse {
-            _ = try PrivilegedHelperClient(transport: invalidStart).start(
+        try await assertInvalidResponse {
+            _ = try await PrivilegedHelperClient(transport: invalidStart).start(
                 session: launchSession(), paths: XrayTunRuntimePaths(), sessionID: sessionID
             )
         }
@@ -244,8 +244,8 @@ private enum VerifyPrivilegedHelperClient {
                 payload: StopSessionResponse(phase: .running, summary: nil, details: nil)
             )
         }
-        try assertInvalidResponse {
-            try PrivilegedHelperClient(transport: invalidStop).stop(
+        try await assertInvalidResponse {
+            try await PrivilegedHelperClient(transport: invalidStop).stop(
                 paths: XrayTunRuntimePaths(), protectedHost: nil, outboundInterface: nil, sessionID: sessionID
             )
         }
@@ -259,14 +259,14 @@ private enum VerifyPrivilegedHelperClient {
                 payload: DiagnosticsResponse(log: .control, text: "wrong log", metadata: "meta", wasTruncated: false)
             )
         }
-        try assertInvalidResponse {
-            _ = try PrivilegedHelperClient(transport: mismatchedDiagnostics).readLog(
+        try await assertInvalidResponse {
+            _ = try await PrivilegedHelperClient(transport: mismatchedDiagnostics).readLog(
                 logName: "xray-tun.log", maxBytes: 1_024
             )
         }
     }
 
-    private static func verifyResponseIdentityAndRevisionValidation() throws {
+    private static func verifyResponseIdentityAndRevisionValidation() async throws {
         let mismatchTransport = ScriptedTransport { _, _, _, _ in
             try response(
                 requestID: UUID(),
@@ -275,7 +275,7 @@ private enum VerifyPrivilegedHelperClient {
             )
         }
         do {
-            _ = try PrivilegedHelperClient(transport: mismatchTransport).status()
+            _ = try await PrivilegedHelperClient(transport: mismatchTransport).status()
             preconditionFailure("Expected request identifier mismatch")
         } catch PrivilegedHelperClientError.invalidResponse {}
 
@@ -289,7 +289,7 @@ private enum VerifyPrivilegedHelperClient {
             )
         }
         do {
-            _ = try PrivilegedHelperClient(transport: sessionMismatchTransport).start(
+            _ = try await PrivilegedHelperClient(transport: sessionMismatchTransport).start(
                 session: launchSession(), paths: XrayTunRuntimePaths(), sessionID: expectedSessionID
             )
             preconditionFailure("Expected session identifier mismatch")
@@ -307,12 +307,12 @@ private enum VerifyPrivilegedHelperClient {
             return try JSONEncoder().encode(stale)
         }
         do {
-            _ = try PrivilegedHelperClient(transport: staleTransport).status()
+            _ = try await PrivilegedHelperClient(transport: staleTransport).status()
             preconditionFailure("Expected incompatible service")
         } catch PrivilegedHelperClientError.incompatibleService {}
     }
 
-    private static func verifyStructuredCommandFailureMapping() throws {
+    private static func verifyStructuredCommandFailureMapping() async throws {
         let transport = ScriptedTransport { _, data, _, _ in
             let request: VPNHelperRequestEnvelope<StatusRequest> = try VPNHelperCodec.decodeRequest(data)
             return try VPNHelperCodec.encodeResponse(VPNHelperResponseEnvelope<StatusResponse>(
@@ -329,7 +329,7 @@ private enum VerifyPrivilegedHelperClient {
             ))
         }
         do {
-            _ = try PrivilegedHelperClient(transport: transport).status()
+            _ = try await PrivilegedHelperClient(transport: transport).status()
             preconditionFailure("Expected structured command failure")
         } catch let PrivilegedHelperClientError.commandFailed(summary, details) {
             precondition(summary == "status failed")
@@ -337,16 +337,16 @@ private enum VerifyPrivilegedHelperClient {
         }
     }
 
-    private static func verifyLostStartReconcilesOnce() throws {
+    private static func verifyLostStartReconcilesOnce() async throws {
         let sessionID = UUID()
         let transport = reconciliationTransport(mutating: .startSession, sessionID: sessionID, phase: .running)
         let client = PrivilegedHelperClient(transport: transport)
-        _ = try client.start(session: launchSession(), paths: XrayTunRuntimePaths(), sessionID: sessionID)
+        _ = try await client.start(session: launchSession(), paths: XrayTunRuntimePaths(), sessionID: sessionID)
         precondition(transport.calls.map(\.0) == [.startSession, .status])
         precondition(transport.invalidations == 1)
     }
 
-    private static func verifyLostStopReconcilesOnce() throws {
+    private static func verifyLostStopReconcilesOnce() async throws {
         let sessionID = UUID()
         let transport = reconciliationTransport(
             mutating: .stopSession,
@@ -355,7 +355,7 @@ private enum VerifyPrivilegedHelperClient {
             transportFailure: .invalidated
         )
         let client = PrivilegedHelperClient(transport: transport)
-        try client.stop(
+        try await client.stop(
             paths: XrayTunRuntimePaths(),
             protectedHost: "example.com",
             outboundInterface: "en0",
@@ -365,7 +365,7 @@ private enum VerifyPrivilegedHelperClient {
         precondition(transport.invalidations == 1)
     }
 
-    private static func verifyFailedReconciliationIsCommandFailure() throws {
+    private static func verifyFailedReconciliationIsCommandFailure() async throws {
         let sessionID = UUID()
         let transport = reconciliationTransport(
             mutating: .startSession,
@@ -375,7 +375,7 @@ private enum VerifyPrivilegedHelperClient {
             details: "bounded details"
         )
         do {
-            _ = try PrivilegedHelperClient(transport: transport).start(
+            _ = try await PrivilegedHelperClient(transport: transport).start(
                 session: launchSession(), paths: XrayTunRuntimePaths(), sessionID: sessionID
             )
             preconditionFailure("Expected command failure")
@@ -386,14 +386,14 @@ private enum VerifyPrivilegedHelperClient {
         precondition(transport.calls.count == 2)
     }
 
-    private static func verifyUnavailableAndUnknownReconciliationAreIndeterminate() throws {
+    private static func verifyUnavailableAndUnknownReconciliationAreIndeterminate() async throws {
         let unavailableSession = UUID()
         let unavailable = ScriptedTransport { command, _, _, _ in
             if command == .startSession { throw VPNHelperTransportError.interrupted }
             throw VPNHelperTransportError.unavailable("not running")
         }
-        try assertIndeterminate(sessionID: unavailableSession) {
-            _ = try PrivilegedHelperClient(transport: unavailable).start(
+        try await assertIndeterminate(sessionID: unavailableSession) {
+            _ = try await PrivilegedHelperClient(transport: unavailable).start(
                 session: launchSession(), paths: XrayTunRuntimePaths(), sessionID: unavailableSession
             )
         }
@@ -401,20 +401,20 @@ private enum VerifyPrivilegedHelperClient {
 
         let unknownSession = UUID()
         let unknown = reconciliationTransport(mutating: .stopSession, sessionID: unknownSession, phase: .unknown)
-        try assertIndeterminate(sessionID: unknownSession) {
-            try PrivilegedHelperClient(transport: unknown).stop(
+        try await assertIndeterminate(sessionID: unknownSession) {
+            try await PrivilegedHelperClient(transport: unknown).stop(
                 paths: XrayTunRuntimePaths(), protectedHost: nil, outboundInterface: nil, sessionID: unknownSession
             )
         }
         precondition(unknown.calls.map(\.0) == [.stopSession, .status])
     }
 
-    private static func verifyStartCorrelationPersistenceOrderingAndFailureRetention() throws {
+    private static func verifyStartCorrelationPersistenceOrderingAndFailureRetention() async throws {
         enum ExpectedFailure: Error { case start }
 
         var failedEvents: [String] = []
         do {
-            _ = try XrayTunStartCorrelation.perform(
+            _ = try await XrayTunStartCorrelation.perform(
                 persist: { pid in failedEvents.append("persist:\(pid.map(String.init) ?? "nil")") },
                 start: {
                     failedEvents.append("start")
@@ -426,7 +426,7 @@ private enum VerifyPrivilegedHelperClient {
         precondition(failedEvents == ["persist:nil", "start"])
 
         var successfulEvents: [String] = []
-        let pid = try XrayTunStartCorrelation.perform(
+        let pid = try await XrayTunStartCorrelation.perform(
             persist: { pid in successfulEvents.append("persist:\(pid.map(String.init) ?? "nil")") },
             start: {
                 successfulEvents.append("start")
@@ -437,7 +437,7 @@ private enum VerifyPrivilegedHelperClient {
         precondition(successfulEvents == ["persist:nil", "start", "persist:42"])
     }
 
-    private static func verifyLostXPCStopReplyDoesNotReplayMutation() throws {
+    private static func verifyLostXPCStopReplyDoesNotReplayMutation() async throws {
         let sessionID = UUID()
         let mutatingProxy = LostStopReplyProxy(sessionID: sessionID, losesStopReply: true)
         let statusProxy = LostStopReplyProxy(sessionID: sessionID, losesStopReply: false)
@@ -448,7 +448,7 @@ private enum VerifyPrivilegedHelperClient {
         let transport = XPCVPNHelperTransport(connectionFactory: { factory.make() })
         let client = PrivilegedHelperClient(transport: transport)
 
-        try client.stop(
+        try await client.stop(
             paths: XrayTunRuntimePaths(),
             protectedHost: "example.com",
             outboundInterface: "en0",
@@ -461,7 +461,7 @@ private enum VerifyPrivilegedHelperClient {
         precondition(statusProxy.counts.status == 1)
     }
 
-    private static func verifyRuntimeResolvesMissingSessionWithoutInventingIdentity() throws {
+    private static func verifyRuntimeResolvesMissingSessionWithoutInventingIdentity() async throws {
         let idlePaths = try temporaryRuntimePaths(named: "idle")
         defer { removeTemporaryRuntimePaths(idlePaths) }
         let idleTransport = ScriptedTransport { command, data, _, _ in
@@ -477,8 +477,8 @@ private enum VerifyPrivilegedHelperClient {
             helperClient: PrivilegedHelperClient(transport: idleTransport),
             paths: idlePaths
         )
-        try idleManager.stop()
-        try idleManager.stop()
+        try await idleManager.stop()
+        try await idleManager.stop()
         precondition(idleTransport.calls.map(\.0) == [.status, .status])
 
         let observedSessionID = UUID()
@@ -509,7 +509,7 @@ private enum VerifyPrivilegedHelperClient {
             helperClient: PrivilegedHelperClient(transport: runningTransport),
             paths: runningPaths
         )
-        try runningManager.stop()
+        try await runningManager.stop()
         precondition(runningTransport.calls.map(\.0) == [.status, .stopSession])
 
         let cleanupPaths = try temporaryRuntimePaths(named: "cleanup")
@@ -535,7 +535,7 @@ private enum VerifyPrivilegedHelperClient {
                 preconditionFailure("Unexpected command: \(command)")
             }
         }
-        try PrivilegedXrayRuntimeManager(
+        try await PrivilegedXrayRuntimeManager(
             helperClient: PrivilegedHelperClient(transport: cleanupTransport),
             paths: cleanupPaths
         ).cleanupIfHelperAvailable()
@@ -557,7 +557,7 @@ private enum VerifyPrivilegedHelperClient {
             paths: unidentifiedPaths
         )
         do {
-            try unidentifiedManager.stop()
+            try await unidentifiedManager.stop()
             preconditionFailure("Expected an indeterminate unidentified-session failure")
         } catch let XrayTunRuntimeError.stopFailed(summary, _) {
             precondition(summary.localizedCaseInsensitiveContains("session"))
@@ -576,7 +576,7 @@ private enum VerifyPrivilegedHelperClient {
             )
         }
         do {
-            try PrivilegedXrayRuntimeManager(
+            try await PrivilegedXrayRuntimeManager(
                 helperClient: PrivilegedHelperClient(transport: cleanupUnidentifiedTransport),
                 paths: cleanupUnidentifiedPaths
             ).cleanupIfHelperAvailable()
@@ -587,7 +587,7 @@ private enum VerifyPrivilegedHelperClient {
         precondition(cleanupUnidentifiedTransport.calls.map(\.0) == [.status])
     }
 
-    private static func verifyInvalidStopResponsePreservesCachedState() throws {
+    private static func verifyInvalidStopResponsePreservesCachedState() async throws {
         let paths = try temporaryRuntimePaths(named: "invalid-stop")
         defer { removeTemporaryRuntimePaths(paths) }
         let sessionID = UUID()
@@ -616,7 +616,7 @@ private enum VerifyPrivilegedHelperClient {
             paths: paths
         )
         do {
-            try manager.stop()
+            try await manager.stop()
             preconditionFailure("Expected invalid stop response")
         } catch XrayTunRuntimeError.stopFailed {}
         precondition(FileManager.default.fileExists(atPath: paths.sessionStateFileURL.path))
@@ -644,9 +644,9 @@ private enum VerifyPrivilegedHelperClient {
         try? FileManager.default.removeItem(at: paths.sessionStateFileURL.deletingLastPathComponent())
     }
 
-    private static func assertInvalidResponse(_ operation: () throws -> Void) throws {
+    private static func assertInvalidResponse(_ operation: () async throws -> Void) async throws {
         do {
-            try operation()
+            try await operation()
             preconditionFailure("Expected invalid response")
         } catch PrivilegedHelperClientError.invalidResponse {}
     }
@@ -675,9 +675,9 @@ private enum VerifyPrivilegedHelperClient {
         }
     }
 
-    private static func assertIndeterminate(sessionID: UUID, operation: () throws -> Void) throws {
+    private static func assertIndeterminate(sessionID: UUID, operation: () async throws -> Void) async throws {
         do {
-            try operation()
+            try await operation()
             preconditionFailure("Expected indeterminate result")
         } catch let PrivilegedHelperClientError.indeterminate(requestID, actualSessionID, _) {
             precondition(requestID != UUID())

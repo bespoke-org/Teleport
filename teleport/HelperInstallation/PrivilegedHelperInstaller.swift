@@ -21,7 +21,7 @@ struct PrivilegedHelperInstaller: Sendable {
         self.artifactVerifier = artifactVerifier ?? BundledArtifactVerifier(policy: artifactPolicy)
     }
 
-    func ensureInstalled(runtimeURL: URL) throws {
+    func ensureInstalled(runtimeURL: URL) async throws {
         guard let helperURL = bundledHelperURL() else {
             throw PrivilegedHelperInstallerError.bundledHelperMissing
         }
@@ -35,15 +35,15 @@ struct PrivilegedHelperInstaller: Sendable {
             throw PrivilegedHelperInstallerError.installFailed((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
         }
 
-        if isInstalledAndRunning(helperURL: helperURL, runtimeURL: runtimeURL, assetDirectoryURL: assetDirectoryURL) {
+        if await isInstalledAndRunning(helperURL: helperURL, runtimeURL: runtimeURL, assetDirectoryURL: assetDirectoryURL) {
             return
         }
         try verifyBundleArtifacts(helperURL: helperURL, runtimeURL: runtimeURL)
         try install(helperURL: helperURL, runtimeURL: runtimeURL, assetDirectoryURL: assetDirectoryURL)
-        try waitUntilRunning()
+        try await waitUntilRunning()
     }
 
-    private func isInstalledAndRunning(helperURL: URL, runtimeURL: URL, assetDirectoryURL: URL) -> Bool {
+    private func isInstalledAndRunning(helperURL: URL, runtimeURL: URL, assetDirectoryURL: URL) async -> Bool {
         let fileManager = FileManager.default
         guard fileManager.isExecutableFile(atPath: PrivilegedHelperClient.installedToolPath),
               fileManager.isExecutableFile(atPath: PrivilegedHelperClient.installedXrayPath),
@@ -52,7 +52,7 @@ struct PrivilegedHelperInstaller: Sendable {
               installedGeodataMatches(assetDirectoryURL) else {
             return false
         }
-        guard let response = try? PrivilegedHelperClient().status(), response.success else {
+        guard let response = try? await PrivilegedHelperClient().status(), response.success else {
             return false
         }
         return response.version == PrivilegedHelperClient.expectedVersion
@@ -102,19 +102,19 @@ struct PrivilegedHelperInstaller: Sendable {
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0.path) }
     }
 
-    private func waitUntilRunning() throws {
+    private func waitUntilRunning() async throws {
         let deadline = Date().addingTimeInterval(5)
         var lastError: Error?
         while Date() < deadline {
             do {
-                let response = try PrivilegedHelperClient().status()
+                let response = try await PrivilegedHelperClient().status()
                 if response.success, response.version == PrivilegedHelperClient.expectedVersion {
                     return
                 }
             } catch {
                 lastError = error
             }
-            Thread.sleep(forTimeInterval: 0.2)
+            try? await Task.sleep(nanoseconds: 200_000_000)
         }
         throw PrivilegedHelperInstallerError.helperDidNotStart(
             (lastError as? LocalizedError)?.errorDescription ?? lastError?.localizedDescription

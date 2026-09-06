@@ -21,10 +21,10 @@ nonisolated struct PrivilegedHelperClient: Sendable {
         self.transport = transport
     }
 
-    func status() throws -> PrivilegedHelperStatus {
+    func status() async throws -> PrivilegedHelperStatus {
         let requestID = UUID()
         do {
-            let response: VPNHelperResponseEnvelope<StatusResponse> = try exchange(
+            let response: VPNHelperResponseEnvelope<StatusResponse> = try await exchange(
                 command: .status,
                 requestID: requestID,
                 sessionID: nil,
@@ -51,7 +51,7 @@ nonisolated struct PrivilegedHelperClient: Sendable {
         session: XrayTunLaunchSession,
         paths: XrayTunRuntimePaths,
         sessionID: UUID
-    ) throws -> pid_t? {
+    ) async throws -> pid_t? {
         let requestID = UUID()
         let payload = StartSessionRequest(
             stateDirectoryPath: paths.stateDirectoryURL.path,
@@ -62,7 +62,7 @@ nonisolated struct PrivilegedHelperClient: Sendable {
         )
 
         do {
-            let response: VPNHelperResponseEnvelope<StartSessionResponse> = try exchange(
+            let response: VPNHelperResponseEnvelope<StartSessionResponse> = try await exchange(
                 command: .startSession,
                 requestID: requestID,
                 sessionID: sessionID,
@@ -78,7 +78,7 @@ nonisolated struct PrivilegedHelperClient: Sendable {
             }
             return nil
         } catch let error as VPNHelperTransportError where error.requiresMutationReconciliation {
-            try reconcileMutation(
+            try await reconcileMutation(
                 command: .startSession,
                 requestID: requestID,
                 sessionID: sessionID,
@@ -95,7 +95,7 @@ nonisolated struct PrivilegedHelperClient: Sendable {
         protectedHost: String?,
         outboundInterface: String?,
         sessionID: UUID
-    ) throws {
+    ) async throws {
         let requestID = UUID()
         let payload = StopSessionRequest(
             stateDirectoryPath: paths.stateDirectoryURL.path,
@@ -104,7 +104,7 @@ nonisolated struct PrivilegedHelperClient: Sendable {
         )
 
         do {
-            let response: VPNHelperResponseEnvelope<StopSessionResponse> = try exchange(
+            let response: VPNHelperResponseEnvelope<StopSessionResponse> = try await exchange(
                 command: .stopSession,
                 requestID: requestID,
                 sessionID: sessionID,
@@ -119,7 +119,7 @@ nonisolated struct PrivilegedHelperClient: Sendable {
                 throw PrivilegedHelperClientError.invalidResponse("The privileged helper stop response is not idle")
             }
         } catch let error as VPNHelperTransportError where error.requiresMutationReconciliation {
-            try reconcileMutation(
+            try await reconcileMutation(
                 command: .stopSession,
                 requestID: requestID,
                 sessionID: sessionID,
@@ -130,7 +130,7 @@ nonisolated struct PrivilegedHelperClient: Sendable {
         }
     }
 
-    func readLog(logName: String, maxBytes: Int) throws -> PrivilegedHelperDiagnostics {
+    func readLog(logName: String, maxBytes: Int) async throws -> PrivilegedHelperDiagnostics {
         let log: VPNHelperLog
         switch logName {
         case "xray", "xray-tun.log":
@@ -144,7 +144,7 @@ nonisolated struct PrivilegedHelperClient: Sendable {
         let requestID = UUID()
         let maximumBytes = max(1, min(maxBytes, VPNHelperProtocol.maximumDiagnosticsBytes))
         do {
-            let response: VPNHelperResponseEnvelope<DiagnosticsResponse> = try exchange(
+            let response: VPNHelperResponseEnvelope<DiagnosticsResponse> = try await exchange(
                 command: .readDiagnostics,
                 requestID: requestID,
                 sessionID: nil,
@@ -169,10 +169,10 @@ nonisolated struct PrivilegedHelperClient: Sendable {
         requestID: UUID,
         sessionID: UUID,
         successfulPhase: VPNHelperSessionPhase
-    ) throws {
+    ) async throws {
         transport.invalidate()
         do {
-            let status = try status()
+            let status = try await status()
             guard status.sessionID == sessionID else {
                 throw PrivilegedHelperClientError.indeterminate(
                     requestID: requestID,
@@ -221,7 +221,7 @@ nonisolated struct PrivilegedHelperClient: Sendable {
         payload: Request,
         timeout: TimeInterval,
         responseSessionRule: ResponseSessionRule
-    ) throws -> VPNHelperResponseEnvelope<Response>
+    ) async throws -> VPNHelperResponseEnvelope<Response>
     where Request: Codable & Sendable & Equatable,
           Response: Codable & Sendable & Equatable {
         let request = VPNHelperRequestEnvelope(
@@ -231,7 +231,7 @@ nonisolated struct PrivilegedHelperClient: Sendable {
             payload: payload
         )
         let requestData = try VPNHelperCodec.encodeRequest(request)
-        let responseData = try transport.send(command: command, requestData: requestData, timeout: timeout)
+        let responseData = try await transport.send(command: command, requestData: requestData, timeout: timeout)
 
         let response: VPNHelperResponseEnvelope<Response>
         do {

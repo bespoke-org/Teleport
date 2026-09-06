@@ -28,10 +28,10 @@ struct XrayTunLaunchSession: Sendable {
 nonisolated enum XrayTunStartCorrelation {
     static func perform(
         persist: (Int32?) throws -> Void,
-        start: () throws -> Int32?
-    ) throws -> Int32? {
+        start: () async throws -> Int32?
+    ) async throws -> Int32? {
         try persist(nil)
-        let pid = try start()
+        let pid = try await start()
         try persist(pid)
         return pid
     }

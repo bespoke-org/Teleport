@@ -1,5 +1,8 @@
 import Foundation
 
+/// System Proxy mode: an unprivileged Xray process plus macOS proxy settings.
+/// Split-tunnel policy is deliberately unused here — routing decisions belong to
+/// Xray's TUN inbound, which only VPN mode runs.
 final class SystemProxyConnectionBackend: ConnectionBackend, @unchecked Sendable {
     private let runtimeManager: XrayRuntimeManager
     private let proxyService: SystemProxyService
@@ -23,70 +26,71 @@ final class SystemProxyConnectionBackend: ConnectionBackend, @unchecked Sendable
         runtimeManager.isRunning
     }
 
-    func restorePreviousState() throws {
-        try proxyService.restoreSavedProxyState()
-    }
-
-    func start(configuration: ConnectionConfiguration, endpoint: ProxyEndpoint, splitTunnelRules: [SplitTunnelRule], splitTunnelDefaultAction: SplitTunnelRuleAction) throws {
-        _ = splitTunnelRules
-        _ = splitTunnelDefaultAction
-        do {
-            try vpnRuntimeManager?.cleanupIfHelperAvailable(protectedHost: configuration.host)
-            try startRuntime(configuration: configuration, endpoint: endpoint)
-            try proxyService.enableProxy(endpoint: endpoint)
-        } catch {
-            runtimeManager.stop()
-            try? proxyService.restoreSavedProxyState()
-            throw error
+    func restorePreviousState() async throws {
+        try await BlockingWork.run { [self] in
+            try proxyService.restoreSavedProxyState()
         }
     }
 
-    func reconnect(configuration: ConnectionConfiguration, endpoint: ProxyEndpoint, shouldDisableExistingProxy: Bool, splitTunnelRules: [SplitTunnelRule], splitTunnelDefaultAction: SplitTunnelRuleAction) throws {
-        _ = splitTunnelRules
-        _ = splitTunnelDefaultAction
+    func start(_ request: ConnectionRequest) async throws {
         do {
-            if shouldDisableExistingProxy {
-                try proxyService.disableProxy()
+            try await vpnRuntimeManager?.cleanupIfHelperAvailable(protectedHost: request.configuration.host)
+            try await BlockingWork.run { [self] in
+                try startRuntime(request)
+                try proxyService.enableProxy(endpoint: request.localProxy)
             }
-
-            runtimeManager.stop()
-            try vpnRuntimeManager?.cleanupIfHelperAvailable(protectedHost: configuration.host)
-            try startRuntime(configuration: configuration, endpoint: endpoint)
-            try proxyService.enableProxy(endpoint: endpoint)
         } catch {
-            runtimeManager.stop()
-            try? proxyService.restoreSavedProxyState()
+            await rollBack()
             throw error
         }
     }
 
-    func stop(shouldDisableProxy: Bool) throws {
-        var disableError: Error?
+    func reconnect(_ request: ConnectionRequest) async throws {
+        do {
+            try await BlockingWork.run { [self] in
+                try proxyService.disableProxy()
+                runtimeManager.stop()
+            }
+            try await vpnRuntimeManager?.cleanupIfHelperAvailable(protectedHost: request.configuration.host)
+            try await BlockingWork.run { [self] in
+                try startRuntime(request)
+                try proxyService.enableProxy(endpoint: request.localProxy)
+            }
+        } catch {
+            await rollBack()
+            throw error
+        }
+    }
 
-        if shouldDisableProxy {
+    func stop() async throws {
+        try await BlockingWork.run { [self] in
+            var disableError: Error?
             do {
                 try proxyService.disableProxy()
             } catch {
                 disableError = error
             }
-        }
 
-        runtimeManager.stop()
+            runtimeManager.stop()
 
-        if let disableError {
-            throw disableError
+            if let disableError {
+                throw disableError
+            }
         }
     }
 
-    func teardown() {
-        runtimeManager.stop()
-        try? proxyService.restoreSavedProxyState()
+    private func rollBack() async {
+        await BlockingWork.run { [self] in
+            runtimeManager.stop()
+            try? proxyService.restoreSavedProxyState()
+        }
     }
 
-    private func startRuntime(configuration: ConnectionConfiguration, endpoint: ProxyEndpoint) throws {
-        let configURL = try XrayConfigurationWriter(proxyEndpoint: endpoint).writeConfig(for: configuration)
+    private func startRuntime(_ request: ConnectionRequest) throws {
+        let configURL = try XrayConfigurationWriter(proxyEndpoint: request.localProxy)
+            .writeConfig(for: request.configuration)
         try runtimeManager.start(configURL: configURL)
-        guard runtimeManager.waitUntilLocalProxyReady(endpoint: endpoint) else {
+        guard runtimeManager.waitUntilLocalProxyReady(endpoint: request.localProxy) else {
             let detail = runtimeManager.capturedErrorOutput()?.trimmingCharacters(in: .whitespacesAndNewlines)
             throw XrayRuntimeManager.RuntimeError.startupTimedOut(detail)
         }
