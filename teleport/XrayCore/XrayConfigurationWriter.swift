@@ -1,10 +1,24 @@
+import Darwin
 import Foundation
 
 /// Builds Xray JSON for two distinct execution models: an unprivileged local
 /// SOCKS/HTTP proxy and a root-owned TUN process. Dynamic dictionaries mirror
 /// Xray's external schema, then `JSONSerialization` turns them into bytes.
+/// How the tunnel resolves names. Xray's DNS module owns every query: proxied
+/// domains are resolved by `remoteResolver` through the proxy outbound, so a
+/// hostile local resolver cannot poison them; direct domains use the system's
+/// resolvers through the interface-bound direct outbound. Unmatched domains
+/// follow the profile's default action.
+nonisolated struct TunnelDNSPolicy: Sendable, Equatable {
+    static let defaultRemoteResolver = "https://1.1.1.1/dns-query"
+
+    var localResolvers: [String]
+    var remoteResolver: String = TunnelDNSPolicy.defaultRemoteResolver
+}
+
 nonisolated struct XrayConfigurationWriter {
     let proxyEndpoint: ProxyEndpoint
+    static let dnsQueryTag = "dns-internal"
 
     func writeConfig(for configuration: ConnectionConfiguration) throws -> URL {
         let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -41,8 +55,8 @@ nonisolated struct XrayConfigurationWriter {
         try writePayload(makeTunnelPayload(configuration: configuration, interfaceName: interfaceName, outboundInterface: outboundInterface, directSendThrough: directSendThrough, splitTunnelRules: splitTunnelRules, defaultAction: defaultAction), to: outputURL)
     }
 
-    func tunnelConfigData(for configuration: ConnectionConfiguration, interfaceName: String, outboundInterface: String = "auto", directSendThrough: String? = nil, proxyServerAddress: String? = nil, splitTunnelRules: [SplitTunnelRule] = [], defaultAction: SplitTunnelRuleAction = .proxy) throws -> Data {
-        try encodePayload(makeTunnelPayload(configuration: configuration, interfaceName: interfaceName, outboundInterface: outboundInterface, directSendThrough: directSendThrough, proxyServerAddress: proxyServerAddress, splitTunnelRules: splitTunnelRules, defaultAction: defaultAction))
+    func tunnelConfigData(for configuration: ConnectionConfiguration, interfaceName: String, outboundInterface: String = "auto", directSendThrough: String? = nil, proxyServerAddress: String? = nil, splitTunnelRules: [SplitTunnelRule] = [], defaultAction: SplitTunnelRuleAction = .proxy, dnsPolicy: TunnelDNSPolicy? = nil) throws -> Data {
+        try encodePayload(makeTunnelPayload(configuration: configuration, interfaceName: interfaceName, outboundInterface: outboundInterface, directSendThrough: directSendThrough, proxyServerAddress: proxyServerAddress, splitTunnelRules: splitTunnelRules, defaultAction: defaultAction, dnsPolicy: dnsPolicy))
     }
 
     /// Writes atomically so Xray never observes a partially serialized config and
@@ -110,25 +124,55 @@ nonisolated struct XrayConfigurationWriter {
         ]
     }
 
-    private func makeTunnelPayload(configuration: ConnectionConfiguration, interfaceName: String, outboundInterface: String, directSendThrough: String? = nil, proxyServerAddress: String? = nil, splitTunnelRules: [SplitTunnelRule] = [], defaultAction: SplitTunnelRuleAction = .proxy) -> [String: Any] {
+    private func makeTunnelPayload(configuration: ConnectionConfiguration, interfaceName: String, outboundInterface: String, directSendThrough: String? = nil, proxyServerAddress: String? = nil, splitTunnelRules: [SplitTunnelRule] = [], defaultAction: SplitTunnelRuleAction = .proxy, dnsPolicy: TunnelDNSPolicy? = nil) -> [String: Any] {
         let streamSettings = makeStreamSettings(configuration: configuration)
         var proxyStreamSettings = streamSettings
         if outboundInterface != "auto", !outboundInterface.isEmpty {
             proxyStreamSettings["sockopt"] = ["interface": outboundInterface]
         }
-        let splitTunnelRoutingRules = splitTunnelRules
-            .filter { $0.isEnabled }
-            .map { makeSplitTunnelRoutingRule(for: $0) }
+        let enabledSplitTunnelRules = splitTunnelRules.filter { $0.isEnabled }
+        let splitTunnelRoutingRules = enabledSplitTunnelRules.map { makeSplitTunnelRoutingRule(for: $0) }
         let localProxyRoutingRules: [[String: Any]] = [[
             "type": "field",
             "inboundTag": ["socks-in", "http-in"],
             "network": "tcp,udp",
             "outboundTag": "proxy"
         ]]
-        // DNS is deliberately not intercepted or faked. The proxy server is pinned
-        // to a numeric address and every outbound dials original IPs, so Xray never
-        // needs a resolver of its own; app DNS simply follows the default action
-        // like any other flow. Domain rules rely on sniffing (see below).
+        // Every DNS query from the device is hijacked into Xray's DNS module, and
+        // the module's own upstream traffic is tagged so routing can send local
+        // resolvers out the direct outbound and the remote resolver through the
+        // proxy. Xray never touches the OS resolver, so no query can loop back
+        // into the TUN. Without a policy (tests, legacy callers) DNS is left alone.
+        let dnsSection = dnsPolicy.map { makeDNSSection(policy: $0, rules: enabledSplitTunnelRules, defaultAction: defaultAction) }
+        let dnsOutbounds: [[String: Any]] = dnsSection == nil ? [] : [[
+            "tag": "dns-out",
+            "protocol": "dns",
+            "settings": [:]
+        ]]
+        let dnsRoutingRules: [[String: Any]] = dnsPolicy.map { policy in
+            var rules: [[String: Any]] = [[
+                "type": "field",
+                "inboundTag": ["tun"],
+                "network": "tcp,udp",
+                "port": 53,
+                "outboundTag": "dns-out"
+            ]]
+            let localResolverAddresses = Self.resolverAddresses(policy.localResolvers)
+            if !localResolverAddresses.isEmpty {
+                rules.append([
+                    "type": "field",
+                    "inboundTag": [Self.dnsQueryTag],
+                    "ip": localResolverAddresses,
+                    "outboundTag": "direct"
+                ])
+            }
+            rules.append([
+                "type": "field",
+                "inboundTag": [Self.dnsQueryTag],
+                "outboundTag": "proxy"
+            ])
+            return rules
+        } ?? []
 
         // The default routes point every destination at the TUN, so a plain freedom
         // outbound would loop split-tunnel "direct" traffic straight back into Xray.
@@ -221,10 +265,10 @@ nonisolated struct XrayConfigurationWriter {
                     "protocol": "blackhole",
                     "settings": [:]
                 ]
-            ],
+            ] + dnsOutbounds,
             "routing": [
                 "domainStrategy": "AsIs",
-                "rules": localProxyRoutingRules + [
+                "rules": localProxyRoutingRules + dnsRoutingRules + [
                     [
                         "type": "field",
                         "network": "udp",
@@ -263,8 +307,66 @@ nonisolated struct XrayConfigurationWriter {
             outbounds.insert(defaultOutbound, at: 0)
             payload["outbounds"] = outbounds
         }
+        if let dnsSection {
+            payload["dns"] = dnsSection
+        }
 
         return payload
+    }
+
+    /// Server order matters to Xray: servers carrying `domains` are consulted first
+    /// for matching names and, with `skipFallback`, never for anything else. The
+    /// default-action resolver goes first so every unmatched name lands there.
+    private func makeDNSSection(policy: TunnelDNSPolicy, rules: [SplitTunnelRule], defaultAction: SplitTunnelRuleAction) -> [String: Any] {
+        let localResolverAddresses = Self.resolverAddresses(policy.localResolvers)
+        let proxyDomains = rules.filter { $0.action == .proxy }.flatMap { dnsDomains(for: $0) }
+        let directDomains = rules.filter { $0.action == .direct }.flatMap { dnsDomains(for: $0) }
+
+        func remoteServer(domains: [String]) -> Any {
+            guard !domains.isEmpty else { return policy.remoteResolver }
+            return ["address": policy.remoteResolver, "domains": domains, "skipFallback": true] as [String: Any]
+        }
+        func localServers(domains: [String]) -> [Any] {
+            localResolverAddresses.map { address -> Any in
+                guard !domains.isEmpty else { return address }
+                return ["address": address, "domains": domains, "skipFallback": true] as [String: Any]
+            }
+        }
+
+        var servers: [Any] = []
+        // Without any usable system resolver every name goes to the remote one;
+        // that keeps resolution working instead of failing every direct domain.
+        if defaultAction == .direct, !localResolverAddresses.isEmpty {
+            servers.append(contentsOf: localServers(domains: []))
+            servers.append(remoteServer(domains: proxyDomains))
+        } else {
+            servers.append(remoteServer(domains: []))
+            servers.append(contentsOf: localServers(domains: directDomains))
+        }
+        return [
+            "tag": Self.dnsQueryTag,
+            "queryStrategy": "UseIP",
+            "servers": servers
+        ]
+    }
+
+    private func dnsDomains(for rule: SplitTunnelRule) -> [String] {
+        makeSplitTunnelRoutingRule(for: rule)["domain"] as? [String] ?? []
+    }
+
+    /// Keeps only plain IPv4/IPv6 literals; scoped or malformed entries would make
+    /// Xray reject the whole config at startup.
+    static func resolverAddresses(_ candidates: [String]) -> [String] {
+        var seen: Set<String> = []
+        return candidates.filter { candidate in
+            // Darwin's inet_pton accepts zone suffixes ("fe80::1%en0"); Xray does not.
+            guard !candidate.contains("%") else { return false }
+            var ipv4 = in_addr()
+            var ipv6 = in6_addr()
+            let isLiteral = candidate.withCString { inet_pton(AF_INET, $0, &ipv4) } == 1
+                || candidate.withCString { inet_pton(AF_INET6, $0, &ipv6) } == 1
+            return isLiteral && seen.insert(candidate).inserted
+        }
     }
 
     private func makeSplitTunnelRoutingRule(for rule: SplitTunnelRule) -> [String: Any] {

@@ -15,6 +15,7 @@ struct VerifySplitTunneling {
         try testMatcherChecksGeodataRules()
         try testGeodataRulesGenerateRoutingRules()
         try testDomainRulesUseSniffingWithoutDNSInterception()
+        try testDNSModuleOwnsResolution()
         try testSplitRoutingConfigurationIsAcceptedByBundledXray()
         try testDomainRuleEmitsDomainPrefixNotSubstring()
         try testGeneratedRoutingRulesMatchSharedMatcher()
@@ -224,7 +225,7 @@ struct VerifySplitTunneling {
 
         // Domain rules are matched from sniffed SNI/Host only. No FakeDNS, no DNS
         // section, and no DNS capture: Xray must never resolve anything itself.
-        precondition(payload?["dns"] == nil, "tunnel config must not carry a dns section")
+        precondition(payload?["dns"] == nil, "without a DNS policy the tunnel config must not carry a dns section")
         precondition(payload?["fakedns"] == nil, "tunnel config must not enable FakeDNS")
         let outbounds = payload?["outbounds"] as? [[String: Any]] ?? []
         precondition(!outbounds.contains { $0["protocol"] as? String == "dns" }, "no dns outbound expected")
@@ -243,6 +244,70 @@ struct VerifySplitTunneling {
         precondition(outbounds.first?["tag"] as? String == "direct")
     }
 
+    private static func testDNSModuleOwnsResolution() throws {
+        let configuration = try ConnectionLinkParser().parse(sampleVLESSLink())
+        let rules = [
+            SplitTunnelRule(value: "example.com", kind: .domain, action: .proxy),
+            SplitTunnelRule(value: "geosite:google", kind: .geosite, action: .block),
+            SplitTunnelRule(value: "direct.example", kind: .domain, action: .direct)
+        ]
+        // Scoped and malformed resolver entries must be dropped, duplicates collapsed.
+        let policy = TunnelDNSPolicy(localResolvers: ["192.0.2.53", "fe80::1%en0", "192.0.2.53", "garbage"])
+
+        func payload(defaultAction: SplitTunnelRuleAction) throws -> [String: Any] {
+            let data = try XrayConfigurationWriter(proxyEndpoint: .default).tunnelConfigData(
+                for: configuration,
+                interfaceName: "utun9",
+                outboundInterface: "en0",
+                splitTunnelRules: rules,
+                defaultAction: defaultAction,
+                dnsPolicy: policy
+            )
+            return try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+        }
+
+        let direct = try payload(defaultAction: .direct)
+        let directDNS = direct["dns"] as? [String: Any]
+        precondition(directDNS?["tag"] as? String == "dns-internal")
+        let directServers = directDNS?["servers"] as? [Any] ?? []
+        precondition(directServers.count == 2, "one local resolver plus the remote resolver, got \(directServers.count)")
+        precondition(directServers[0] as? String == "192.0.2.53", "default direct: unmatched names resolve locally")
+        let remote = directServers[1] as? [String: Any]
+        precondition(remote?["address"] as? String == TunnelDNSPolicy.defaultRemoteResolver)
+        precondition(remote?["domains"] as? [String] == ["domain:example.com"], "proxy domains resolve remotely")
+        precondition(remote?["skipFallback"] as? Bool == true)
+
+        let proxy = try payload(defaultAction: .proxy)
+        let proxyServers = (proxy["dns"] as? [String: Any])?["servers"] as? [Any] ?? []
+        precondition(proxyServers[0] as? String == TunnelDNSPolicy.defaultRemoteResolver, "default proxy: unmatched names resolve remotely")
+        let local = proxyServers[1] as? [String: Any]
+        precondition(local?["address"] as? String == "192.0.2.53")
+        precondition(local?["domains"] as? [String] == ["domain:direct.example"], "direct domains resolve locally")
+
+        let outbounds = direct["outbounds"] as? [[String: Any]] ?? []
+        precondition(outbounds.contains { $0["tag"] as? String == "dns-out" && $0["protocol"] as? String == "dns" })
+        let routingRules = ((direct["routing"] as? [String: Any])?["rules"] as? [[String: Any]]) ?? []
+        guard let hijackIndex = routingRules.firstIndex(where: { $0["outboundTag"] as? String == "dns-out" }) else {
+            preconditionFailure("expected the TUN port 53 hijack rule")
+        }
+        precondition(routingRules[hijackIndex]["port"] as? Int == 53)
+        precondition(routingRules[hijackIndex]["inboundTag"] as? [String] == ["tun"])
+        let internalRules = routingRules.filter { $0["inboundTag"] as? [String] == ["dns-internal"] }
+        precondition(internalRules.count == 2, "local resolvers go direct, everything else through the proxy")
+        precondition(internalRules[0]["ip"] as? [String] == ["192.0.2.53"] && internalRules[0]["outboundTag"] as? String == "direct")
+        precondition(internalRules[1]["ip"] == nil && internalRules[1]["outboundTag"] as? String == "proxy")
+        precondition(hijackIndex < routingRules.firstIndex { $0["domain"] != nil }!, "DNS rules must precede split rules")
+
+        // No usable local resolver: everything resolves remotely rather than failing.
+        let orphan = try XrayConfigurationWriter(proxyEndpoint: .default).tunnelConfigData(
+            for: configuration, interfaceName: "utun9", outboundInterface: "en0",
+            splitTunnelRules: rules, defaultAction: .direct,
+            dnsPolicy: TunnelDNSPolicy(localResolvers: [])
+        )
+        let orphanServers = (((try JSONSerialization.jsonObject(with: orphan) as? [String: Any])?["dns"] as? [String: Any])?["servers"] as? [Any]) ?? []
+        precondition(orphanServers.count == 1 && orphanServers[0] as? String == TunnelDNSPolicy.defaultRemoteResolver)
+    }
+
     private static func testSplitRoutingConfigurationIsAcceptedByBundledXray() throws {
         let xrayURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             .appendingPathComponent("build/DerivedData/Build/Products/Debug/Teleport.app/Contents/Resources/xray")
@@ -257,7 +322,8 @@ struct VerifySplitTunneling {
                 SplitTunnelRule(value: "example.com", kind: .domain, action: .proxy),
                 SplitTunnelRule(value: "blocked.example", kind: .domain, action: .block)
             ],
-            defaultAction: .direct
+            defaultAction: .direct,
+            dnsPolicy: TunnelDNSPolicy(localResolvers: ["192.0.2.53", "2001:db8::53"])
         )
         let configURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("teleport-split-routing-\(UUID().uuidString).json")
