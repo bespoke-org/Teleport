@@ -111,9 +111,54 @@ nonisolated struct ProxyEndpoint: Codable, Equatable {
 nonisolated enum ConnectionProtocolType: String, Codable, CaseIterable {
     case vless
     case trojan
+    case wireguard
 
     var displayName: String {
-        rawValue.uppercased()
+        switch self {
+        case .wireguard:
+            return "WireGuard"
+        case .vless, .trojan:
+            return rawValue.uppercased()
+        }
+    }
+}
+
+/// Peer material for Xray's userspace WireGuard outbound. Xray owns the
+/// handshake and the interface addresses live inside it, so these fields map
+/// onto the outbound's `settings` object rather than onto a utun of their own.
+/// The peer endpoint is kept in `ConnectionConfiguration.host`/`port` so route
+/// protection, health probing and duplicate filtering stay protocol-neutral.
+nonisolated struct WireGuardParameters: Codable, Equatable, Sendable {
+    static let defaultAllowedIPs = ["0.0.0.0/0", "::/0"]
+    static let defaultMTU = 1420
+
+    let secretKey: String
+    let peerPublicKey: String
+    let presharedKey: String?
+    let addresses: [String]
+    let allowedIPs: [String]
+    let mtu: Int?
+    let reserved: [Int]?
+    let persistentKeepalive: Int?
+
+    init(
+        secretKey: String,
+        peerPublicKey: String,
+        presharedKey: String? = nil,
+        addresses: [String],
+        allowedIPs: [String] = WireGuardParameters.defaultAllowedIPs,
+        mtu: Int? = nil,
+        reserved: [Int]? = nil,
+        persistentKeepalive: Int? = nil
+    ) {
+        self.secretKey = secretKey
+        self.peerPublicKey = peerPublicKey
+        self.presharedKey = presharedKey
+        self.addresses = addresses
+        self.allowedIPs = allowedIPs
+        self.mtu = mtu
+        self.reserved = reserved
+        self.persistentKeepalive = persistentKeepalive
     }
 }
 
@@ -153,6 +198,9 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
     let allowsInsecureTLS: Bool
     let grpcServiceName: String?
     let transportMode: String?
+    /// Present exactly when `protocolType` is `.wireguard`; the stream-layer
+    /// fields above are unused placeholders for that protocol.
+    let wireguard: WireGuardParameters?
 
     nonisolated var displayName: String {
         if let remarks, !remarks.isEmpty {
@@ -166,6 +214,13 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
     }
 
     var descriptiveSummary: String {
+        // WireGuard carries its own transport and encryption, so the stream-layer
+        // summary would only describe unused placeholder fields.
+        if protocolType == .wireguard {
+            guard let mtu = wireguard?.mtu else { return protocolType.displayName }
+            return "\(protocolType.displayName) • MTU \(mtu)"
+        }
+
         var parts = [protocolType.displayName, securitySummary, transportSummary]
 
         if let vlessFlow, !vlessFlow.isEmpty, vlessFlow == "xtls-rprx-vision" {
@@ -180,6 +235,12 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
     }
 
     var securityWarningText: String? {
+        // WireGuard always encrypts; its `.none` security is a placeholder for the
+        // stream layer Xray does not use for this outbound.
+        if protocolType == .wireguard {
+            return nil
+        }
+
         if security == .none {
             return "Traffic is not encrypted"
         }
@@ -222,7 +283,9 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
             trojanPassword ?? "",
             allowsInsecureTLS ? "1" : "0",
             grpcServiceName ?? "",
-            transportMode?.lowercased() ?? ""
+            transportMode?.lowercased() ?? "",
+            wireguard?.peerPublicKey ?? "",
+            wireguard?.addresses.joined(separator: ",") ?? ""
         ]
         return components.joined(separator: "|")
     }
@@ -250,7 +313,8 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
             trojanPassword: trojanPassword,
             allowsInsecureTLS: allowsInsecureTLS,
             grpcServiceName: grpcServiceName,
-            transportMode: transportMode
+            transportMode: transportMode,
+            wireguard: wireguard
         )
     }
 
@@ -291,6 +355,7 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
         case allowsInsecureTLS
         case grpcServiceName
         case transportMode
+        case wireguard
     }
 
     nonisolated init(
@@ -314,7 +379,8 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
         trojanPassword: String?,
         allowsInsecureTLS: Bool = false,
         grpcServiceName: String? = nil,
-        transportMode: String? = nil
+        transportMode: String? = nil,
+        wireguard: WireGuardParameters? = nil
     ) {
         self.rawLink = rawLink
         self.protocolType = protocolType
@@ -337,6 +403,7 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
         self.allowsInsecureTLS = allowsInsecureTLS
         self.grpcServiceName = grpcServiceName
         self.transportMode = transportMode
+        self.wireguard = wireguard
     }
 
     init(from decoder: Decoder) throws {
@@ -362,6 +429,7 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
         allowsInsecureTLS = try container.decodeIfPresent(Bool.self, forKey: .allowsInsecureTLS) ?? false
         grpcServiceName = try container.decodeIfPresent(String.self, forKey: .grpcServiceName)
         transportMode = try container.decodeIfPresent(String.self, forKey: .transportMode)
+        wireguard = try container.decodeIfPresent(WireGuardParameters.self, forKey: .wireguard)
     }
 }
 
@@ -737,11 +805,13 @@ enum ConfigurationError: LocalizedError, Equatable {
     case unsupportedFlow(String)
     case missingParameter(String)
     case malformedQuery
+    case invalidWireGuardKey(String)
+    case multipleWireGuardPeers
 
     var errorDescription: String? {
         switch self {
         case .invalidScheme:
-            return "Connection link must start with vless:// or trojan://"
+            return "Paste a vless://, trojan:// or wireguard:// link, or a WireGuard [Interface] configuration"
         case .missingHost:
             return "Server host is missing"
         case .invalidPort:
@@ -762,6 +832,10 @@ enum ConfigurationError: LocalizedError, Equatable {
             return "Missing required parameter: \(name)"
         case .malformedQuery:
             return "The connection link contains malformed query parameters"
+        case let .invalidWireGuardKey(name):
+            return "WireGuard \(name) must be a base64-encoded 32-byte key"
+        case .multipleWireGuardPeers:
+            return "WireGuard configurations with more than one peer are not supported"
         }
     }
 }

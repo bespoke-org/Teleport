@@ -151,7 +151,8 @@ struct ConnectionsSettingsView: View {
 
             shareButton(
                 title: connection.configuration.displayName,
-                value: connection.configuration.rawLink
+                value: connection.configuration.rawLink,
+                copyTitle: shareCopyTitle(for: connection.configuration)
             )
 
             Button(role: .destructive) {
@@ -310,7 +311,8 @@ struct ConnectionsSettingsView: View {
 
             shareButton(
                 title: configuration.displayName,
-                value: configuration.rawLink
+                value: configuration.rawLink,
+                copyTitle: shareCopyTitle(for: configuration)
             )
         }
         .padding(.vertical, 6)
@@ -383,8 +385,13 @@ struct ConnectionsSettingsView: View {
         return "waveform.path.ecg"
     }
 
+    /// A WireGuard peer is shared as its configuration file rather than a URL.
+    private func shareCopyTitle(for configuration: ConnectionConfiguration) -> String {
+        configuration.protocolType == .wireguard ? "Copy configuration" : "Copy URL"
+    }
+
     @ViewBuilder
-    private func shareButton(title: String, value: String) -> some View {
+    private func shareButton(title: String, value: String, copyTitle: String = "Copy URL") -> some View {
         let payload = ShareMenuPayload(title: title, value: value)
         let isPresented = Binding(
             get: { activeShareMenu == payload },
@@ -401,6 +408,7 @@ struct ConnectionsSettingsView: View {
         .buttonStyle(.borderless)
         .popover(isPresented: isPresented, attachmentAnchor: .rect(.bounds), arrowEdge: .bottom) {
             ShareActionPopover(
+                copyTitle: copyTitle,
                 onCopy: {
                     copyToClipboard(value)
                     activeShareMenu = nil

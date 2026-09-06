@@ -1,12 +1,12 @@
 # Teleport
 
-Teleport is a small macOS menu bar app for running a local Xray-based proxy with VLESS, Trojan, and subscription-based connection imports.
+Teleport is a small macOS menu bar app for running a local Xray-based proxy with VLESS, Trojan, WireGuard, and subscription-based connection imports.
 
 ## Features
 
 - menu bar-only app
 - bundled Xray runtime
-- support for `vless://` and `trojan://` links
+- support for `vless://`, `trojan://` and `wireguard://` links, and WireGuard `[Interface]` configuration files
 - support for `http://` and `https://` subscription URLs that fetch and import multiple configs
 - saved connections with persistent selection across launches
 - lightweight server health checks with persisted sampled TCP latency and availability state
@@ -90,7 +90,7 @@ Teleport is two executables plus a shared layer.
 - **UI**: `teleportApp.swift`, `MenuBarView`, `MenuBarIconView`, `ContentView`, `SettingsView`, and `Views/Settings/*` (connections, subscriptions, split tunneling with profiles and a rule tester, geodata, about, QR and share sheets).
 - **ViewModel**: `ViewModels/AppViewModel` is the single orchestrator. It owns CRUD for connections, subscriptions, and split-tunnel rules, picks the mode, and drives connect/disconnect. `ConnectionHealthProbeQueue` schedules latency checks.
 - **Models and persistence**: `TeleportModels.swift` defines the persisted snapshot (saved connections, subscriptions, split-tunnel rules). `Persistence/` stores it on disk and seeds it on first launch from `packaging/bundled-connections.json`.
-- **Input pipelines**: `Parsing/` parses `vless://` and `trojan://` links and geodata formats, and holds the split-tunnel rule and geodata matchers. `Subscriptions/` fetches subscription URLs and imports configs with duplicate filtering. `Geodata/` downloads and resolves geoip/geosite assets. `Health/` runs TCP latency probes.
+- **Input pipelines**: `Parsing/` parses `vless://`, `trojan://` and `wireguard://` links, WireGuard configuration files, and geodata formats, and holds the split-tunnel rule and geodata matchers. `Subscriptions/` fetches subscription URLs and imports configs with duplicate filtering. `Geodata/` downloads and resolves geoip/geosite assets. `Health/` runs TCP latency probes.
 - **Connection abstraction**: `Connection/` is the boundary the ViewModel talks to. `ConnectionProvider` exposes async connect/disconnect and one `ConnectionState` stream. `ConnectionRequest` carries mode-neutral inputs, including split-tunnel rules. `ConnectionProviderFactory` selects one of the two providers.
 - **Config generation**: `XrayCore/XrayConfigurationWriter` turns a request into Xray JSON for either mode, including routing rules derived from split tunneling. It never starts processes or touches system state.
 - **System Proxy mode**: `SystemProxy/` runs Xray as the current user, exposes local SOCKS/HTTP ports, and toggles macOS proxy settings. No root required.

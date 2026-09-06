@@ -12,6 +12,7 @@ struct ShareMenuPayload: Equatable {
 }
 
 struct ShareActionPopover: View {
+    let copyTitle: String
     let onCopy: () -> Void
     let onShowQR: () -> Void
 
@@ -20,7 +21,7 @@ struct ShareActionPopover: View {
             Button {
                 onCopy()
             } label: {
-                Label("Copy URL", systemImage: "doc.on.doc")
+                Label(copyTitle, systemImage: "doc.on.doc")
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .buttonStyle(.plain)

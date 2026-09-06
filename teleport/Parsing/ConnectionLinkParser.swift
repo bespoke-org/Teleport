@@ -1,8 +1,17 @@
 import Foundation
 
 struct ConnectionLinkParser {
+    private let wireGuardParser = WireGuardConfigurationParser()
+
     nonisolated func parse(_ rawLink: String) throws -> ConnectionConfiguration {
         let trimmed = rawLink.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // A WireGuard configuration file is not a URL, so it is recognised before
+        // the scheme dispatch below rather than inside it.
+        if WireGuardConfigurationParser.looksLikeConfigurationFile(trimmed) {
+            return try wireGuardParser.parseConfigurationFile(trimmed)
+        }
+
         guard let components = URLComponents(string: trimmed),
               let scheme = components.scheme?.lowercased() else {
             throw ConfigurationError.invalidScheme
@@ -13,9 +22,23 @@ struct ConnectionLinkParser {
             return try parseVLESS(trimmed, components: components)
         case ConnectionProtocolType.trojan.rawValue:
             return try parseTrojan(trimmed, components: components)
+        case WireGuardConfigurationParser.scheme:
+            return try parseWireGuardLink(trimmed, components: components)
         default:
             throw ConfigurationError.invalidScheme
         }
+    }
+
+    nonisolated private func parseWireGuardLink(_ rawLink: String, components: URLComponents) throws -> ConnectionConfiguration {
+        let base = try parseBase(rawLink, components: components)
+        return try wireGuardParser.parseLink(
+            rawLink,
+            host: base.host,
+            port: base.port,
+            remarks: base.remarks,
+            secretKey: components.user?.removingPercentEncoding,
+            query: try queryDictionary(from: components).lowercasedKeys()
+        )
     }
 
     nonisolated private func parseVLESS(_ rawLink: String, components: URLComponents) throws -> ConnectionConfiguration {
@@ -233,6 +256,16 @@ struct ConnectionLinkParser {
             return true
         default:
             return false
+        }
+    }
+}
+
+private extension Dictionary where Key == String, Value == String {
+    /// `wireguard://` generators disagree on the case of their query names, so
+    /// lookups in the WireGuard parser are done against lowercased keys.
+    nonisolated func lowercasedKeys() -> [String: String] {
+        reduce(into: [:]) { result, element in
+            result[element.key.lowercased()] = element.value
         }
     }
 }

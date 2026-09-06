@@ -80,7 +80,15 @@ nonisolated struct XrayConfigurationWriter {
     }
 
     private func makePayload(configuration: ConnectionConfiguration) -> [String: Any] {
+        var proxyOutbound: [String: Any] = [
+            "tag": "proxy",
+            "protocol": configuration.protocolType.rawValue,
+            "settings": makeOutboundSettings(configuration: configuration)
+        ]
         let streamSettings = makeStreamSettings(configuration: configuration)
+        if !streamSettings.isEmpty {
+            proxyOutbound["streamSettings"] = streamSettings
+        }
 
         return [
             "log": [
@@ -103,12 +111,7 @@ nonisolated struct XrayConfigurationWriter {
                 ]
             ],
             "outbounds": [
-                [
-                    "tag": "proxy",
-                    "protocol": configuration.protocolType.rawValue,
-                    "settings": makeOutboundSettings(configuration: configuration),
-                    "streamSettings": streamSettings
-                ],
+                proxyOutbound,
                 [
                     "tag": "direct",
                     "protocol": "freedom",
@@ -259,12 +262,11 @@ nonisolated struct XrayConfigurationWriter {
             // Deliberately no "mux" on the proxy outbound: multiplexing defeats
             // Vision's traffic shaping and is itself a recognizable pattern.
             "outbounds": [
-                [
-                    "tag": "proxy",
-                    "protocol": configuration.protocolType.rawValue,
-                    "settings": makeOutboundSettings(configuration: configuration, addressOverride: proxyServerAddress),
-                    "streamSettings": proxyStreamSettings
-                ],
+                makeTunnelProxyOutbound(
+                    configuration: configuration,
+                    streamSettings: proxyStreamSettings,
+                    addressOverride: proxyServerAddress
+                ),
                 directOutbound,
                 [
                     "tag": "block",
@@ -375,6 +377,21 @@ nonisolated struct XrayConfigurationWriter {
         }
     }
 
+    /// The proxy outbound for the TUN config. WireGuard gets no stream layer of
+    /// its own, but it must keep `sockopt.interface`: that binding is what sends
+    /// its UDP handshake out the physical uplink instead of back into the TUN.
+    private func makeTunnelProxyOutbound(configuration: ConnectionConfiguration, streamSettings: [String: Any], addressOverride: String?) -> [String: Any] {
+        var outbound: [String: Any] = [
+            "tag": "proxy",
+            "protocol": configuration.protocolType.rawValue,
+            "settings": makeOutboundSettings(configuration: configuration, addressOverride: addressOverride)
+        ]
+        if !streamSettings.isEmpty {
+            outbound["streamSettings"] = streamSettings
+        }
+        return outbound
+    }
+
     private func makeSplitTunnelRoutingRule(for rule: SplitTunnelRule) -> [String: Any] {
         var routingRule: [String: Any] = [
             "type": "field",
@@ -437,10 +454,51 @@ nonisolated struct XrayConfigurationWriter {
                     "password": configuration.trojanPassword ?? ""
                 ]]
             ]
+
+        case .wireguard:
+            // Xray owns the handshake in userspace ("kernelMode" is Linux-only and
+            // would fail here), so the interface addresses live inside Xray rather
+            // than on a utun of their own.
+            guard let parameters = configuration.wireguard else { return [:] }
+
+            var peer: [String: Any] = [
+                "publicKey": parameters.peerPublicKey,
+                "endpoint": Self.endpointLiteral(host: serverAddress, port: configuration.port),
+                "allowedIPs": parameters.allowedIPs
+            ]
+            if let presharedKey = parameters.presharedKey {
+                peer["preSharedKey"] = presharedKey
+            }
+            if let keepAlive = parameters.persistentKeepalive {
+                peer["keepAlive"] = keepAlive
+            }
+
+            var settings: [String: Any] = [
+                "secretKey": parameters.secretKey,
+                "address": parameters.addresses,
+                "kernelMode": false,
+                "peers": [peer]
+            ]
+            settings["mtu"] = parameters.mtu ?? WireGuardParameters.defaultMTU
+            if let reserved = parameters.reserved {
+                settings["reserved"] = reserved
+            }
+            return settings
         }
     }
 
+    /// Xray takes the peer endpoint as one string, so an IPv6 literal has to be
+    /// bracketed before the port is appended.
+    private static func endpointLiteral(host: String, port: Int) -> String {
+        host.contains(":") ? "[\(host)]:\(port)" : "\(host):\(port)"
+    }
+
     private func makeStreamSettings(configuration: ConnectionConfiguration) -> [String: Any] {
+        // WireGuard supplies its own transport and encryption; emitting a
+        // network/security pair here would only describe unused placeholder
+        // fields. Callers still add `sockopt` on top of the empty result.
+        guard configuration.protocolType != .wireguard else { return [:] }
+
         var streamSettings: [String: Any] = [
             "network": configuration.transport.rawValue,
             "security": configuration.security.rawValue

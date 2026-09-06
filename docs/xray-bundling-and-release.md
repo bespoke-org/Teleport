@@ -27,6 +27,8 @@ These UUIDs and observations are correlation only. Helper state is not persisted
 
 ## Runtime refresh notes
 
+WireGuard connections are Xray outbounds, not a separate engine: the bundled binary must be a build that includes the `wireguard` outbound, and macOS uses its userspace (gVisor) tunnel because `kernelMode` is Linux-only. Confirm after every runtime refresh with `xray run -test -c` against a config containing a WireGuard outbound; a build without it fails there rather than at connect time.
+
 The current bundled runtime was copied from a local Homebrew-installed Xray distribution. Refresh the executable and asset directory together so binary and data remain synchronized, then update the approved digest and repeat signing verification.
 
 ## Packaging considerations
@@ -45,10 +47,11 @@ Automated verification does not replace real macOS checks for:
 2. acceptance using the production Developer ID requirement and rejection of unsigned/wrong-team clients;
 3. System Proxy connect/disconnect;
 4. VPN connect/disconnect and current IPv4 route cleanup;
-5. live helper interruption during status, start, and stop;
-6. app termination during a pending request;
-7. Fast User Switching and login-window behavior;
-8. hardened-runtime and notarized distribution validation.
+5. WireGuard connect/disconnect against a real peer in both modes, including a large-transfer check for the MTU the peer advertises;
+6. live helper interruption during status, start, and stop;
+7. app termination during a pending request;
+8. Fast User Switching and login-window behavior;
+9. hardened-runtime and notarized distribution validation.
 
 These checks remain release risks until actually performed; do not infer them from unit/source verification.
 

@@ -10,6 +10,9 @@ struct VerifyCore {
         try testValidTrojanParsingAndConfigGeneration()
         try testValidTrojanRealityParsingAndConfigGeneration()
         try testValidTrojanGRPCParsingAndConfigGeneration()
+        try testWireGuardConfigurationFileParsingAndConfigGeneration()
+        try testWireGuardLinkParsing()
+        try testMalformedAndUnsupportedWireGuardInput()
         try testMalformedAndUnsupportedLinks()
         try testRuntimeStartupFailureWithoutBundledBinary()
         try testBundledArtifactVerifierAcceptsExpectedHash()
@@ -173,6 +176,199 @@ struct VerifyCore {
         precondition(content.contains("\"network\" : \"grpc\""))
         precondition(content.contains("grpcSettings"))
         precondition(content.contains("teleport-trojan"))
+    }
+
+
+    private static let wireGuardSecretKey = "cJl3zBqYlKrLmZ1r9gCVKzZ9lHhP5rQ0nX2sYy8vWmM="
+    private static let wireGuardPeerKey = "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
+
+    private static func wireGuardConfigurationFile(
+        endpoint: String = "example.com:51820",
+        extraPeer: Bool = false,
+        privateKey: String? = wireGuardSecretKey
+    ) -> String {
+        let privateKeyLine = privateKey.map { "PrivateKey = \($0)\n" } ?? ""
+        let secondPeer = extraPeer ? """
+
+        [Peer]
+        PublicKey = \(wireGuardPeerKey)
+        Endpoint = other.example.com:51820
+        """ : ""
+        return """
+        # Frankfurt WG
+        [Interface]
+        \(privateKeyLine)Address = 172.16.0.2/32, fd00::2/128
+        DNS = 1.1.1.1
+        MTU = 1380
+
+        [Peer]
+        PublicKey = \(wireGuardPeerKey)
+        AllowedIPs = 0.0.0.0/0, ::/0
+        Endpoint = \(endpoint)
+        PersistentKeepalive = 25
+        \(secondPeer)
+        """
+    }
+
+    private static func testWireGuardConfigurationFileParsingAndConfigGeneration() throws {
+        let parser = ConnectionLinkParser()
+        let rawConfiguration = wireGuardConfigurationFile()
+        let configuration = try parser.parse(rawConfiguration)
+
+        precondition(configuration.protocolType == .wireguard)
+        precondition(configuration.host == "example.com")
+        precondition(configuration.port == 51820)
+        // The format carries no name field, so the leading comment becomes one.
+        precondition(configuration.remarks == "Frankfurt WG")
+        precondition(configuration.displayName == "Frankfurt WG")
+        // WireGuard always encrypts; its placeholder `.none` security must not
+        // raise the "traffic is not encrypted" warning shown for plain links.
+        precondition(configuration.securityWarningText == nil)
+        precondition(configuration.descriptiveSummary == "WireGuard • MTU 1380")
+
+        let parameters = configuration.wireguard
+        precondition(parameters?.secretKey == wireGuardSecretKey)
+        precondition(parameters?.peerPublicKey == wireGuardPeerKey)
+        precondition(parameters?.presharedKey == nil)
+        precondition(parameters?.addresses == ["172.16.0.2/32", "fd00::2/128"])
+        precondition(parameters?.allowedIPs == ["0.0.0.0/0", "::/0"])
+        precondition(parameters?.mtu == 1380)
+        precondition(parameters?.persistentKeepalive == 25)
+
+        // `AppViewModel` re-parses every stored `rawLink` on launch, so the raw
+        // configuration text must survive a round trip unchanged.
+        let reparsedConfiguration = try parser.parse(configuration.rawLink)
+        precondition(reparsedConfiguration == configuration)
+
+        let writer = XrayConfigurationWriter(proxyEndpoint: .default)
+        let tunnelPayload = try JSONSerialization.jsonObject(with: try writer.tunnelConfigData(
+            for: configuration,
+            interfaceName: "utun9",
+            outboundInterface: "en0",
+            proxyServerAddress: "192.0.2.1"
+        )) as? [String: Any]
+        let tunnelProxy = (tunnelPayload?["outbounds"] as? [[String: Any]])?.first { $0["tag"] as? String == "proxy" }
+        precondition(tunnelProxy?["protocol"] as? String == "wireguard")
+
+        let settings = tunnelProxy?["settings"] as? [String: Any]
+        precondition(settings?["secretKey"] as? String == wireGuardSecretKey)
+        precondition(settings?["address"] as? [String] == ["172.16.0.2/32", "fd00::2/128"])
+        precondition(settings?["mtu"] as? Int == 1380)
+        // Kernel mode is Linux-only; macOS must run Xray's userspace tunnel.
+        precondition(settings?["kernelMode"] as? Bool == false)
+        precondition(settings?["reserved"] == nil)
+
+        let peers = settings?["peers"] as? [[String: Any]]
+        precondition(peers?.count == 1)
+        // The peer endpoint carries the same numeric address that receives the
+        // protected physical route, not the hostname.
+        precondition(peers?.first?["endpoint"] as? String == "192.0.2.1:51820")
+        precondition(peers?.first?["publicKey"] as? String == wireGuardPeerKey)
+        precondition(peers?.first?["keepAlive"] as? Int == 25)
+        precondition(peers?.first?["preSharedKey"] == nil)
+
+        // WireGuard has no Xray stream layer, but the uplink binding must survive:
+        // it is what keeps the handshake out of the tunnel it is establishing.
+        let tunnelStreamSettings = tunnelProxy?["streamSettings"] as? [String: Any]
+        precondition(tunnelStreamSettings?["network"] == nil)
+        precondition(tunnelStreamSettings?["security"] == nil)
+        precondition(tunnelStreamSettings?["tlsSettings"] == nil)
+        precondition((tunnelStreamSettings?["sockopt"] as? [String: Any])?["interface"] as? String == "en0")
+
+        // The unprivileged local-proxy config has no interface to bind, so the
+        // outbound carries no stream settings at all.
+        let proxyConfigURL = try writer.writeConfig(for: configuration, to: temporaryConfigURL())
+        let proxyPayload = try JSONSerialization.jsonObject(with: try Data(contentsOf: proxyConfigURL)) as? [String: Any]
+        let localProxyOutbound = (proxyPayload?["outbounds"] as? [[String: Any]])?.first { $0["tag"] as? String == "proxy" }
+        precondition(localProxyOutbound?["protocol"] as? String == "wireguard")
+        precondition(localProxyOutbound?["streamSettings"] == nil)
+    }
+
+    private static func testWireGuardLinkParsing() throws {
+        let parser = ConnectionLinkParser()
+        // Base64url keys and mixed-case query names are both emitted in the wild.
+        let link = "wireguard://cJl3zBqYlKrLmZ1r9gCVKzZ9lHhP5rQ0nX2sYy8vWmM%3D@example.com:51820"
+            + "?PublicKey=bmXOC-F1FxEMF9dyiK2H5_1SUtzH0JuVo51h2wPfgyo"
+            + "&address=172.16.0.2/32&reserved=1,2,3#Link%20WG"
+        let configuration = try parser.parse(link)
+
+        precondition(configuration.protocolType == .wireguard)
+        precondition(configuration.remarks == "Link WG")
+        precondition(configuration.wireguard?.secretKey == wireGuardSecretKey)
+        precondition(configuration.wireguard?.peerPublicKey == wireGuardPeerKey)
+        precondition(configuration.wireguard?.reserved == [1, 2, 3])
+        // Absent AllowedIPs means the peer takes everything the tunnel offers.
+        precondition(configuration.wireguard?.allowedIPs == ["0.0.0.0/0", "::/0"])
+        let reparsedConfiguration = try parser.parse(configuration.rawLink)
+        precondition(reparsedConfiguration == configuration)
+
+        let payload = try JSONSerialization.jsonObject(with: try XrayConfigurationWriter(proxyEndpoint: .default)
+            .tunnelConfigData(for: configuration, interfaceName: "utun9")) as? [String: Any]
+        let settings = ((payload?["outbounds"] as? [[String: Any]])?
+            .first { $0["tag"] as? String == "proxy" })?["settings"] as? [String: Any]
+        precondition(settings?["reserved"] as? [Int] == [1, 2, 3])
+        // Without an MTU the config still pins WireGuard's own default rather
+        // than leaving the choice to Xray.
+        precondition(settings?["mtu"] as? Int == WireGuardParameters.defaultMTU)
+        // An IPv6 endpoint literal has to reach Xray bracketed.
+        let ipv6Configuration = try parser.parse(wireGuardConfigurationFile(endpoint: "[2001:db8::1]:51820"))
+        precondition(ipv6Configuration.host == "2001:db8::1")
+        let ipv6Payload = try JSONSerialization.jsonObject(with: try XrayConfigurationWriter(proxyEndpoint: .default)
+            .tunnelConfigData(for: ipv6Configuration, interfaceName: "utun9")) as? [String: Any]
+        let ipv6Settings = ((ipv6Payload?["outbounds"] as? [[String: Any]])?
+            .first { $0["tag"] as? String == "proxy" })?["settings"] as? [String: Any]
+        let ipv6Peer = (ipv6Settings?["peers"] as? [[String: Any]])?.first
+        precondition(ipv6Peer?["endpoint"] as? String == "[2001:db8::1]:51820")
+    }
+
+    private static func testMalformedAndUnsupportedWireGuardInput() throws {
+        let parser = ConnectionLinkParser()
+
+        do {
+            _ = try parser.parse(wireGuardConfigurationFile(privateKey: "not-base64"))
+            fatalError("Expected invalidWireGuardKey")
+        } catch let error as ConfigurationError {
+            if case .invalidWireGuardKey("PrivateKey") = error {
+            } else {
+                fatalError("Unexpected error: \(error)")
+            }
+        }
+
+        do {
+            _ = try parser.parse(wireGuardConfigurationFile(privateKey: nil))
+            fatalError("Expected missingParameter")
+        } catch let error as ConfigurationError {
+            if case .missingParameter("PrivateKey") = error {
+            } else {
+                fatalError("Unexpected error: \(error)")
+            }
+        }
+
+        do {
+            _ = try parser.parse(wireGuardConfigurationFile(endpoint: "example.com"))
+            fatalError("Expected invalidPort")
+        } catch let error as ConfigurationError {
+            precondition(error == .invalidPort)
+        }
+
+        // Xray supports several peers per outbound; this release deliberately
+        // rejects them instead of silently using only the first.
+        do {
+            _ = try parser.parse(wireGuardConfigurationFile(extraPeer: true))
+            fatalError("Expected multipleWireGuardPeers")
+        } catch let error as ConfigurationError {
+            precondition(error == .multipleWireGuardPeers)
+        }
+
+        do {
+            _ = try parser.parse("wireguard://\(wireGuardSecretKey)@example.com:51820?address=172.16.0.2/32")
+            fatalError("Expected missingParameter")
+        } catch let error as ConfigurationError {
+            if case .missingParameter("PublicKey") = error {
+            } else {
+                fatalError("Unexpected error: \(error)")
+            }
+        }
     }
 
     private static func testMalformedAndUnsupportedLinks() throws {

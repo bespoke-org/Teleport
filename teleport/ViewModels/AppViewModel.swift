@@ -581,6 +581,12 @@ final class AppViewModel: ObservableObject {
         setStoredError(nil)
     }
 
+    /// Surfaces a failure raised by the add-connection UI itself, such as an
+    /// unreadable imported file, next to the parse failures shown in that sheet.
+    func reportImportFailure(_ message: String) {
+        setStoredError(message)
+    }
+
     func selectConnectionMode(_ mode: ConnectionMode) {
         guard mode != connectionMode else { return }
         guard canChangeSelection && !hasActiveConnectionSession else {
