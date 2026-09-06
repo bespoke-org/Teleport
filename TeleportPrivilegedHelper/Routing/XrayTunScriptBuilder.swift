@@ -3,7 +3,10 @@ import Foundation
 struct XrayTunScriptBuilder: Sendable {
     let installedXrayPath: String
 
-    func makeStartScript(helperStateDirectoryPath: String, configPath: String, assetDirectoryPath: String, protectedHost: String, tunnelInterfaceName: String, outboundInterface: String) -> String {
+    /// `installsIPv6Routes` mirrors the app's DNS/TUN policy: when the uplink has no
+    /// global IPv6 the tunnel must not claim IPv6 either, so applications get an
+    /// immediate "no route" instead of a connection that hangs inside the TUN.
+    func makeStartScript(helperStateDirectoryPath: String, configPath: String, assetDirectoryPath: String, protectedHost: String, tunnelInterfaceName: String, outboundInterface: String, installsIPv6Routes: Bool) -> String {
         let q = shellQuote
         let pidFile = helperStateDirectoryPath + "/xray-tun.pid"
         let logFile = helperStateDirectoryPath + "/xray-tun.log"
@@ -32,6 +35,7 @@ struct XrayTunScriptBuilder: Sendable {
         PROTECTED_HOST=\(q(protectedHost))
         TUN_INTERFACE_NAME=\(q(tunnelInterfaceName))
         OUTBOUND_INTERFACE=\(q(outboundInterface))
+        INSTALL_IPV6_ROUTES=\(installsIPv6Routes ? 1 : 0)
         IPV6_ROUTES_INSTALLED=0
 
         cleanup_ipv6_routes_on_failure() {
@@ -176,9 +180,14 @@ struct XrayTunScriptBuilder: Sendable {
             exit 1
         fi
 
-        IPV6_ROUTES_INSTALLED=1
-        if ! route add -inet6 -net ::/1 -interface "$tun_interface" >> "$CONTROL_LOG_FILE" 2>&1 ||
-           ! route add -inet6 -net 8000::/1 -interface "$tun_interface" >> "$CONTROL_LOG_FILE" 2>&1; then
+        if [ "$INSTALL_IPV6_ROUTES" -eq 1 ]; then
+            IPV6_ROUTES_INSTALLED=1
+        else
+            printf '%s uplink %s has no global IPv6; leaving IPv6 routing untouched\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$OUTBOUND_INTERFACE" >> "$CONTROL_LOG_FILE"
+        fi
+        if [ "$INSTALL_IPV6_ROUTES" -eq 1 ] && {
+           ! route add -inet6 -net ::/1 -interface "$tun_interface" >> "$CONTROL_LOG_FILE" 2>&1 ||
+           ! route add -inet6 -net 8000::/1 -interface "$tun_interface" >> "$CONTROL_LOG_FILE" 2>&1; }; then
             reason="Teleport VPN could not install IPv6 default routes through Teleport's TUN."
             printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$reason" >> "$CONTROL_LOG_FILE"
             printf '%s\n' "$reason" >&2
@@ -362,6 +371,7 @@ struct XrayTunScriptBuilder: Sendable {
         protect_direct_routes() {
             direct_gateway="$1"
             direct_ipv6_gateway="${2:-}"
+            [ "${INSTALL_IPV6_ROUTES:-1}" -eq 1 ] || direct_ipv6_gateway=""
             [ -n "${OUTBOUND_INTERFACE:-}" ] || return 0
             [ "$OUTBOUND_INTERFACE" != "auto" ] || return 0
             [ -n "$direct_gateway" ] || return 0

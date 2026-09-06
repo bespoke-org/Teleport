@@ -236,8 +236,23 @@ struct VerifySplitTunneling {
         let tun = inbounds?.first { $0["tag"] as? String == "tun" }
         let sniffing = tun?["sniffing"] as? [String: Any]
         precondition(sniffing?["enabled"] as? Bool == true)
-        precondition(sniffing?["routeOnly"] as? Bool == true, "sniffed domain must only steer routing")
+        precondition(sniffing?["routeOnly"] as? Bool == true, "without Xray-owned DNS the sniffed domain must only steer routing")
         precondition(sniffing?["destOverride"] as? [String] == ["http", "tls", "quic"])
+        let directWithoutDNS = outbounds.first { $0["tag"] as? String == "direct" }
+        precondition((directWithoutDNS?["settings"] as? [String: Any])?["domainStrategy"] == nil)
+
+        // With Xray-owned DNS the sniffed domain replaces the destination so the proxy
+        // resolves remotely, and freedom resolves through Xray's module, never the OS.
+        let ownedData = try XrayConfigurationWriter(proxyEndpoint: .default).tunnelConfigData(
+            for: configuration, interfaceName: "utun9", outboundInterface: "en0",
+            splitTunnelRules: rules, defaultAction: .direct,
+            dnsPolicy: TunnelDNSPolicy(localResolvers: ["192.0.2.53"])
+        )
+        let owned = try JSONSerialization.jsonObject(with: ownedData) as? [String: Any]
+        let ownedTun = (owned?["inbounds"] as? [[String: Any]])?.first { $0["tag"] as? String == "tun" }
+        precondition((ownedTun?["sniffing"] as? [String: Any])?["routeOnly"] as? Bool == false)
+        let ownedDirect = (owned?["outbounds"] as? [[String: Any]])?.first { $0["tag"] as? String == "direct" }
+        precondition((ownedDirect?["settings"] as? [String: Any])?["domainStrategy"] as? String == "UseIP")
 
         // The default action outbound must be first so Xray's implicit fallback agrees
         // with the explicit catch-all rule.
@@ -323,7 +338,7 @@ struct VerifySplitTunneling {
                 SplitTunnelRule(value: "blocked.example", kind: .domain, action: .block)
             ],
             defaultAction: .direct,
-            dnsPolicy: TunnelDNSPolicy(localResolvers: ["192.0.2.53", "2001:db8::53"])
+            dnsPolicy: TunnelDNSPolicy(localResolvers: ["192.0.2.53", "2001:db8::53"], ipv6Enabled: false)
         )
         let configURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("teleport-split-routing-\(UUID().uuidString).json")
@@ -533,6 +548,27 @@ struct VerifySplitTunneling {
         }
         precondition(settings["gateway"] as? [String] == ["172.18.0.1/30", "fdfe:dcba:9876::1/126"])
         precondition(settings["autoSystemRoutingTable"] as? [String] == ["0.0.0.0/0", "::/0"])
+
+        // Uplink without global IPv6: the TUN claims IPv4 only and DNS answers A only,
+        // so nothing ever tries an IPv6 connection the tunnel could not deliver.
+        let ipv4OnlyData = try XrayConfigurationWriter(proxyEndpoint: .default).tunnelConfigData(
+            for: configuration,
+            interfaceName: "utun9",
+            outboundInterface: "en0",
+            dnsPolicy: TunnelDNSPolicy(localResolvers: ["192.0.2.53"], ipv6Enabled: false)
+        )
+        let ipv4Only = try JSONSerialization.jsonObject(with: ipv4OnlyData) as? [String: Any]
+        let ipv4OnlyTun = (ipv4Only?["inbounds"] as? [[String: Any]])?.first { $0["tag"] as? String == "tun" }
+        let ipv4OnlySettings = ipv4OnlyTun?["settings"] as? [String: Any]
+        precondition(ipv4OnlySettings?["gateway"] as? [String] == ["172.18.0.1/30"])
+        precondition(ipv4OnlySettings?["autoSystemRoutingTable"] as? [String] == ["0.0.0.0/0"])
+        precondition((ipv4Only?["dns"] as? [String: Any])?["queryStrategy"] as? String == "UseIPv4")
+        let dualStackData = try XrayConfigurationWriter(proxyEndpoint: .default).tunnelConfigData(
+            for: configuration, interfaceName: "utun9", outboundInterface: "en0",
+            dnsPolicy: TunnelDNSPolicy(localResolvers: ["192.0.2.53"], ipv6Enabled: true)
+        )
+        let dualStack = try JSONSerialization.jsonObject(with: dualStackData) as? [String: Any]
+        precondition((dualStack?["dns"] as? [String: Any])?["queryStrategy"] as? String == "UseIP")
     }
 
     private static func testHelperRoutesIPv6AndDoesNotBypassDNS() throws {
@@ -555,8 +591,20 @@ struct VerifySplitTunneling {
             assetDirectoryPath: "/tmp/geodata-resolved",
             protectedHost: "2001:db8::7",
             tunnelInterfaceName: "utun9",
-            outboundInterface: "en0"
+            outboundInterface: "en0",
+            installsIPv6Routes: true
         ))
+        let ipv4OnlyScript = builder.makeStartScript(
+            helperStateDirectoryPath: "/var/db/dev.x.teleport",
+            configPath: "/var/db/dev.x.teleport/xray-tun-config.json",
+            assetDirectoryPath: "/tmp/geodata-resolved",
+            protectedHost: "203.0.113.7",
+            tunnelInterfaceName: "utun9",
+            outboundInterface: "en0",
+            installsIPv6Routes: false
+        )
+        try assertValidShell(ipv4OnlyScript)
+        precondition(ipv4OnlyScript.contains("INSTALL_IPV6_ROUTES=0"), "uplink without global IPv6 must not claim IPv6 routes")
         try assertValidShell(builder.makeStopScript(
             helperStateDirectoryPath: "/var/db/dev.x.teleport",
             protectedHost: "2001:db8::7",

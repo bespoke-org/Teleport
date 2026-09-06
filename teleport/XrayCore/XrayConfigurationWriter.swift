@@ -14,6 +14,10 @@ nonisolated struct TunnelDNSPolicy: Sendable, Equatable {
 
     var localResolvers: [String]
     var remoteResolver: String = TunnelDNSPolicy.defaultRemoteResolver
+    /// False when the physical uplink has no globally routable IPv6 address. The
+    /// module then answers A records only and the TUN claims no IPv6 route, so
+    /// applications never attempt IPv6 connections the tunnel could not deliver.
+    var ipv6Enabled: Bool = true
 }
 
 nonisolated struct XrayConfigurationWriter {
@@ -177,10 +181,17 @@ nonisolated struct XrayConfigurationWriter {
         // The default routes point every destination at the TUN, so a plain freedom
         // outbound would loop split-tunnel "direct" traffic straight back into Xray.
         // Bind it to the physical interface so those sockets egress outside the tunnel.
+        // When Xray owns DNS, sniffed domains replace the destination so the proxy
+        // receives names and resolves them remotely, and the direct outbound
+        // resolves through Xray's module ("UseIP") rather than the OS resolver.
+        // Without the module the original IP must be kept, otherwise freedom would
+        // fall back to the system resolver whose packets loop into the TUN.
+        let ownsDNS = dnsPolicy != nil
+        let ipv6Enabled = dnsPolicy?.ipv6Enabled ?? true
         var directOutbound: [String: Any] = [
             "tag": "direct",
             "protocol": "freedom",
-            "settings": [:]
+            "settings": ownsDNS ? ["domainStrategy": "UseIP"] : [:]
         ]
         if outboundInterface != "auto", !outboundInterface.isEmpty {
             directOutbound["streamSettings"] = [
@@ -202,14 +213,12 @@ nonisolated struct XrayConfigurationWriter {
                     "settings": [
                         "name": interfaceName,
                         "MTU": 9000,
-                        "gateway": [
-                            "172.18.0.1/30",
-                            "fdfe:dcba:9876::1/126"
-                        ],
-                        "autoSystemRoutingTable": [
-                            "0.0.0.0/0",
-                            "::/0"
-                        ],
+                        "gateway": ipv6Enabled
+                            ? ["172.18.0.1/30", "fdfe:dcba:9876::1/126"]
+                            : ["172.18.0.1/30"],
+                        "autoSystemRoutingTable": ipv6Enabled
+                            ? ["0.0.0.0/0", "::/0"]
+                            : ["0.0.0.0/0"],
                         "autoOutboundsInterface": outboundInterface
                     ],
                     "sniffing": [
@@ -223,14 +232,9 @@ nonisolated struct XrayConfigurationWriter {
                             "tls",
                             "quic"
                         ],
-                        // Use the sniffed domain for the routing decision only, and
-                        // keep the original destination IP for the actual dial.
-                        // Without this the sniffed domain replaces the destination,
-                        // so the "direct" freedom outbound has to re-resolve it; that
-                        // lookup egresses via the default route back into the TUN and
-                        // loops (TLS never completes). routeOnly keeps domain/geosite
-                        // rules working while letting direct traffic reach the real IP.
-                        "routeOnly": true
+                        // See `ownsDNS` above: destinations are overridden only when
+                        // Xray's own DNS module can resolve them safely.
+                        "routeOnly": !ownsDNS
                     ]
                 ],
                 // VPN mode already routes all device traffic through the TUN, but
@@ -345,7 +349,7 @@ nonisolated struct XrayConfigurationWriter {
         }
         return [
             "tag": Self.dnsQueryTag,
-            "queryStrategy": "UseIP",
+            "queryStrategy": policy.ipv6Enabled ? "UseIP" : "UseIPv4",
             "servers": servers
         ]
     }

@@ -51,7 +51,8 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
             assetDirectoryPath: assetDirectoryPath,
             protectedHost: protectedHost,
             tunnelInterfaceName: tunnelInterfaceName,
-            outboundInterface: outboundInterface
+            outboundInterface: outboundInterface,
+            installsIPv6Routes: NetworkInterfaceInventory.hasGlobalIPv6Address(outboundInterface)
         ))
         // TODO(gpt-5.6-sol): Supervision ends as soon as the startup shell reports
         // readiness. Monitor the validated Xray process afterward and reconcile

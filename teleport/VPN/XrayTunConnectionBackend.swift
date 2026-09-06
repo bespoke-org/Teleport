@@ -56,7 +56,10 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
                 proxyServerAddress: protectedAddress,
                 splitTunnelRules: request.splitTunnelPolicy.rules,
                 defaultAction: request.splitTunnelPolicy.defaultAction,
-                dnsPolicy: TunnelDNSPolicy(localResolvers: SystemResolverInventory.nameservers())
+                dnsPolicy: TunnelDNSPolicy(
+                    localResolvers: SystemResolverInventory.nameservers(),
+                    ipv6Enabled: routeInspector.hasGlobalIPv6(on: outboundInterface)
+                )
             )
             try systemProxyService.suspendProxyForVPN()
             return XrayTunLaunchSession(
