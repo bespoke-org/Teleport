@@ -277,12 +277,18 @@ private struct NerdShitSettingsView: View {
             return
         }
 
+        // File reads of up to 256 KB and attribute lookups are blocking; keep
+        // them off the main actor so the Settings window stays responsive.
         let url = selectedLog.url
-        logText = readTail(from: url)
-        logMetadata = metadata(for: url)
+        let maxLogBytes = maxLogBytes
+        let (text, metadata) = await BlockingWork.run {
+            (Self.readTail(from: url, maxLogBytes: maxLogBytes), Self.metadata(for: url))
+        }
+        logText = text
+        logMetadata = metadata
     }
 
-    private func readTail(from url: URL) -> String {
+    nonisolated private static func readTail(from url: URL, maxLogBytes: UInt64) -> String {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return "" }
         defer { try? handle.close() }
 
@@ -298,23 +304,16 @@ private struct NerdShitSettingsView: View {
         return text
     }
 
-    private func metadata(for url: URL) -> String {
+    nonisolated private static func metadata(for url: URL) -> String {
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else {
             return "Missing: \(url.path)"
         }
 
         let size = (attributes[.size] as? NSNumber)?.int64Value ?? 0
         let modified = attributes[.modificationDate] as? Date
-        let modifiedText = modified.map { Self.metadataDateFormatter.string(from: $0) } ?? "unknown"
+        let modifiedText = modified.map { $0.formatted(date: .abbreviated, time: .standard) } ?? "unknown"
         return "\(url.path) • \(ByteCountFormatter.string(fromByteCount: size, countStyle: .file)) • modified \(modifiedText)"
     }
-
-    private static let metadataDateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .medium
-        return formatter
-    }()
 }
 
 private struct LogTextViewer: NSViewRepresentable {
