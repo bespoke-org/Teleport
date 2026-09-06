@@ -527,20 +527,6 @@ struct VerifySplitTunneling {
     }
 
     private static func testExistingVPNDetectionCoversSplitDefaultsAndIPv6() throws {
-        let ipv4 = """
-        Internet:
-        Destination        Gateway            Flags               Netif Expire
-        0/1                link#23            UCSg                utun4
-        """
-        let ipv6 = """
-        Internet6:
-        Destination                             Gateway                         Flags         Netif Expire
-        default                                 fe80::%utun7                    UGcIg         utun7
-        """
-        precondition(XrayTunRouteInspector.detectedVPNInterface(in: [ipv4]) == "utun4")
-        precondition(XrayTunRouteInspector.detectedVPNInterface(in: [ipv6]) == "utun7")
-        precondition(XrayTunRouteInspector.detectedVPNInterface(in: ["default 192.0.2.1 UGSc en0"]) == nil)
-
         let physicalLookup = """
            route to: 1.1.1.1
         destination: default

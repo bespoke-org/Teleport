@@ -77,24 +77,6 @@ nonisolated struct XrayTunRouteInspector: Sendable {
         return nil
     }
 
-    static func detectedVPNInterface(in outputs: [String]) -> String? {
-        let interceptedDestinations: Set<String> = [
-            "default", "0/1", "0.0.0.0/1", "128.0/1", "128.0.0.0/1", "::/1", "8000::/1"
-        ]
-        for output in outputs {
-            for line in output.split(separator: "\n") {
-                let columns = line.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
-                guard let destination = columns.first,
-                      interceptedDestinations.contains(destination),
-                      let interface = columns.first(where: { $0.hasPrefix("utun") }) else {
-                    continue
-                }
-                return interface
-            }
-        }
-        return nil
-    }
-
     func routeInterface(for host: String) -> String? {
         guard let output = Self.commandOutput(executable: "/sbin/route", arguments: ["-n", "get", host]) else {
             return nil
