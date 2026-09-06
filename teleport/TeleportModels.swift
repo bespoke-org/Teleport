@@ -591,19 +591,25 @@ struct SplitTunnelRule: Codable, Equatable, Identifiable {
     var kind: SplitTunnelRuleKind
     var action: SplitTunnelRuleAction
     var isEnabled: Bool
+    /// Which connection a `.proxy` rule leaves through. `nil` means the session's
+    /// default connection, which is what every rule written before several
+    /// connections could be active at once means. Ignored for other actions.
+    var connectionID: UUID?
 
     init(
         id: UUID = UUID(),
         value: String,
         kind: SplitTunnelRuleKind,
         action: SplitTunnelRuleAction,
-        isEnabled: Bool = true
+        isEnabled: Bool = true,
+        connectionID: UUID? = nil
     ) {
         self.id = id
         self.value = value
         self.kind = kind
         self.action = action
         self.isEnabled = isEnabled
+        self.connectionID = connectionID
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -612,6 +618,7 @@ struct SplitTunnelRule: Codable, Equatable, Identifiable {
         case kind
         case action
         case isEnabled
+        case connectionID
     }
 
     init(from decoder: Decoder) throws {
@@ -621,6 +628,7 @@ struct SplitTunnelRule: Codable, Equatable, Identifiable {
         kind = try container.decode(SplitTunnelRuleKind.self, forKey: .kind)
         action = try container.decodeIfPresent(SplitTunnelRuleAction.self, forKey: .action) ?? .direct
         isEnabled = try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
+        connectionID = try container.decodeIfPresent(UUID.self, forKey: .connectionID)
     }
 }
 

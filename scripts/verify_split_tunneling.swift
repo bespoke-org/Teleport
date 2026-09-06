@@ -28,6 +28,7 @@ struct VerifySplitTunneling {
         try testTunnelConfigIncludesIPv6()
         try testHelperRoutesIPv6AndDoesNotBypassDNS()
         try testHelperProtectsEveryProxyServerRoute()
+        try testSeveralConnectionsBecomeTaggedOutbounds()
         try testGeneratedHelperScriptsHaveValidShellSyntax()
         testProxyAddressResolutionIncludesIPv4AndIPv6()
         testInterfaceInventoryReadsKernelFacts()
@@ -356,6 +357,119 @@ struct VerifySplitTunneling {
         process.waitUntilExit()
         let errorText = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         precondition(process.terminationStatus == 0, "bundled Xray rejected split routing config: \(errorText)")
+    }
+
+    /// A session may carry several connections at once: each becomes its own
+    /// tagged outbound and rules name the connection they leave through.
+    private static func testSeveralConnectionsBecomeTaggedOutbounds() throws {
+        let parser = ConnectionLinkParser()
+        let defaultConnectionID = UUID()
+        let secondConnectionID = UUID()
+        let unknownConnectionID = UUID()
+        let outbounds = [
+            RoutedProxyOutbound(
+                connectionID: defaultConnectionID,
+                configuration: try parser.parse(sampleVLESSLink()),
+                serverAddress: "203.0.113.7"
+            ),
+            RoutedProxyOutbound(
+                connectionID: secondConnectionID,
+                configuration: try parser.parse(sampleWireGuardConfigurationFile()),
+                serverAddress: "198.51.100.9"
+            )
+        ]
+        let data = try XrayConfigurationWriter(proxyEndpoint: .default).tunnelConfigData(
+            for: outbounds,
+            interfaceName: "utun9",
+            outboundInterface: "en0",
+            splitTunnelRules: [
+                SplitTunnelRule(value: "wg.example", kind: .domain, action: .proxy, connectionID: secondConnectionID),
+                SplitTunnelRule(value: "default.example", kind: .domain, action: .proxy),
+                SplitTunnelRule(value: "gone.example", kind: .domain, action: .proxy, connectionID: unknownConnectionID),
+                // A connection id on a non-proxy rule must not change its outbound.
+                SplitTunnelRule(value: "direct.example", kind: .domain, action: .direct, connectionID: secondConnectionID)
+            ],
+            defaultAction: .proxy,
+            dnsPolicy: TunnelDNSPolicy(localResolvers: ["192.0.2.53"], ipv6Enabled: false)
+        )
+        let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let generatedOutbounds = payload?["outbounds"] as? [[String: Any]] ?? []
+        let tags = generatedOutbounds.compactMap { $0["tag"] as? String }
+        // The default connection keeps the `proxy` tag every existing rule, the
+        // local inbounds and the catch-all already point at.
+        precondition(tags.first == "proxy", "expected the default connection to keep the proxy tag")
+        precondition(tags.contains("proxy-1"), "expected the second connection to get its own tag")
+        precondition(Set(tags).count == tags.count, "expected unique outbound tags")
+
+        let defaultOutbound = generatedOutbounds.first { $0["tag"] as? String == "proxy" }
+        let secondOutbound = generatedOutbounds.first { $0["tag"] as? String == "proxy-1" }
+        precondition(defaultOutbound?["protocol"] as? String == "vless")
+        precondition(secondOutbound?["protocol"] as? String == "wireguard")
+        // Each outbound dials the address its own protected host route was
+        // installed for, not the other connection's.
+        let vnext = ((defaultOutbound?["settings"] as? [String: Any])?["vnext"] as? [[String: Any]])?.first
+        precondition(vnext?["address"] as? String == "203.0.113.7")
+        let peer = ((secondOutbound?["settings"] as? [String: Any])?["peers"] as? [[String: Any]])?.first
+        precondition(peer?["endpoint"] as? String == "198.51.100.9:51820")
+        // Both transports must leave through the uplink, not the TUN they feed.
+        for outbound in [defaultOutbound, secondOutbound] {
+            let sockopt = (outbound?["streamSettings"] as? [String: Any])?["sockopt"] as? [String: Any]
+            precondition(sockopt?["interface"] as? String == "en0", "expected every proxy outbound bound to the uplink")
+        }
+
+        let rules = ((payload?["routing"] as? [String: Any])?["rules"] as? [[String: Any]]) ?? []
+        func outboundTag(forDomain domain: String) -> String? {
+            rules.first { ($0["domain"] as? [String])?.contains("domain:" + domain) == true }?["outboundTag"] as? String
+        }
+        precondition(outboundTag(forDomain: "wg.example") == "proxy-1")
+        precondition(outboundTag(forDomain: "default.example") == "proxy")
+        // A rule pointing at a connection this session does not carry falls back to
+        // the default outbound instead of being dropped.
+        precondition(outboundTag(forDomain: "gone.example") == "proxy")
+        precondition(outboundTag(forDomain: "direct.example") == "direct")
+
+        // Local inbounds and DNS resolution stay on the default connection.
+        let localProxyRule = rules.first { ($0["inboundTag"] as? [String])?.contains("socks-in") == true }
+        precondition(localProxyRule?["outboundTag"] as? String == "proxy")
+        let dnsQueryRule = rules.last { ($0["inboundTag"] as? [String])?.contains("dns-internal") == true }
+        precondition(dnsQueryRule?["outboundTag"] as? String == "proxy")
+
+        try assertAcceptedByBundledXray(data)
+    }
+
+    private static func sampleWireGuardConfigurationFile() -> String {
+        """
+        [Interface]
+        PrivateKey = cJl3zBqYlKrLmZ1r9gCVKzZ9lHhP5rQ0nX2sYy8vWmM=
+        Address = 172.16.0.2/32
+
+        [Peer]
+        PublicKey = bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=
+        AllowedIPs = 0.0.0.0/0
+        Endpoint = wg.example:51820
+        """
+    }
+
+    private static func assertAcceptedByBundledXray(_ data: Data) throws {
+        let xrayURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("build/DerivedData/Build/Products/Debug/Teleport.app/Contents/Resources/xray")
+        guard FileManager.default.isExecutableFile(atPath: xrayURL.path) else { return }
+
+        let configURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("teleport-multi-outbound-\(UUID().uuidString).json")
+        try data.write(to: configURL, options: .atomic)
+        defer { try? FileManager.default.removeItem(at: configURL) }
+
+        let process = Process()
+        let errors = Pipe()
+        process.executableURL = xrayURL
+        process.arguments = ["run", "-test", "-c", configURL.path]
+        process.standardOutput = Pipe()
+        process.standardError = errors
+        try process.run()
+        process.waitUntilExit()
+        let errorText = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        precondition(process.terminationStatus == 0, "bundled Xray rejected the generated config: \(errorText)")
     }
 
     private static func testDomainRuleEmitsDomainPrefixNotSubstring() throws {

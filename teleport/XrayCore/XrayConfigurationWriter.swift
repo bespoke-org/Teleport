@@ -20,6 +20,24 @@ nonisolated struct TunnelDNSPolicy: Sendable, Equatable {
     var ipv6Enabled: Bool = true
 }
 
+/// One proxy outbound of a session. A session dials one server per selected
+/// connection, and split-tunnel rules name the connection they leave through,
+/// so every connection needs a stable Xray tag and its own protected address.
+nonisolated struct RoutedProxyOutbound: Sendable, Equatable {
+    /// The saved connection this outbound came from; what a rule references.
+    let connectionID: UUID
+    let configuration: ConnectionConfiguration
+    /// The numeric address that receives the protected physical host route, so
+    /// the outbound dials the same endpoint the route was installed for.
+    let serverAddress: String?
+
+    init(connectionID: UUID, configuration: ConnectionConfiguration, serverAddress: String? = nil) {
+        self.connectionID = connectionID
+        self.configuration = configuration
+        self.serverAddress = serverAddress
+    }
+}
+
 nonisolated struct XrayConfigurationWriter {
     let proxyEndpoint: ProxyEndpoint
     static let dnsQueryTag = "dns-internal"
@@ -56,13 +74,38 @@ nonisolated struct XrayConfigurationWriter {
     }
 
     func writeTunnelConfig(for configuration: ConnectionConfiguration, interfaceName: String, outboundInterface: String = "auto", directSendThrough: String? = nil, splitTunnelRules: [SplitTunnelRule] = [], defaultAction: SplitTunnelRuleAction = .proxy, to outputURL: URL) throws -> URL {
-        try writePayload(makeTunnelPayload(configuration: configuration, interfaceName: interfaceName, outboundInterface: outboundInterface, directSendThrough: directSendThrough, splitTunnelRules: splitTunnelRules, defaultAction: defaultAction), to: outputURL)
+        try writePayload(makeTunnelPayload(outbounds: [RoutedProxyOutbound(connectionID: UUID(), configuration: configuration)], interfaceName: interfaceName, outboundInterface: outboundInterface, directSendThrough: directSendThrough, splitTunnelRules: splitTunnelRules, defaultAction: defaultAction), to: outputURL)
     }
 
     func tunnelConfigData(for configuration: ConnectionConfiguration, interfaceName: String, outboundInterface: String = "auto", directSendThrough: String? = nil, proxyServerAddress: String? = nil, splitTunnelRules: [SplitTunnelRule] = [], defaultAction: SplitTunnelRuleAction = .proxy, dnsPolicy: TunnelDNSPolicy? = nil) throws -> Data {
-        try encodePayload(makeTunnelPayload(configuration: configuration, interfaceName: interfaceName, outboundInterface: outboundInterface, directSendThrough: directSendThrough, proxyServerAddress: proxyServerAddress, splitTunnelRules: splitTunnelRules, defaultAction: defaultAction, dnsPolicy: dnsPolicy))
+        try tunnelConfigData(
+            for: [RoutedProxyOutbound(connectionID: UUID(), configuration: configuration, serverAddress: proxyServerAddress)],
+            interfaceName: interfaceName,
+            outboundInterface: outboundInterface,
+            directSendThrough: directSendThrough,
+            splitTunnelRules: splitTunnelRules,
+            defaultAction: defaultAction,
+            dnsPolicy: dnsPolicy
+        )
     }
 
+    /// The first outbound is the session's default: it keeps the `proxy` tag that
+    /// the catch-all rule, the local inbounds and DNS resolution point at.
+    func tunnelConfigData(for outbounds: [RoutedProxyOutbound], interfaceName: String, outboundInterface: String = "auto", directSendThrough: String? = nil, splitTunnelRules: [SplitTunnelRule] = [], defaultAction: SplitTunnelRuleAction = .proxy, dnsPolicy: TunnelDNSPolicy? = nil) throws -> Data {
+        try encodePayload(makeTunnelPayload(outbounds: outbounds, interfaceName: interfaceName, outboundInterface: outboundInterface, directSendThrough: directSendThrough, splitTunnelRules: splitTunnelRules, defaultAction: defaultAction, dnsPolicy: dnsPolicy))
+    }
+
+    /// Tags are positional: `proxy` for the default connection, `proxy-1`, `proxy-2`
+    /// and so on for the rest. Rules resolve a connection id to one of these.
+    static func proxyTag(at index: Int) -> String {
+        index == 0 ? "proxy" : "proxy-\(index)"
+    }
+
+    /// Resolution for every proxied name goes through the default connection's
+    /// outbound, even for a rule that routes its traffic through another one. The
+    /// answer is the same either way unless a server returns split-horizon
+    /// results; giving each outbound its own resolver is a later change.
+    ///
     /// Writes atomically so Xray never observes a partially serialized config and
     /// restricts the credential-bearing file to the current user.
     private func writePayload(_ payload: [String: Any], to outputURL: URL) throws -> URL {
@@ -131,14 +174,31 @@ nonisolated struct XrayConfigurationWriter {
         ]
     }
 
-    private func makeTunnelPayload(configuration: ConnectionConfiguration, interfaceName: String, outboundInterface: String, directSendThrough: String? = nil, proxyServerAddress: String? = nil, splitTunnelRules: [SplitTunnelRule] = [], defaultAction: SplitTunnelRuleAction = .proxy, dnsPolicy: TunnelDNSPolicy? = nil) -> [String: Any] {
-        let streamSettings = makeStreamSettings(configuration: configuration)
-        var proxyStreamSettings = streamSettings
-        if outboundInterface != "auto", !outboundInterface.isEmpty {
-            proxyStreamSettings["sockopt"] = ["interface": outboundInterface]
+    private func makeTunnelPayload(outbounds: [RoutedProxyOutbound], interfaceName: String, outboundInterface: String, directSendThrough: String? = nil, splitTunnelRules: [SplitTunnelRule] = [], defaultAction: SplitTunnelRuleAction = .proxy, dnsPolicy: TunnelDNSPolicy? = nil) -> [String: Any] {
+        // Every proxy outbound is bound to the physical uplink: their transports
+        // must leave outside the TUN they feed.
+        let proxyOutbounds = outbounds.enumerated().map { index, outbound -> [String: Any] in
+            var proxyStreamSettings = makeStreamSettings(configuration: outbound.configuration)
+            if outboundInterface != "auto", !outboundInterface.isEmpty {
+                proxyStreamSettings["sockopt"] = ["interface": outboundInterface]
+            }
+            return makeTunnelProxyOutbound(
+                tag: Self.proxyTag(at: index),
+                configuration: outbound.configuration,
+                streamSettings: proxyStreamSettings,
+                addressOverride: outbound.serverAddress
+            )
+        }
+        // A rule naming a connection that is not part of this session falls back to
+        // the default outbound rather than dropping the rule silently.
+        var tagsByConnectionID: [UUID: String] = [:]
+        for (index, outbound) in outbounds.enumerated() {
+            tagsByConnectionID[outbound.connectionID] = Self.proxyTag(at: index)
         }
         let enabledSplitTunnelRules = splitTunnelRules.filter { $0.isEnabled }
-        let splitTunnelRoutingRules = enabledSplitTunnelRules.map { makeSplitTunnelRoutingRule(for: $0) }
+        let splitTunnelRoutingRules = enabledSplitTunnelRules.map {
+            makeSplitTunnelRoutingRule(for: $0, tagsByConnectionID: tagsByConnectionID)
+        }
         let localProxyRoutingRules: [[String: Any]] = [[
             "type": "field",
             "inboundTag": ["socks-in", "http-in"],
@@ -261,12 +321,7 @@ nonisolated struct XrayConfigurationWriter {
             ],
             // Deliberately no "mux" on the proxy outbound: multiplexing defeats
             // Vision's traffic shaping and is itself a recognizable pattern.
-            "outbounds": [
-                makeTunnelProxyOutbound(
-                    configuration: configuration,
-                    streamSettings: proxyStreamSettings,
-                    addressOverride: proxyServerAddress
-                ),
+            "outbounds": proxyOutbounds + [
                 directOutbound,
                 [
                     "tag": "block",
@@ -358,6 +413,17 @@ nonisolated struct XrayConfigurationWriter {
         ]
     }
 
+    /// Only `.proxy` rules can name a connection; every other action keeps the
+    /// action's own outbound.
+    private func outboundTag(for rule: SplitTunnelRule, tagsByConnectionID: [UUID: String]) -> String {
+        guard rule.action == .proxy,
+              let connectionID = rule.connectionID,
+              let tag = tagsByConnectionID[connectionID] else {
+            return rule.action.rawValue
+        }
+        return tag
+    }
+
     private func dnsDomains(for rule: SplitTunnelRule) -> [String] {
         makeSplitTunnelRoutingRule(for: rule)["domain"] as? [String] ?? []
     }
@@ -380,9 +446,9 @@ nonisolated struct XrayConfigurationWriter {
     /// The proxy outbound for the TUN config. WireGuard gets no stream layer of
     /// its own, but it must keep `sockopt.interface`: that binding is what sends
     /// its UDP handshake out the physical uplink instead of back into the TUN.
-    private func makeTunnelProxyOutbound(configuration: ConnectionConfiguration, streamSettings: [String: Any], addressOverride: String?) -> [String: Any] {
+    private func makeTunnelProxyOutbound(tag: String, configuration: ConnectionConfiguration, streamSettings: [String: Any], addressOverride: String?) -> [String: Any] {
         var outbound: [String: Any] = [
-            "tag": "proxy",
+            "tag": tag,
             "protocol": configuration.protocolType.rawValue,
             "settings": makeOutboundSettings(configuration: configuration, addressOverride: addressOverride)
         ]
@@ -392,10 +458,10 @@ nonisolated struct XrayConfigurationWriter {
         return outbound
     }
 
-    private func makeSplitTunnelRoutingRule(for rule: SplitTunnelRule) -> [String: Any] {
+    private func makeSplitTunnelRoutingRule(for rule: SplitTunnelRule, tagsByConnectionID: [UUID: String] = [:]) -> [String: Any] {
         var routingRule: [String: Any] = [
             "type": "field",
-            "outboundTag": rule.action.rawValue
+            "outboundTag": outboundTag(for: rule, tagsByConnectionID: tagsByConnectionID)
         ]
 
         switch rule.kind {
