@@ -107,24 +107,27 @@ struct SplitTunnelingSettingsView: View {
             .lineLimit(1 ... 6)
             .onSubmit(addRule)
 
-            Picker("Action", selection: $newRuleAction) {
-                ForEach(SplitTunnelRuleAction.allCases) { action in
-                    Text(action.displayName).tag(action)
+            // The action picker and Add button only matter once there is something
+            // to add; showing them for an empty field invites clicks that do nothing.
+            if !newRuleValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Picker("Action", selection: $newRuleAction) {
+                    ForEach(SplitTunnelRuleAction.allCases) { action in
+                        Text(action.displayName).tag(action)
+                    }
                 }
-            }
-            .pickerStyle(.segmented)
+                .pickerStyle(.segmented)
 
-            if let addRuleErrorMessage {
-                Text(addRuleErrorMessage)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            }
+                if let addRuleErrorMessage {
+                    Text(addRuleErrorMessage)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
 
-            HStack {
-                Spacer()
-                Button("Add", action: addRule)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(newRuleValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                HStack {
+                    Spacer()
+                    Button("Add", action: addRule)
+                        .keyboardShortcut(.defaultAction)
+                }
             }
         } header: {
             Text("Add rule")
