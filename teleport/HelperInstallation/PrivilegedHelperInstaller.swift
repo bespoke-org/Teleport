@@ -1,9 +1,16 @@
 import Foundation
 
-/// Installs the helper, Xray binary, geodata, and LaunchDaemon into root-owned
-/// locations. This path runs only when installed content differs or the helper is
+/// Installs the helper, Xray binary, and LaunchDaemon into root-owned locations.
+/// Geodata is delivered separately through the authenticated session request, so
+/// updating routing data does not require another administrator approval. This path
+/// runs only when installed executable content differs or the helper is
 /// unavailable; ordinary VPN lifecycle commands use `PrivilegedHelperClient`.
 struct PrivilegedHelperInstaller: Sendable {
+    private struct InstallationManifest: Codable, Equatable {
+        let helperVersion: String
+        let xraySHA256: String
+    }
+
     private let bundle: Bundle
     private let shellRunner: PrivilegedShellRunner
     private let artifactPolicy: BundledArtifactPolicy
@@ -26,30 +33,19 @@ struct PrivilegedHelperInstaller: Sendable {
             throw PrivilegedHelperInstallerError.bundledHelperMissing
         }
 
-        let assetDirectoryURL: URL
-        do {
-            // Resolves to custom (user-downloaded) geodata when present, falling
-            // back to Teleport's bundled defaults per file.
-            assetDirectoryURL = try GeodataUpdateService().resolvedAssetDirectoryURL(bundle: bundle)
-        } catch {
-            throw PrivilegedHelperInstallerError.installFailed((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
-        }
-
-        if await isInstalledAndRunning(helperURL: helperURL, runtimeURL: runtimeURL, assetDirectoryURL: assetDirectoryURL) {
+        if await isInstalledAndRunning() {
             return
         }
         try verifyBundleArtifacts(helperURL: helperURL, runtimeURL: runtimeURL)
-        try install(helperURL: helperURL, runtimeURL: runtimeURL, assetDirectoryURL: assetDirectoryURL)
+        try install(helperURL: helperURL, runtimeURL: runtimeURL)
         try await waitUntilRunning()
     }
 
-    private func isInstalledAndRunning(helperURL: URL, runtimeURL: URL, assetDirectoryURL: URL) async -> Bool {
+    private func isInstalledAndRunning() async -> Bool {
         let fileManager = FileManager.default
         guard fileManager.isExecutableFile(atPath: PrivilegedHelperClient.installedToolPath),
               fileManager.isExecutableFile(atPath: PrivilegedHelperClient.installedXrayPath),
-              fileManager.contentsEqual(atPath: helperURL.path, andPath: PrivilegedHelperClient.installedToolPath),
-              fileManager.contentsEqual(atPath: runtimeURL.path, andPath: PrivilegedHelperClient.installedXrayPath),
-              installedGeodataMatches(assetDirectoryURL) else {
+              installationManifestMatches() else {
             return false
         }
         guard let response = try? await PrivilegedHelperClient().status(), response.success else {
@@ -58,22 +54,24 @@ struct PrivilegedHelperInstaller: Sendable {
         return response.version == PrivilegedHelperClient.expectedVersion
     }
 
-    /// Compares installed geodata by content, not just presence, so switching to
-    /// (or updating) a custom geosite/geoip source triggers a reinstall the next
-    /// time VPN mode connects, picking up the new data on Xray's next launch.
-    private func installedGeodataMatches(_ assetDirectoryURL: URL) -> Bool {
-        let fileManager = FileManager.default
-        return GeodataKind.allCases.allSatisfy { kind in
-            let sourcePath = assetDirectoryURL.appendingPathComponent(kind.fileName).path
-            let installedPath = PrivilegedHelperConstants.installedAssetDirectoryPath + "/" + kind.fileName
-            return fileManager.fileExists(atPath: installedPath)
-                && fileManager.contentsEqual(atPath: sourcePath, andPath: installedPath)
-        }
+    private var expectedInstallationManifest: InstallationManifest {
+        InstallationManifest(
+            helperVersion: PrivilegedHelperClient.expectedVersion,
+            xraySHA256: artifactPolicy.xraySHA256
+        )
     }
 
-    private func install(helperURL: URL, runtimeURL: URL, assetDirectoryURL: URL) throws {
+    private func installationManifestMatches() -> Bool {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: PrivilegedHelperConstants.installationManifestPath)),
+              let manifest = try? JSONDecoder().decode(InstallationManifest.self, from: data) else {
+            return false
+        }
+        return manifest == expectedInstallationManifest
+    }
+
+    private func install(helperURL: URL, runtimeURL: URL) throws {
         let plist = Self.launchDaemonPlist()
-        let script = installScript(appBundleURL: bundle.bundleURL, helperURL: helperURL, runtimeURL: runtimeURL, assetDirectoryURL: assetDirectoryURL, plist: plist)
+        let script = installScript(appBundleURL: bundle.bundleURL, helperURL: helperURL, runtimeURL: runtimeURL, plist: plist)
         do {
             try shellRunner.runAdministratorShellScript(script, prompt: administratorPrompt)
         } catch {
@@ -138,26 +136,23 @@ struct PrivilegedHelperInstaller: Sendable {
     // can currently leave a stopped daemon or a mixture of old and new helper,
     // runtime, assets, and plist files because only the temporary directory is
     // cleaned up.
-    // TODO(gpt-5.6-sol): `ASSET_SRC` is user-writable and is copied by root without
-    // root-side `lstat`/regular-file checks or content verification. Reject symlinks
-    // and revalidate each opened geodata file after privilege elevation to avoid
-    // path-swap attacks and unverified input crossing into the root Xray process.
-    private func installScript(appBundleURL: URL, helperURL: URL, runtimeURL: URL, assetDirectoryURL: URL, plist: String) -> String {
+    private func installScript(appBundleURL: URL, helperURL: URL, runtimeURL: URL, plist: String) -> String {
         let q = PrivilegedShellRunner.shellQuote
+        let manifest = expectedInstallationManifest
+        let manifestJSON = "{\"helperVersion\":\"\(manifest.helperVersion)\",\"xraySHA256\":\"\(manifest.xraySHA256)\"}"
         return """
         set -eu
         APP_BUNDLE=\(q(appBundleURL.path))
         HELPER_SRC=\(q(helperURL.path))
         XRAY_SRC=\(q(runtimeURL.path))
-        ASSET_SRC=\(q(assetDirectoryURL.path))
         HELPER_DST=\(q(PrivilegedHelperClient.installedToolPath))
         XRAY_DST=\(q(PrivilegedHelperClient.installedXrayPath))
-        ASSET_DST=\(q(PrivilegedHelperConstants.installedAssetDirectoryPath))
+        MANIFEST_DST=\(q(PrivilegedHelperConstants.installationManifestPath))
+        INSTALL_MANIFEST=\(q(manifestJSON))
         PLIST_DST=\(q(PrivilegedHelperClient.launchDaemonPlistPath))
         LABEL=\(q(PrivilegedHelperClient.label))
         REQUIREMENT=\(q(artifactPolicy.codeSigningRequirement))
         EXPECTED_XRAY_SHA256=\(q(artifactPolicy.xraySHA256))
-        GEODATA_FILES=\(q(GeodataKind.allCases.map(\.fileName).joined(separator: " ")))
 
         verify_signature() {
             /usr/bin/codesign --verify --strict --requirement "$REQUIREMENT" "$1"
@@ -196,25 +191,19 @@ struct PrivilegedHelperInstaller: Sendable {
         verify_signature "$tmp_helper"
         verify_xray_hash "$tmp_xray"
 
-        tmp_assets="$tmp_dir/assets"
-        mkdir "$tmp_assets"
-        for geodata_file in $GEODATA_FILES; do
-            cp "$ASSET_SRC/$geodata_file" "$tmp_assets/$geodata_file"
-        done
-        chown root:wheel "$tmp_assets"
-        chmod 755 "$tmp_assets"
-        for geodata_file in $GEODATA_FILES; do
-            chown root:wheel "$tmp_assets/$geodata_file"
-            chmod 644 "$tmp_assets/$geodata_file"
-        done
+        tmp_manifest="$tmp_dir/installation.json"
+        printf '%s\n' "$INSTALL_MANIFEST" > "$tmp_manifest"
+        chown root:wheel "$tmp_manifest"
+        chmod 644 "$tmp_manifest"
 
         launchctl bootout "system/$LABEL" >/dev/null 2>&1 || true
         mv -f "$tmp_helper" "$HELPER_DST"
         mv -f "$tmp_xray" "$XRAY_DST"
         chown root:wheel "$HELPER_DST" "$XRAY_DST"
         chmod 755 "$HELPER_DST" "$XRAY_DST"
-        rm -rf "$ASSET_DST"
-        mv -f "$tmp_assets" "$ASSET_DST"
+        mv -f "$tmp_manifest" "$MANIFEST_DST"
+        chown root:wheel "$MANIFEST_DST"
+        chmod 644 "$MANIFEST_DST"
         cat > "$PLIST_DST" <<'TELEPORT_HELPER_PLIST'
         \(plist)
         TELEPORT_HELPER_PLIST

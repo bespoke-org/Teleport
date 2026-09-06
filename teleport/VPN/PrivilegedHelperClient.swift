@@ -50,11 +50,13 @@ nonisolated struct PrivilegedHelperClient: Sendable {
     func start(
         session: XrayTunLaunchSession,
         paths: XrayTunRuntimePaths,
+        assetDirectoryURL: URL? = nil,
         sessionID: UUID
     ) async throws -> pid_t? {
         let requestID = UUID()
         let payload = StartSessionRequest(
             stateDirectoryPath: paths.stateDirectoryURL.path,
+            assetDirectoryPath: (assetDirectoryURL ?? paths.stateDirectoryURL.appendingPathComponent("geodata-resolved", isDirectory: true)).path,
             configData: session.configData,
             protectedHost: session.protectedHost,
             tunnelInterfaceName: session.tunnelInterfaceName,
@@ -133,6 +135,8 @@ nonisolated struct PrivilegedHelperClient: Sendable {
     func readLog(logName: String, maxBytes: Int) async throws -> PrivilegedHelperDiagnostics {
         let log: VPNHelperLog
         switch logName {
+        case "config", "xray-tun-config.json":
+            log = .config
         case "xray", "xray-tun.log":
             log = .xray
         case "control", "xray-tun-control.log":
@@ -171,47 +175,62 @@ nonisolated struct PrivilegedHelperClient: Sendable {
         successfulPhase: VPNHelperSessionPhase
     ) async throws {
         transport.invalidate()
-        do {
-            let status = try await status()
-            guard status.sessionID == sessionID else {
+        let deadline = Date().addingTimeInterval(60)
+        var lastErrorSummary = "The privileged helper result is indeterminate"
+
+        while Date() < deadline {
+            do {
+                let status = try await status()
+                guard status.sessionID == sessionID else {
+                    throw PrivilegedHelperClientError.indeterminate(
+                        requestID: requestID,
+                        sessionID: sessionID,
+                        summary: "The privileged helper could not correlate the \(command.rawValue) result"
+                    )
+                }
+                if status.phase == successfulPhase {
+                    return
+                }
+                if status.phase == .failed {
+                    throw PrivilegedHelperClientError.commandFailed(
+                        status.summary?.isEmpty == false ? status.summary! : "The privileged helper command failed",
+                        status.details
+                    )
+                }
+                if status.phase != .starting && status.phase != .stopping {
+                    throw PrivilegedHelperClientError.indeterminate(
+                        requestID: requestID,
+                        sessionID: sessionID,
+                        summary: "The privileged helper reported \(status.phase.rawValue) while reconciling \(command.rawValue)"
+                    )
+                }
+                lastErrorSummary = "The privileged helper is still \(status.phase.rawValue)"
+            } catch let error as PrivilegedHelperClientError {
+                switch error {
+                case .incompatibleService, .commandFailed, .indeterminate:
+                    throw error
+                default:
+                    throw PrivilegedHelperClientError.indeterminate(
+                        requestID: requestID,
+                        sessionID: sessionID,
+                        summary: error.errorDescription ?? lastErrorSummary
+                    )
+                }
+            } catch {
                 throw PrivilegedHelperClientError.indeterminate(
                     requestID: requestID,
                     sessionID: sessionID,
-                    summary: "The privileged helper could not correlate the \(command.rawValue) result"
+                    summary: error.localizedDescription
                 )
             }
-            if status.phase == successfulPhase {
-                return
-            }
-            if status.phase == .failed {
-                throw PrivilegedHelperClientError.commandFailed(
-                    status.summary?.isEmpty == false ? status.summary! : "The privileged helper command failed",
-                    status.details
-                )
-            }
-            throw PrivilegedHelperClientError.indeterminate(
-                requestID: requestID,
-                sessionID: sessionID,
-                summary: "The privileged helper reported \(status.phase.rawValue) while reconciling \(command.rawValue)"
-            )
-        } catch let error as PrivilegedHelperClientError {
-            switch error {
-            case .incompatibleService, .commandFailed, .indeterminate:
-                throw error
-            default:
-                throw PrivilegedHelperClientError.indeterminate(
-                    requestID: requestID,
-                    sessionID: sessionID,
-                    summary: error.errorDescription ?? "The privileged helper result is indeterminate"
-                )
-            }
-        } catch {
-            throw PrivilegedHelperClientError.indeterminate(
-                requestID: requestID,
-                sessionID: sessionID,
-                summary: error.localizedDescription
-            )
+            try? await Task.sleep(nanoseconds: 200_000_000)
         }
+
+        throw PrivilegedHelperClientError.indeterminate(
+            requestID: requestID,
+            sessionID: sessionID,
+            summary: lastErrorSummary
+        )
     }
 
     private func exchange<Request, Response>(

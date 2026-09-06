@@ -1,6 +1,6 @@
 import Foundation
 
-struct HelperError: LocalizedError {
+struct HelperError: LocalizedError, VPNHelperClientPresentableError {
     let message: String
 
     init(_ message: String) {
@@ -8,4 +8,5 @@ struct HelperError: LocalizedError {
     }
 
     var errorDescription: String? { message }
+    var clientSummary: String { message }
 }

@@ -32,6 +32,7 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
 
     func start(request: StartSessionRequest, sessionID: UUID) throws -> StartSessionResponse {
         let stateDirectoryPath = try validatedStateDirectoryPath(request.stateDirectoryPath)
+        let assetDirectoryPath = try validatedAssetDirectoryPath(request.assetDirectoryPath)
         let protectedHost = try validatedProtectedHost(request.protectedHost, required: true)
         let tunnelInterfaceName = try validatedTunnelInterfaceName(request.tunnelInterfaceName)
         let outboundInterface = try validatedOutboundInterface(request.outboundInterface)
@@ -47,6 +48,7 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
         try shellRunner.run(scriptBuilder.makeStartScript(
             helperStateDirectoryPath: helperStateDirectoryPath,
             configPath: configPath,
+            assetDirectoryPath: assetDirectoryPath,
             protectedHost: protectedHost,
             tunnelInterfaceName: tunnelInterfaceName,
             outboundInterface: outboundInterface
@@ -84,6 +86,8 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
     func readDiagnostics(request: ReadDiagnosticsRequest) throws -> DiagnosticsResponse {
         let logName: String
         switch request.log {
+        case .config:
+            logName = "xray-tun-config.json"
         case .xray:
             logName = "xray-tun.log"
         case .control:
@@ -148,6 +152,46 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
         return normalizedPath
     }
 
+    private func validatedAssetDirectoryPath(_ value: String?) throws -> String {
+        let rawPath = try required(value, "assetDirectoryPath")
+        let expectedPath = URL(fileURLWithPath: try expectedStateDirectoryPath(), isDirectory: true)
+            .appendingPathComponent("geodata-resolved", isDirectory: true)
+            .path
+        let normalizedPath = try standardizedAbsolutePath(rawPath, name: "assetDirectoryPath")
+        guard normalizedPath == expectedPath,
+              URL(fileURLWithPath: normalizedPath, isDirectory: true).resolvingSymlinksInPath().path == expectedPath else {
+            throw HelperError("Rejected unexpected geodata asset directory path")
+        }
+
+        let consoleOwner = consoleUserIDs()
+        try validateRegularPath(normalizedPath, expectedType: S_IFDIR, owner: consoleOwner.uid, name: "geodata asset directory")
+        for fileName in ["geosite.dat", "geoip.dat"] {
+            try validateRegularPath(
+                normalizedPath + "/" + fileName,
+                expectedType: S_IFREG,
+                owner: consoleOwner.uid,
+                name: fileName
+            )
+        }
+        return normalizedPath
+    }
+
+    private func validateRegularPath(_ path: String, expectedType: mode_t, owner: uid_t, name: String) throws {
+        var statInfo = stat()
+        guard lstat(path, &statInfo) == 0 else {
+            throw HelperError("Missing \(name)")
+        }
+        guard (statInfo.st_mode & S_IFMT) == expectedType else {
+            throw HelperError("Rejected \(name) that is not a regular managed path")
+        }
+        guard statInfo.st_uid == owner else {
+            throw HelperError("Rejected \(name) not owned by the console user")
+        }
+        guard (statInfo.st_mode & (S_IWGRP | S_IWOTH)) == 0 else {
+            throw HelperError("Rejected group/world-writable \(name)")
+        }
+    }
+
     private func writeHelperConfig(_ value: Data?, helperStateDirectoryPath: String) throws -> String {
         guard let value, !value.isEmpty else { throw HelperError("Missing configData") }
         guard value.count <= maxConfigBytes else { throw HelperError("Xray tunnel config is too large") }
@@ -191,6 +235,10 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
         guard let value, !value.isEmpty else {
             if required { throw HelperError("Missing protectedHost") }
             return ""
+        }
+        var ipv6Address = in6_addr()
+        if value.withCString({ inet_pton(AF_INET6, $0, &ipv6Address) }) == 1 {
+            return value.lowercased()
         }
         guard value.count <= 253,
               value == value.trimmingCharacters(in: .whitespacesAndNewlines),

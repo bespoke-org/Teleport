@@ -3,7 +3,7 @@ import Foundation
 struct XrayTunScriptBuilder: Sendable {
     let installedXrayPath: String
 
-    func makeStartScript(helperStateDirectoryPath: String, configPath: String, protectedHost: String, tunnelInterfaceName: String, outboundInterface: String) -> String {
+    func makeStartScript(helperStateDirectoryPath: String, configPath: String, assetDirectoryPath: String, protectedHost: String, tunnelInterfaceName: String, outboundInterface: String) -> String {
         let q = shellQuote
         let pidFile = helperStateDirectoryPath + "/xray-tun.pid"
         let logFile = helperStateDirectoryPath + "/xray-tun.log"
@@ -27,11 +27,21 @@ struct XrayTunScriptBuilder: Sendable {
         PROTECTED_DNS_FILE=\(q(protectedDNSFile))
         CONTROL_LOG_FILE=\(q(controlLogFile))
         XRAY=\(q(installedXrayPath))
-        XRAY_ASSET_DIR=\(q(PrivilegedHelperConstants.installedAssetDirectoryPath))
+        XRAY_ASSET_DIR=\(q(assetDirectoryPath))
         CONFIG=\(q(configPath))
         PROTECTED_HOST=\(q(protectedHost))
         TUN_INTERFACE_NAME=\(q(tunnelInterfaceName))
         OUTBOUND_INTERFACE=\(q(outboundInterface))
+        IPV6_ROUTES_INSTALLED=0
+
+        cleanup_ipv6_routes_on_failure() {
+            status=$?
+            if [ "$status" -ne 0 ] && [ "$IPV6_ROUTES_INSTALLED" -eq 1 ]; then
+                route delete -inet6 -net ::/1 >/dev/null 2>&1 || true
+                route delete -inet6 -net 8000::/1 >/dev/null 2>&1 || true
+            fi
+        }
+        trap cleanup_ipv6_routes_on_failure EXIT
 
         \(deleteHostRouteFunction())
         \(dnsRouteFunctions())
@@ -56,6 +66,8 @@ struct XrayTunScriptBuilder: Sendable {
 
         route delete -net 0.0.0.0/1 >/dev/null 2>&1 || true
         route delete -net 128.0.0.0/1 >/dev/null 2>&1 || true
+        route delete -inet6 -net ::/1 >/dev/null 2>&1 || true
+        route delete -inet6 -net 8000::/1 >/dev/null 2>&1 || true
 
         rm -f "$PID_FILE"
         : > "$LOG_FILE"
@@ -63,10 +75,13 @@ struct XrayTunScriptBuilder: Sendable {
         printf '%s\n' "$PROTECTED_HOST" > "$PROTECTED_HOST_FILE"
         chmod 600 "$PROTECTED_HOST_FILE"
 
+        PROTECTED_ROUTE_FAMILY=""
+        case "$PROTECTED_HOST" in *:*) PROTECTED_ROUTE_FAMILY="-inet6" ;; esac
         delete_host_route "$PROTECTED_HOST"
-        gateway=$(route -n get "$PROTECTED_HOST" 2>/dev/null | awk '/gateway:/{print $2; exit}')
+        gateway=$(route -n get $PROTECTED_ROUTE_FAMILY "$PROTECTED_HOST" 2>/dev/null | awk '/gateway:/{print $2; exit}')
+        direct_ipv6_gateway=$(route -n get -inet6 default 2>/dev/null | awk '/gateway:/{print $2; exit}' || true)
         \(protectHostRouteCommands())
-        protect_direct_routes "$gateway"
+        protect_direct_routes "$gateway" "$direct_ipv6_gateway"
         protect_dns_routes
 
         cd "$HELPER_STATE_DIR"
@@ -161,13 +176,31 @@ struct XrayTunScriptBuilder: Sendable {
             exit 1
         fi
 
+        IPV6_ROUTES_INSTALLED=1
+        if ! route add -inet6 -net ::/1 -interface "$tun_interface" >> "$CONTROL_LOG_FILE" 2>&1 ||
+           ! route add -inet6 -net 8000::/1 -interface "$tun_interface" >> "$CONTROL_LOG_FILE" 2>&1; then
+            reason="Teleport VPN could not install IPv6 default routes through Teleport's TUN."
+            printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$reason" >> "$CONTROL_LOG_FILE"
+            printf '%s\n' "$reason" >&2
+            kill "$pid" 2>/dev/null || true
+            sleep 0.5
+            kill -9 "$pid" 2>/dev/null || true
+            route delete -net 0.0.0.0/1 >/dev/null 2>&1 || true
+            route delete -net 128.0.0.0/1 >/dev/null 2>&1 || true
+            delete_host_route "$PROTECTED_HOST"
+            cleanup_dns_routes
+            cleanup_direct_routes
+            rm -f "$PID_FILE"
+            exit 1
+        fi
+
         \(protectHostRouteCommands())
-        protect_direct_routes "$gateway"
+        protect_direct_routes "$gateway" "$direct_ipv6_gateway"
         protect_dns_routes
 
         public_interface_low=$(route -n get 1.1.1.1 2>/dev/null | awk '/interface:/{print $2; exit}' || true)
         public_interface_high=$(route -n get 129.0.0.1 2>/dev/null | awk '/interface:/{print $2; exit}' || true)
-        protected_interface=$(route -n get "$PROTECTED_HOST" 2>/dev/null | awk '/interface:/{print $2; exit}' || true)
+        protected_interface=$(route -n get $PROTECTED_ROUTE_FAMILY "$PROTECTED_HOST" 2>/dev/null | awk '/interface:/{print $2; exit}' || true)
         printf '%s pid %s running, tun %s, public low route %s, public high route %s, protected route %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$pid" "$tun_interface" "${public_interface_low:-unknown}" "${public_interface_high:-unknown}" "${protected_interface:-unknown}" >> "$CONTROL_LOG_FILE"
 
         case "$public_interface_low" in
@@ -263,6 +296,8 @@ struct XrayTunScriptBuilder: Sendable {
         // Delete only journaled routes and report any route that could not be removed.
         commands.append("route delete -net 0.0.0.0/1 >/dev/null 2>&1 || true")
         commands.append("route delete -net 128.0.0.0/1 >/dev/null 2>&1 || true")
+        commands.append("route delete -inet6 -net ::/1 >/dev/null 2>&1 || true")
+        commands.append("route delete -inet6 -net 8000::/1 >/dev/null 2>&1 || true")
         commands.append("rm -f \(q(pidFile))")
         commands.append("rm -f \(q(protectedHostFile))")
         commands.append("rm -f \(q(protectedDNSFile))")
@@ -274,17 +309,19 @@ struct XrayTunScriptBuilder: Sendable {
         """
         delete_host_route() {
             host="$1"
-            current_interface=$(route -n get "$host" 2>/dev/null | awk '/interface:/{print $2; exit}' || true)
+            route_family=""
+            case "$host" in *:*) route_family="-inet6" ;; esac
+            current_interface=$(route -n get $route_family "$host" 2>/dev/null | awk '/interface:/{print $2; exit}' || true)
             for scoped_interface in "${OUTBOUND_INTERFACE:-}" "$current_interface" en0 en1 en2 bridge100; do
                 [ -n "$scoped_interface" ] || continue
                 i=0
-                while route delete -host -ifscope "$scoped_interface" "$host" >/dev/null 2>&1; do
+                while route delete $route_family -host -ifscope "$scoped_interface" "$host" >/dev/null 2>&1; do
                     i=$((i + 1))
                     [ "$i" -ge 10 ] && break
                 done
             done
             i=0
-            while route delete -host "$host" >/dev/null 2>&1; do
+            while route delete $route_family -host "$host" >/dev/null 2>&1; do
                 i=$((i + 1))
                 [ "$i" -ge 10 ] && break
             done
@@ -293,29 +330,7 @@ struct XrayTunScriptBuilder: Sendable {
     }
 
     private func dnsRouteFunctions() -> String {
-        // TODO(gpt-5.6-sol): Public DNS host routes deliberately bypass the TUN for
-        // the whole machine, not only for Xray. That can leak DNS queries during a
-        // session advertised as whole-device VPN. Route DNS through an explicit Xray
-        // resolver, or disclose and test this bypass as part of the product contract.
         """
-        is_public_ipv4() {
-            ip="$1"
-            case "$ip" in
-                ""|*[!0-9.]*|*.*.*.*.*) return 1 ;;
-            esac
-            o1=${ip%%.*}
-            rest=${ip#*.}
-            o2=${rest%%.*}
-            case "$o1" in
-                0|10|127) return 1 ;;
-                169) [ "$o2" = "254" ] && return 1 ;;
-                172) [ "$o2" -ge 16 ] 2>/dev/null && [ "$o2" -le 31 ] 2>/dev/null && return 1 ;;
-                192) [ "$o2" = "168" ] && return 1 ;;
-            esac
-            [ "$o1" -ge 224 ] 2>/dev/null && return 1
-            return 0
-        }
-
         cleanup_dns_routes() {
             if [ -f "$PROTECTED_DNS_FILE" ]; then
                 while IFS= read -r dns_server; do
@@ -326,25 +341,10 @@ struct XrayTunScriptBuilder: Sendable {
             rm -f "$PROTECTED_DNS_FILE"
         }
 
+        # DNS follows the TUN default routes. Keep this no-op for shared start/stop
+        # sequencing and to clean up bypass markers left by older helper versions.
         protect_dns_routes() {
-            : > "$PROTECTED_DNS_FILE"
-            chmod 600 "$PROTECTED_DNS_FILE"
-            scutil --dns 2>/dev/null | awk '/nameserver\\[[0-9]+\\]/{print $3}' | sort -u | while IFS= read -r dns_server; do
-                is_public_ipv4 "$dns_server" || continue
-                delete_host_route "$dns_server"
-                dns_gateway=$(route -n get "$dns_server" 2>/dev/null | awk '/gateway:/{print $2; exit}' || true)
-                dns_interface=$(route -n get "$dns_server" 2>/dev/null | awk '/interface:/{print $2; exit}' || true)
-                case "$dns_interface" in
-                    utun*) dns_gateway="${gateway:-$dns_gateway}" ;;
-                esac
-                if [ -z "$dns_gateway" ]; then
-                    dns_gateway="${gateway:-}"
-                fi
-                if [ -n "$dns_gateway" ]; then
-                    route add -host "$dns_server" "$dns_gateway" >> "$CONTROL_LOG_FILE" 2>&1 || route change -host "$dns_server" "$dns_gateway" >> "$CONTROL_LOG_FILE" 2>&1 || true
-                    printf '%s\n' "$dns_server" >> "$PROTECTED_DNS_FILE"
-                fi
-            done
+            :
         }
         """
     }
@@ -355,10 +355,13 @@ struct XrayTunScriptBuilder: Sendable {
             [ -n "${OUTBOUND_INTERFACE:-}" ] || return 0
             route delete -net 0.0.0.0/1 -ifscope "$OUTBOUND_INTERFACE" >/dev/null 2>&1 || true
             route delete -net 128.0.0.0/1 -ifscope "$OUTBOUND_INTERFACE" >/dev/null 2>&1 || true
+            route delete -inet6 -net ::/1 -ifscope "$OUTBOUND_INTERFACE" >/dev/null 2>&1 || true
+            route delete -inet6 -net 8000::/1 -ifscope "$OUTBOUND_INTERFACE" >/dev/null 2>&1 || true
         }
 
         protect_direct_routes() {
             direct_gateway="$1"
+            direct_ipv6_gateway="${2:-}"
             [ -n "${OUTBOUND_INTERFACE:-}" ] || return 0
             [ "$OUTBOUND_INTERFACE" != "auto" ] || return 0
             [ -n "$direct_gateway" ] || return 0
@@ -368,6 +371,12 @@ struct XrayTunScriptBuilder: Sendable {
                 route change -net 0.0.0.0/1 "$direct_gateway" -ifscope "$OUTBOUND_INTERFACE" >> "$CONTROL_LOG_FILE" 2>&1 || true
             route add -net 128.0.0.0/1 "$direct_gateway" -ifscope "$OUTBOUND_INTERFACE" >> "$CONTROL_LOG_FILE" 2>&1 || \
                 route change -net 128.0.0.0/1 "$direct_gateway" -ifscope "$OUTBOUND_INTERFACE" >> "$CONTROL_LOG_FILE" 2>&1 || true
+            if [ -n "$direct_ipv6_gateway" ]; then
+                route add -inet6 -net ::/1 "$direct_ipv6_gateway" -ifscope "$OUTBOUND_INTERFACE" >> "$CONTROL_LOG_FILE" 2>&1 || \
+                    route change -inet6 -net ::/1 "$direct_ipv6_gateway" -ifscope "$OUTBOUND_INTERFACE" >> "$CONTROL_LOG_FILE" 2>&1 || true
+                route add -inet6 -net 8000::/1 "$direct_ipv6_gateway" -ifscope "$OUTBOUND_INTERFACE" >> "$CONTROL_LOG_FILE" 2>&1 || \
+                    route change -inet6 -net 8000::/1 "$direct_ipv6_gateway" -ifscope "$OUTBOUND_INTERFACE" >> "$CONTROL_LOG_FILE" 2>&1 || true
+            fi
         }
         """
     }
@@ -376,7 +385,7 @@ struct XrayTunScriptBuilder: Sendable {
         """
         if [ -n "$gateway" ]; then
             delete_host_route "$PROTECTED_HOST"
-            route add -host "$PROTECTED_HOST" "$gateway" >> "$CONTROL_LOG_FILE" 2>&1 || route change -host "$PROTECTED_HOST" "$gateway" >> "$CONTROL_LOG_FILE" 2>&1 || true
+            route add $PROTECTED_ROUTE_FAMILY -host "$PROTECTED_HOST" "$gateway" >> "$CONTROL_LOG_FILE" 2>&1 || route change $PROTECTED_ROUTE_FAMILY -host "$PROTECTED_HOST" "$gateway" >> "$CONTROL_LOG_FILE" 2>&1 || true
         fi
         """
     }

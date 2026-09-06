@@ -75,6 +75,44 @@ just clean
 
 You can also open `teleport.xcodeproj` in Xcode and run the `teleport` scheme.
 
+## Project structure
+
+Teleport is two executables plus a shared layer.
+
+### Targets
+
+- `teleport` — the menu bar app.
+- `TeleportPrivilegedHelper` — a separate root daemon launched by launchd, used only for VPN mode.
+- `Shared/` — compiled into both targets. Holds the XPC protocol with its exact revision number, the typed Codable request/response messages, payload size bounds, and their validation. This is the contract between app and root code.
+
+### App target, from UI down to transport
+
+- **UI**: `teleportApp.swift`, `MenuBarView`, `MenuBarIconView`, `ContentView`, `SettingsView`, and `Views/Settings/*` (connections, subscriptions, split tunneling with profiles and a rule tester, geodata, about, QR and share sheets).
+- **ViewModel**: `ViewModels/AppViewModel` is the single orchestrator. It owns CRUD for connections, subscriptions, and split-tunnel rules, picks the mode, and drives connect/disconnect. `ConnectionHealthProbeQueue` schedules latency checks.
+- **Models and persistence**: `TeleportModels.swift` defines the persisted snapshot (saved connections, subscriptions, split-tunnel rules). `Persistence/` stores it on disk and seeds it on first launch from `packaging/bundled-connections.json`.
+- **Input pipelines**: `Parsing/` parses `vless://` and `trojan://` links and geodata formats, and holds the split-tunnel rule and geodata matchers. `Subscriptions/` fetches subscription URLs and imports configs with duplicate filtering. `Geodata/` downloads and resolves geoip/geosite assets. `Health/` runs TCP latency probes.
+- **Connection abstraction**: `Connection/` is the boundary the ViewModel talks to. `ConnectionProvider` exposes async connect/disconnect and one `ConnectionState` stream. `ConnectionRequest` carries mode-neutral inputs, including split-tunnel rules. `ConnectionProviderFactory` selects one of the two providers.
+- **Config generation**: `XrayCore/XrayConfigurationWriter` turns a request into Xray JSON for either mode, including routing rules derived from split tunneling. It never starts processes or touches system state.
+- **System Proxy mode**: `SystemProxy/` runs Xray as the current user, exposes local SOCKS/HTTP ports, and toggles macOS proxy settings. No root required.
+- **VPN mode**: `VPN/` is the app side of the root path: `RootXrayConnectionProvider` → `XrayTunConnectionBackend` → `PrivilegedXrayRuntimeManager` → `PrivilegedHelperClient` → `XPCVPNHelperTransport`. The client encodes typed messages and performs one bounded status query after an indeterminate reply. The transport owns the `NSXPCConnection`, deadlines, and interruption handling. `XrayTunSessionState` caches correlation IDs for a later stop.
+- **Helper installation**: `HelperInstallation/` verifies bundled artifacts and installs the helper, the root Xray binary, an installation manifest, and the LaunchDaemon plist through an admin-authorized shell. This is the only place that asks for a password. Geodata is not installed here; the helper reads the resolved geodata directory from the console user's Application Support at session start.
+
+### Privileged helper target, from ingress to system
+
+- `main.swift` starts an `NSXPCListener` on the Mach service name.
+- `IPC/` is the trust boundary. `ClientAuthenticator` checks the active console user and the app code signature. The listener delegate, `HelperXPCService`, and `HelperCommandDispatcher` decode typed commands and serialize them. `HelperRequestLedger` dedupes by request UUID (128 entries, ten minutes).
+- `Session/XrayTunController` validates fields and runs start/stop/status/diagnostics in order.
+- `Xray/ManagedXrayProcess` manages the root Xray process: PID files, SIGTERM, bounded wait, SIGKILL.
+- `Routing/XrayTunScriptBuilder` produces the shell commands for the utun, split default routes, the protected host route to the proxy server, DNS, and cleanup.
+- `Support/` holds helper configuration, platform lookups, and bounded shell execution.
+
+### Around the code
+
+- `scripts/verify_*.swift` — standalone verification scripts, one per subsystem, run via `just verify-*`.
+- `justfile` — build, DMG packaging, verification, and an architecture-layout check that keeps XPC details out of provider and UI layers.
+- `openspec/` — capability specs and in-progress changes.
+- `docs/` — source-layout reference and design specs.
+
 ## Runtime architecture
 
 `AppViewModel` drives both connection modes through the asynchronous `ConnectionProvider` API and one shared `ConnectionState` stream. Mode-specific providers keep System Proxy and privileged root-Xray lifecycle details below that boundary. The VPN layer hides `NSXPCConnection`, helper revisions, request IDs, and privileged session payloads from providers and UI code.

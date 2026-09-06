@@ -24,6 +24,7 @@ struct XPCProtocolVerification {
             sessionID: sessionID,
             payload: StartSessionRequest(
                 stateDirectoryPath: "/var/db/dev.x.teleport",
+                assetDirectoryPath: "/Users/test/Library/Application Support/teleport/geodata-resolved",
                 configData: Data("{}".utf8),
                 protectedHost: "example.com",
                 tunnelInterfaceName: "utun9",
@@ -117,6 +118,7 @@ struct XPCProtocolVerification {
             sessionID: nil,
             payload: StartSessionRequest(
                 stateDirectoryPath: "/var/db/dev.x.teleport",
+                assetDirectoryPath: "/Users/test/Library/Application Support/teleport/geodata-resolved",
                 configData: Data("{}".utf8),
                 protectedHost: "example.com",
                 tunnelInterfaceName: "utun1",
@@ -174,6 +176,7 @@ struct XPCProtocolVerification {
             sessionID: UUID(),
             payload: StartSessionRequest(
                 stateDirectoryPath: "/var/db/dev.x.teleport",
+                assetDirectoryPath: "/Users/test/Library/Application Support/teleport/geodata-resolved",
                 configData: configData,
                 protectedHost: "example.com",
                 tunnelInterfaceName: "utun1",

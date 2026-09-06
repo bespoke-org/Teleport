@@ -8,9 +8,11 @@ struct VerifyGeodata {
         try testGeodataKindFileNames()
         try testGeodataUpdateErrorDescriptionsAreNonEmpty()
         try testStoreReportsWhetherBytesChanged()
+        try testResolvedAssetsUseMetadataManifest()
         try testSourceURLRequiresHTTPS()
         try testFormatValidationRejectsUnusablePayloads()
         try testFormatValidationRejectsTheOtherKind()
+        try testFormatValidationRejectsOversizedIntegerVarints()
         print("verify_geodata: all checks passed")
     }
 
@@ -19,6 +21,8 @@ struct VerifyGeodata {
     /// real ~/Library/Application Support/teleport/geodata store.
     private final class TempFileManager: FileManager {
         let root: URL
+        private(set) var contentsEqualCallCount = 0
+
         init(root: URL) {
             self.root = root
             super.init()
@@ -29,6 +33,11 @@ struct VerifyGeodata {
                 return [root]
             }
             return super.urls(for: directory, in: domainMask)
+        }
+
+        override func contentsEqual(atPath path1: String, andPath path2: String) -> Bool {
+            contentsEqualCallCount += 1
+            return super.contentsEqual(atPath: path1, andPath: path2)
         }
     }
 
@@ -53,6 +62,32 @@ struct VerifyGeodata {
 
         precondition(service.hasCustomGeodata(for: .geosite), "expected the stored custom file to exist")
         precondition(!service.hasCustomGeodata(for: .geoip), "expected only the written kind to exist")
+    }
+
+    private static func testResolvedAssetsUseMetadataManifest() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("teleport-verify-geodata-resolved-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let fileManager = TempFileManager(root: root)
+        let service = GeodataUpdateService(fileManager: fileManager)
+        try service.store(geositeFixture(), for: .geosite)
+        try service.store(geoipFixture(), for: .geoip)
+
+        let resolved = try service.resolvedAssetDirectoryURL()
+        _ = try service.resolvedAssetDirectoryURL()
+        precondition(fileManager.contentsEqualCallCount == 0, "expected repeated resolution to avoid full-file comparisons")
+        precondition(
+            fileManager.fileExists(atPath: resolved.appendingPathComponent(".source-manifest.json").path),
+            "expected a small source metadata manifest"
+        )
+
+        let changed = geositeFixture(domain: "changed.example.com")
+        try service.store(changed, for: .geosite)
+        _ = try service.resolvedAssetDirectoryURL()
+        let refreshed = try Data(contentsOf: resolved.appendingPathComponent("geosite.dat"))
+        precondition(refreshed == changed, "expected changed source metadata to refresh the resolved asset")
     }
 
     private static func testGeodataSettingsDefaultsWhenMissing() throws {
@@ -123,9 +158,13 @@ struct VerifyGeodata {
         tag(field, 2) + varint(payload.count) + payload
     }
 
+    private static var oversizedIntVarint: [UInt8] {
+        Array(repeating: 0xFF, count: 9) + [0x01]
+    }
+
     /// One `geosite.dat` entry: country "test" holding the domain "example.com".
-    private static func geositeFixture() -> Data {
-        let domain = tag(1, 0) + varint(2) + lengthDelimited(2, Array("example.com".utf8))
+    private static func geositeFixture(domain value: String = "example.com") -> Data {
+        let domain = tag(1, 0) + varint(2) + lengthDelimited(2, Array(value.utf8))
         let site = lengthDelimited(1, Array("test".utf8)) + lengthDelimited(2, domain)
         return Data(lengthDelimited(1, site))
     }
@@ -170,6 +209,19 @@ struct VerifyGeodata {
         expectRejected(geositeFixture(), kind: .geoip, what: "a geosite file offered as geoip")
     }
 
+    private static func testFormatValidationRejectsOversizedIntegerVarints() throws {
+        let oversizedLength = Data(tag(1, 2) + oversizedIntVarint)
+        expectRejected(oversizedLength, kind: .geosite, what: "a length larger than Int.max")
+
+        let domain = tag(1, 0) + oversizedIntVarint + lengthDelimited(2, Array("example.com".utf8))
+        let site = lengthDelimited(1, Array("test".utf8)) + lengthDelimited(2, domain)
+        expectRejected(Data(lengthDelimited(1, site)), kind: .geosite, what: "a domain type larger than Int.max")
+
+        let cidr = lengthDelimited(1, [10, 0, 0, 0]) + tag(2, 0) + oversizedIntVarint
+        let country = lengthDelimited(1, Array("test".utf8)) + lengthDelimited(2, cidr)
+        expectRejected(Data(lengthDelimited(1, country)), kind: .geoip, what: "a CIDR prefix larger than Int.max")
+    }
+
     private static func expectRejected(_ data: Data, kind: GeodataKind, what: String) {
         do {
             try GeodataFormat.validate(data, kind: kind)
@@ -192,7 +244,6 @@ struct VerifyGeodata {
             .invalidResponse,
             .emptyPayload,
             .tooSmall,
-            .tooLarge,
             .insecureURL,
             .unreadablePayload(.geosite),
             .unreadablePayload(.geoip),

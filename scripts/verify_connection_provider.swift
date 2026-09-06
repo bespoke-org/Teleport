@@ -113,7 +113,7 @@ struct VerifyConnectionProvider {
 
     private static func testProviderSerializesConcurrentConnects() async throws {
         let backend = RecordingConnectionBackend()
-        backend.startGate.block = true
+        await backend.startGate.enableBlocking()
         let provider = BackendConnectionProvider(mode: .vpn, backend: backend)
         let request = try makeRequest()
 
@@ -127,7 +127,7 @@ struct VerifyConnectionProvider {
             "second connect reached the backend before the first finished: \(backend.recordedCalls())"
         )
 
-        backend.startGate.open()
+        await backend.startGate.open()
         try await first.value
         try await second.value
         // The first connect left the provider connected, so the queued second one
@@ -140,7 +140,7 @@ struct VerifyConnectionProvider {
 
     private static func testDisconnectRunsAfterActiveConnect() async throws {
         let backend = RecordingConnectionBackend()
-        backend.startGate.block = true
+        await backend.startGate.enableBlocking()
         let provider = BackendConnectionProvider(mode: .systemProxy, backend: backend)
 
         let connectTask = Task { try await provider.connect(try makeRequest()) }
@@ -153,7 +153,7 @@ struct VerifyConnectionProvider {
             "disconnect ran before the active connect finished: \(backend.recordedCalls())"
         )
 
-        backend.startGate.open()
+        await backend.startGate.open()
         try await connectTask.value
         try await disconnectTask.value
         precondition(
@@ -165,7 +165,7 @@ struct VerifyConnectionProvider {
     private static func testDisconnectWaitsForStartupRestoration() async throws {
         let backend = RecordingConnectionBackend()
         backend.hasRestorableStateValue = true
-        backend.restoreGate.block = true
+        await backend.restoreGate.enableBlocking()
         let provider = BackendConnectionProvider(mode: .systemProxy, backend: backend)
         await backend.restoreGate.waitUntilEntered()
 
@@ -176,7 +176,7 @@ struct VerifyConnectionProvider {
             "disconnect ran before startup restoration completed: \(backend.recordedCalls())"
         )
 
-        backend.restoreGate.open()
+        await backend.restoreGate.open()
         try await disconnectTask.value
         // Restoration ends in .idle, so the queued disconnect is a no-op.
         precondition(
@@ -218,13 +218,13 @@ struct VerifyConnectionProvider {
         await awaitInitialState(coordinator)
         try await coordinator.connect(try makeRequest())
 
-        backend.stopGate.block = true
+        await backend.stopGate.enableBlocking()
         let completed = Flag()
         viewModel.handleAppTermination { completed.set() }
         await backend.stopGate.waitUntilEntered()
         precondition(!completed.isSet, "termination completed before the provider disconnected")
 
-        backend.stopGate.open()
+        await backend.stopGate.open()
         for _ in 0 ..< 400 where !completed.isSet {
             try? await Task.sleep(nanoseconds: 5_000_000)
         }
@@ -334,42 +334,33 @@ struct VerifyConnectionProvider {
 
     /// Async gate used instead of a DispatchSemaphore: blocking a cooperative
     /// thread inside an async backend call would stall the concurrency pool.
-    private final class Gate: @unchecked Sendable {
-        private let lock = NSLock()
+    private actor Gate {
         private var entered = false
         private var opened = false
-        var block = false
+        private var shouldBlock = false
+
+        func enableBlocking() {
+            shouldBlock = true
+        }
 
         func enter() async {
-            guard block else { return }
-            lock.lock()
+            guard shouldBlock else { return }
             entered = true
-            lock.unlock()
-            while true {
-                lock.lock()
-                let isOpen = opened
-                lock.unlock()
-                if isOpen { return }
+            while !opened {
                 try? await Task.sleep(nanoseconds: 2_000_000)
             }
         }
 
         func open() {
-            lock.lock()
             opened = true
-            lock.unlock()
         }
 
         func waitUntilEntered(timeout: TimeInterval = 2) async {
             let deadline = Date().addingTimeInterval(timeout)
-            while Date() < deadline {
-                lock.lock()
-                let didEnter = entered
-                lock.unlock()
-                if didEnter { return }
+            while !entered && Date() < deadline {
                 try? await Task.sleep(nanoseconds: 2_000_000)
             }
-            preconditionFailure("backend call did not start in time")
+            precondition(entered, "backend call did not start in time")
         }
     }
 

@@ -6,7 +6,7 @@ import Network
 /// owns only the child process and its logs; `SystemProxyService` separately owns
 /// macOS proxy settings. `@unchecked Sendable` means thread safety is promised by
 /// this implementation rather than verified by the compiler.
-final class XrayRuntimeManager: @unchecked Sendable {
+nonisolated final class XrayRuntimeManager: @unchecked Sendable {
     private var process: Process?
     private var errorPipe: Pipe?
     private var logFileHandle: FileHandle?

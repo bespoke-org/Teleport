@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-final class SystemProxyService: @unchecked Sendable {
+nonisolated final class SystemProxyService: @unchecked Sendable {
     private let processRunner: (Process) throws -> Void
     private let fileManager: FileManager
     private let commandTimeout: TimeInterval
@@ -29,6 +29,26 @@ final class SystemProxyService: @unchecked Sendable {
             try setSecureWebProxy(enabled: true, host: endpoint.host, port: endpoint.httpPort)
             try setSOCKSProxy(enabled: true, host: endpoint.host, port: endpoint.socksPort)
             lastEnabledEndpoint = endpoint
+        } catch {
+            try? restoreSavedProxyState()
+            throw error
+        }
+    }
+
+    /// Temporarily disables every system proxy while VPN routing is active, while
+    /// retaining a snapshot that can be restored after the tunnel stops.
+    func suspendProxyForVPN() throws {
+        if !hasSavedProxySnapshot() {
+            try persistCurrentProxyStateIfNeeded(endpoint: lastEnabledEndpoint ?? .default)
+        }
+
+        do {
+            for service in try activeNetworkServices() {
+                try runNetworkSetup(arguments: ["-setwebproxystate", service, "off"])
+                try runNetworkSetup(arguments: ["-setsecurewebproxystate", service, "off"])
+                try runNetworkSetup(arguments: ["-setsocksfirewallproxystate", service, "off"])
+            }
+            lastEnabledEndpoint = nil
         } catch {
             try? restoreSavedProxyState()
             throw error

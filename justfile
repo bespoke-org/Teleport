@@ -172,7 +172,7 @@ verify-connection-provider:
 
 # Run split-tunnel rule classification/matching/routing verification
 verify-split-tunneling:
-    swiftc {{verify_sources}} scripts/verify_split_tunneling.swift -o /tmp/teleport-verify-split-tunneling
+    swiftc {{verify_sources}} TeleportPrivilegedHelper/Support/HelperPlatform.swift TeleportPrivilegedHelper/Routing/XrayTunScriptBuilder.swift scripts/verify_split_tunneling.swift -o /tmp/teleport-verify-split-tunneling
     /tmp/teleport-verify-split-tunneling
 
 # Run geodata settings/model verification

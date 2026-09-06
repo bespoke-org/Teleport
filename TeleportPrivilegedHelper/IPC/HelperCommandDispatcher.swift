@@ -14,6 +14,8 @@ actor HelperCommandDispatcher {
     /// and a helper restart intentionally loses this observation.
     private var observedSessionID: UUID?
     private var queuedSessionID: UUID?
+    private var queuedPhase: VPNHelperSessionPhase?
+    private var observedFailureSummary: String?
     private var correlationGeneration: UInt64 = 0
     private let onRequestAdmitted: @Sendable (VPNHelperCommand) -> Void
 
@@ -102,15 +104,27 @@ actor HelperCommandDispatcher {
             switch command {
             case .status:
                 let request: VPNHelperRequestEnvelope<StatusRequest> = try VPNHelperCodec.decodeRequest(requestData)
+                let projectedSessionID = queuedSessionID ?? observedSessionID
+                let projectedPhase = queuedPhase ?? (observedFailureSummary == nil ? nil : .failed)
+                let projectedFailureSummary = observedFailureSummary
                 return try await execute(
                     command: command,
                     requestID: request.requestID,
-                    responseSessionID: nil,
-                    usesObservedSessionID: true,
+                    responseSessionID: projectedSessionID,
+                    usesObservedSessionID: false,
                     successfulSessionID: nil,
-                    fingerprint: fingerprint
+                    fingerprint: fingerprint,
+                    waitsForPrecedingExecution: false
                 ) { [executor] in
-                    try executor.status(request: request.payload)
+                    if let projectedPhase {
+                        return StatusResponse(
+                            helperVersion: PrivilegedHelperConstants.version,
+                            phase: projectedPhase,
+                            summary: projectedFailureSummary,
+                            details: nil
+                        )
+                    }
+                    return try executor.status(request: request.payload)
                 }
             case .startSession:
                 let request: VPNHelperRequestEnvelope<StartSessionRequest> = try VPNHelperCodec.decodeRequest(requestData)
@@ -183,6 +197,7 @@ actor HelperCommandDispatcher {
         usesObservedSessionID: Bool,
         successfulSessionID: UUID?,
         fingerprint: HelperRequestFingerprint,
+        waitsForPrecedingExecution: Bool = true,
         operation: @escaping @Sendable () throws -> Response
     ) async throws -> Data where Response: Codable & Sendable & Equatable {
         do {
@@ -208,14 +223,16 @@ actor HelperCommandDispatcher {
             correlationGeneration &+= 1
             reservedCorrelationGeneration = correlationGeneration
             queuedSessionID = successfulSessionID
+            queuedPhase = command == .startSession ? .starting : .stopping
+            observedFailureSummary = nil
         }
         let effectiveResponseSessionID = usesObservedSessionID
             ? (queuedSessionID ?? observedSessionID)
             : responseSessionID
         onRequestAdmitted(command)
 
-        let precedingExecution = executionTail
-        let execution = Task.detached { () -> (data: Data, succeeded: Bool) in
+        let precedingExecution = waitsForPrecedingExecution ? executionTail : nil
+        let execution = Task.detached { () -> (data: Data, succeeded: Bool, failureSummary: String?) in
             await precedingExecution?.value
             do {
                 let payload = try operation()
@@ -226,32 +243,64 @@ actor HelperCommandDispatcher {
                     payload: payload,
                     failure: nil
                 )
-                return (try VPNHelperCodec.encodeResponse(response), true)
-            } catch {
+                return (try VPNHelperCodec.encodeResponse(response), true, nil)
+            } catch let protocolFailure as VPNHelperProtocolFailure {
                 return (
                     Self.encodeFailure(
                         requestID: requestID,
                         sessionID: effectiveResponseSessionID,
                         payloadType: Response.self,
-                        failure: Self.failure(
-                            code: .commandFailed,
-                            summary: "The privileged helper command failed"
-                        )
+                        failure: protocolFailure
                     ),
-                    false
+                    false,
+                    protocolFailure.summary
+                )
+            } catch let presentableError as any VPNHelperClientPresentableError {
+                let summary = presentableError.clientSummary
+                return (
+                    Self.encodeFailure(
+                        requestID: requestID,
+                        sessionID: effectiveResponseSessionID,
+                        payloadType: Response.self,
+                        failure: Self.failure(code: .commandFailed, summary: summary)
+                    ),
+                    false,
+                    summary
+                )
+            } catch {
+                let summary = "The privileged helper command failed"
+                return (
+                    Self.encodeFailure(
+                        requestID: requestID,
+                        sessionID: effectiveResponseSessionID,
+                        payloadType: Response.self,
+                        failure: Self.failure(code: .commandFailed, summary: summary)
+                    ),
+                    false,
+                    summary
                 )
             }
         }
-        executionTail = Task {
-            _ = await execution.value
+        if waitsForPrecedingExecution {
+            executionTail = Task {
+                _ = await execution.value
+            }
         }
 
         let result = await execution.value
-        if result.succeeded, let successfulSessionID {
-            observedSessionID = successfulSessionID
+        if let successfulSessionID {
+            // A failed mutation may already have changed root-side process or route
+            // state. Correlate it with the admitted session so a matching stop can
+            // still clean up instead of being rejected against an older session.
+            // A successful stop, however, completes and clears that correlation.
+            observedSessionID = result.succeeded && command == .stopSession
+                ? nil
+                : successfulSessionID
+            observedFailureSummary = result.failureSummary
         }
         if reservedCorrelationGeneration == correlationGeneration {
             queuedSessionID = nil
+            queuedPhase = nil
         }
         ledger.complete(
             requestID: requestID,
@@ -337,6 +386,7 @@ actor HelperCommandDispatcher {
         case .startSession:
             allowedPayloadKeys = [
                 "stateDirectoryPath",
+                "assetDirectoryPath",
                 "configData",
                 "protectedHost",
                 "tunnelInterfaceName",

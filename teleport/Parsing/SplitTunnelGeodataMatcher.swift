@@ -162,7 +162,7 @@ final class SplitTunnelGeodataMatcher {
         let remainingBits = prefixLength % 8
         if fullBytes > 0, Array(candidate.prefix(fullBytes)) != Array(ruleAddress.prefix(fullBytes)) { return false }
         if remainingBits > 0 {
-            let mask = UInt8(0xFF << (8 - remainingBits))
+            let mask = UInt8.max << (8 - remainingBits)
             if (candidate[fullBytes] & mask) != (ruleAddress[fullBytes] & mask) { return false }
         }
         return true

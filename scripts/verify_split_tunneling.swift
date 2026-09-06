@@ -9,10 +9,13 @@ struct VerifySplitTunneling {
         try testMatcherIgnoresDisabledRules()
         try testMatcherDomainRulesDoNotMatchIPLiterals()
         try testMatcherFullPrefixRequiresExactMatch()
+        try testMatcherSupportsNonOctetCIDRPrefixes()
         try testDomainValuesAreNormalizedToLowercase()
         try testClassifiesGeodataTokens()
         try testMatcherChecksGeodataRules()
         try testGeodataRulesGenerateRoutingRules()
+        try testDomainRulesUseSniffingWithoutDNSInterception()
+        try testSplitRoutingConfigurationIsAcceptedByBundledXray()
         try testDomainRuleEmitsDomainPrefixNotSubstring()
         try testGeneratedRoutingRulesMatchSharedMatcher()
         try testDisabledRuleExcludedFromGeneratedRouting()
@@ -21,6 +24,11 @@ struct VerifySplitTunneling {
         try testDirectOutboundBindsToPhysicalInterface()
         try testDirectOutboundCanBindSourceAddress()
         try testHelperAddsScopedDirectRoutes()
+        try testTunnelConfigIncludesIPv6()
+        try testHelperRoutesIPv6AndDoesNotBypassDNS()
+        try testGeneratedHelperScriptsHaveValidShellSyntax()
+        testProxyAddressResolutionIncludesIPv4AndIPv6()
+        try testExistingVPNDetectionCoversSplitDefaultsAndIPv6()
         try testTunnelSniffingIncludesQUIC()
         try testTunnelConfigExposesLocalSocksAndHTTPPorts()
         try testLegacySnapshotWithoutSplitTunnelFieldsDefaults()
@@ -93,6 +101,16 @@ struct VerifySplitTunneling {
         precondition(SplitTunnelRuleMatcher.firstMatch(for: "www.example.com", in: [broad]) != nil)
     }
 
+    private static func testMatcherSupportsNonOctetCIDRPrefixes() throws {
+        let ipv4 = SplitTunnelRule(value: "192.168.1.16/28", kind: .ip, action: .direct)
+        precondition(SplitTunnelRuleMatcher.firstMatch(for: "192.168.1.17", in: [ipv4])?.id == ipv4.id)
+        precondition(SplitTunnelRuleMatcher.firstMatch(for: "192.168.1.32", in: [ipv4]) == nil)
+
+        let ipv6 = SplitTunnelRule(value: "2001:db8::/127", kind: .ip, action: .direct)
+        precondition(SplitTunnelRuleMatcher.firstMatch(for: "2001:db8::1", in: [ipv6])?.id == ipv6.id)
+        precondition(SplitTunnelRuleMatcher.firstMatch(for: "2001:db8::2", in: [ipv6]) == nil)
+    }
+
     private static func testDomainValuesAreNormalizedToLowercase() throws {
         switch SplitTunnelRuleClassifier.classify("Example.COM") {
         case let .success(classified):
@@ -157,7 +175,8 @@ struct VerifySplitTunneling {
         let geosite = SplitTunnelRule(value: "geosite:google", kind: .geosite, action: .direct)
         let geoip = SplitTunnelRule(value: "geoip:private", kind: .geoip, action: .block)
         precondition(SplitTunnelRuleMatcher.firstMatch(for: "www.google.com", in: [geosite], geodataMatcher: geodataMatcher)?.id == geosite.id)
-        precondition(SplitTunnelRuleMatcher.firstMatch(for: "10.0.0.1", in: [geoip], geodataMatcher: geodataMatcher)?.id == geoip.id)
+        precondition(SplitTunnelRuleMatcher.firstMatch(for: "10.15.255.255", in: [geoip], geodataMatcher: geodataMatcher)?.id == geoip.id)
+        precondition(SplitTunnelRuleMatcher.firstMatch(for: "10.16.0.0", in: [geoip], geodataMatcher: geodataMatcher) == nil)
 
         let disabled = SplitTunnelRule(value: "geosite:google", kind: .geosite, action: .direct, isEnabled: false)
         precondition(SplitTunnelRuleMatcher.firstMatch(for: "www.google.com", in: [disabled], geodataMatcher: geodataMatcher) == nil)
@@ -184,6 +203,76 @@ struct VerifySplitTunneling {
         let ips = routingRules[1]["ip"] as? [String]
         precondition(ips == ["geoip:private"], "expected geoip token to be emitted in the ip array")
         precondition(routingRules[1]["outboundTag"] as? String == "block")
+    }
+
+    private static func testDomainRulesUseSniffingWithoutDNSInterception() throws {
+        let configuration = try ConnectionLinkParser().parse(sampleVLESSLink())
+        let rules = [
+            SplitTunnelRule(value: "example.com", kind: .domain, action: .proxy),
+            SplitTunnelRule(value: "geosite:google", kind: .geosite, action: .block),
+            SplitTunnelRule(value: "direct.example", kind: .domain, action: .direct)
+        ]
+        let data = try XrayConfigurationWriter(proxyEndpoint: .default).tunnelConfigData(
+            for: configuration,
+            interfaceName: "utun9",
+            outboundInterface: "en0",
+            splitTunnelRules: rules,
+            defaultAction: .direct
+        )
+        let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+
+        // Domain rules are matched from sniffed SNI/Host only. No FakeDNS, no DNS
+        // section, and no DNS capture: Xray must never resolve anything itself.
+        precondition(payload?["dns"] == nil, "tunnel config must not carry a dns section")
+        precondition(payload?["fakedns"] == nil, "tunnel config must not enable FakeDNS")
+        let outbounds = payload?["outbounds"] as? [[String: Any]] ?? []
+        precondition(!outbounds.contains { $0["protocol"] as? String == "dns" }, "no dns outbound expected")
+        let routingRules = try routingRulesArray(from: data)
+        precondition(!routingRules.contains { $0["port"] as? Int == 53 }, "no DNS capture rule expected")
+
+        let inbounds = payload?["inbounds"] as? [[String: Any]]
+        let tun = inbounds?.first { $0["tag"] as? String == "tun" }
+        let sniffing = tun?["sniffing"] as? [String: Any]
+        precondition(sniffing?["enabled"] as? Bool == true)
+        precondition(sniffing?["routeOnly"] as? Bool == true, "sniffed domain must only steer routing")
+        precondition(sniffing?["destOverride"] as? [String] == ["http", "tls", "quic"])
+
+        // The default action outbound must be first so Xray's implicit fallback agrees
+        // with the explicit catch-all rule.
+        precondition(outbounds.first?["tag"] as? String == "direct")
+    }
+
+    private static func testSplitRoutingConfigurationIsAcceptedByBundledXray() throws {
+        let xrayURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .appendingPathComponent("build/DerivedData/Build/Products/Debug/Teleport.app/Contents/Resources/xray")
+        guard FileManager.default.isExecutableFile(atPath: xrayURL.path) else { return }
+
+        let configuration = try ConnectionLinkParser().parse(sampleVLESSLink())
+        let data = try XrayConfigurationWriter(proxyEndpoint: .default).tunnelConfigData(
+            for: configuration,
+            interfaceName: "utun9",
+            outboundInterface: "en0",
+            splitTunnelRules: [
+                SplitTunnelRule(value: "example.com", kind: .domain, action: .proxy),
+                SplitTunnelRule(value: "blocked.example", kind: .domain, action: .block)
+            ],
+            defaultAction: .direct
+        )
+        let configURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("teleport-split-routing-\(UUID().uuidString).json")
+        try data.write(to: configURL, options: .atomic)
+        defer { try? FileManager.default.removeItem(at: configURL) }
+
+        let process = Process()
+        let errors = Pipe()
+        process.executableURL = xrayURL
+        process.arguments = ["run", "-test", "-c", configURL.path]
+        process.standardOutput = Pipe()
+        process.standardError = errors
+        try process.run()
+        process.waitUntilExit()
+        let errorText = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        precondition(process.terminationStatus == 0, "bundled Xray rejected split routing config: \(errorText)")
     }
 
     private static func testDomainRuleEmitsDomainPrefixNotSubstring() throws {
@@ -322,10 +411,25 @@ struct VerifySplitTunneling {
 
         // With a concrete interface, the direct outbound must bind to it so that
         // split-tunnel "direct" traffic egresses the physical uplink, not the TUN.
-        let boundData = try writer.tunnelConfigData(for: configuration, interfaceName: "utun9", outboundInterface: "en0")
+        let boundData = try writer.tunnelConfigData(
+            for: configuration,
+            interfaceName: "utun9",
+            outboundInterface: "en0",
+            proxyServerAddress: "203.0.113.7"
+        )
         let boundDirect = try directOutbound(from: boundData)
         let sockopt = (boundDirect["streamSettings"] as? [String: Any])?["sockopt"] as? [String: Any]
         precondition(sockopt?["interface"] as? String == "en0", "expected direct outbound to bind to the physical interface")
+
+        let boundProxy = try proxyOutbound(from: boundData)
+        let proxyStreamSettings = boundProxy["streamSettings"] as? [String: Any]
+        let proxySockopt = proxyStreamSettings?["sockopt"] as? [String: Any]
+        precondition(proxySockopt?["interface"] as? String == "en0", "expected the proxy server connection to stay on the physical interface")
+        let proxySettings = boundProxy["settings"] as? [String: Any]
+        let vnext = proxySettings?["vnext"] as? [[String: Any]]
+        precondition(vnext?.first?["address"] as? String == "203.0.113.7", "expected Xray to dial the pre-resolved protected address")
+        let tlsSettings = proxyStreamSettings?["tlsSettings"] as? [String: Any]
+        precondition(tlsSettings?["serverName"] as? String == configuration.host, "expected TLS identity to retain the original hostname")
 
         // With no resolvable interface ("auto") we must not emit a bogus binding.
         let autoData = try writer.tunnelConfigData(for: configuration, interfaceName: "utun9", outboundInterface: "auto")
@@ -345,6 +449,116 @@ struct VerifySplitTunneling {
         )
         let direct = try directOutbound(from: data)
         precondition(direct["sendThrough"] as? String == "192.168.0.19", "expected direct outbound to bind a physical-interface source address")
+    }
+
+    private static func testTunnelConfigIncludesIPv6() throws {
+        let configuration = try ConnectionLinkParser().parse(sampleVLESSLink())
+        let data = try XrayConfigurationWriter(proxyEndpoint: .default).tunnelConfigData(
+            for: configuration,
+            interfaceName: "utun9",
+            outboundInterface: "en0"
+        )
+        let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let inbounds = (payload?["inbounds"] as? [[String: Any]]) ?? []
+        guard let tun = inbounds.first(where: { $0["tag"] as? String == "tun" }),
+              let settings = tun["settings"] as? [String: Any] else {
+            preconditionFailure("expected tun settings")
+        }
+        precondition(settings["gateway"] as? [String] == ["172.18.0.1/30", "fdfe:dcba:9876::1/126"])
+        precondition(settings["autoSystemRoutingTable"] as? [String] == ["0.0.0.0/0", "::/0"])
+    }
+
+    private static func testHelperRoutesIPv6AndDoesNotBypassDNS() throws {
+        let helperSource = try privilegedHelperSource()
+        precondition(helperSource.contains("route add -inet6 -net ::/1 -interface \"$tun_interface\""))
+        precondition(helperSource.contains("route add -inet6 -net 8000::/1 -interface \"$tun_interface\""))
+        precondition(helperSource.contains("route add -inet6 -net ::/1 \"$direct_ipv6_gateway\" -ifscope \"$OUTBOUND_INTERFACE\""))
+        precondition(helperSource.contains("route add -inet6 -net 8000::/1 \"$direct_ipv6_gateway\" -ifscope \"$OUTBOUND_INTERFACE\""))
+        precondition(helperSource.contains("route delete -inet6 -net ::/1"))
+        precondition(helperSource.contains("route delete -inet6 -net 8000::/1"))
+        precondition(!helperSource.contains("scutil --dns"), "expected system DNS to follow the TUN instead of receiving physical-gateway bypass routes")
+        precondition(helperSource.contains("PROTECTED_ROUTE_FAMILY=\"-inet6\""), "expected IPv6 proxy endpoints to receive an IPv6 protected route")
+    }
+
+    private static func testGeneratedHelperScriptsHaveValidShellSyntax() throws {
+        let builder = XrayTunScriptBuilder(installedXrayPath: "/Library/PrivilegedHelperTools/xray")
+        try assertValidShell(builder.makeStartScript(
+            helperStateDirectoryPath: "/var/db/dev.x.teleport",
+            configPath: "/var/db/dev.x.teleport/xray-tun-config.json",
+            assetDirectoryPath: "/tmp/geodata-resolved",
+            protectedHost: "2001:db8::7",
+            tunnelInterfaceName: "utun9",
+            outboundInterface: "en0"
+        ))
+        try assertValidShell(builder.makeStopScript(
+            helperStateDirectoryPath: "/var/db/dev.x.teleport",
+            protectedHost: "2001:db8::7",
+            outboundInterface: "en0"
+        ))
+    }
+
+    private static func assertValidShell(_ script: String) throws {
+        let process = Process()
+        let input = Pipe()
+        let errors = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-n"]
+        process.standardInput = input
+        process.standardError = errors
+        try process.run()
+        input.fileHandleForWriting.write(Data(script.utf8))
+        try input.fileHandleForWriting.close()
+        process.waitUntilExit()
+        let errorText = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        precondition(process.terminationStatus == 0, "generated helper script has invalid shell syntax: \(errorText)")
+    }
+
+    private static func testProxyAddressResolutionIncludesIPv4AndIPv6() {
+        let output = """
+        name: proxy.example
+        ipv6_address: 2001:db8::7
+        ip_address: 203.0.113.7
+        ipv6_address: 2001:db8::7
+        """
+        precondition(
+            XrayTunRouteInspector.resolvedAddresses(in: output) == ["2001:db8::7", "203.0.113.7"],
+            "expected both address families with duplicate DNS answers removed"
+        )
+    }
+
+    private static func testExistingVPNDetectionCoversSplitDefaultsAndIPv6() throws {
+        let ipv4 = """
+        Internet:
+        Destination        Gateway            Flags               Netif Expire
+        0/1                link#23            UCSg                utun4
+        """
+        let ipv6 = """
+        Internet6:
+        Destination                             Gateway                         Flags         Netif Expire
+        default                                 fe80::%utun7                    UGcIg         utun7
+        """
+        precondition(XrayTunRouteInspector.detectedVPNInterface(in: [ipv4]) == "utun4")
+        precondition(XrayTunRouteInspector.detectedVPNInterface(in: [ipv6]) == "utun7")
+        precondition(XrayTunRouteInspector.detectedVPNInterface(in: ["default 192.0.2.1 UGSc en0"]) == nil)
+
+        let physicalLookup = """
+           route to: 1.1.1.1
+        destination: default
+          interface: en0
+        """
+        let splitVPNLookup = """
+           route to: 129.0.0.1
+        destination: 128.0.0.0
+          interface: utun4
+        """
+        let ipv6VPNLookup = """
+           route to: 2606:4700:4700::1111
+        destination: default
+          interface: utun7
+        """
+        precondition(XrayTunRouteInspector.detectedVPNInterface(inRouteLookups: [physicalLookup]) == nil)
+        precondition(XrayTunRouteInspector.detectedVPNInterface(inRouteLookups: [physicalLookup, splitVPNLookup]) == "utun4")
+        precondition(XrayTunRouteInspector.detectedVPNInterface(inRouteLookups: [ipv6VPNLookup]) == "utun7")
     }
 
     private static func testTunnelSniffingIncludesQUIC() throws {
@@ -398,7 +612,11 @@ struct VerifySplitTunneling {
         let endpoint = ProxyEndpoint(host: "127.0.0.1", httpPort: 8123, socksPort: 1234)
         let writer = XrayConfigurationWriter(proxyEndpoint: endpoint)
 
-        let data = try writer.tunnelConfigData(for: configuration, interfaceName: "utun9")
+        let data = try writer.tunnelConfigData(
+            for: configuration,
+            interfaceName: "utun9",
+            defaultAction: .direct
+        )
         let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         let inbounds = (payload?["inbounds"] as? [[String: Any]]) ?? []
 
@@ -417,6 +635,17 @@ struct VerifySplitTunneling {
         precondition(httpInbound["port"] as? Int == 8123)
 
         precondition(inbounds.contains { $0["tag"] as? String == "tun" }, "expected the tun inbound to remain present")
+
+        let routingRules = try routingRulesArray(from: data)
+        guard let localProxyRule = routingRules.first else {
+            preconditionFailure("expected routing rules for local proxy inbounds")
+        }
+        precondition(localProxyRule["inboundTag"] as? [String] == ["socks-in", "http-in"])
+        precondition(localProxyRule["outboundTag"] as? String == "proxy")
+        precondition(
+            localProxyRule["network"] as? String == "tcp,udp",
+            "explicit local proxy ports must stay proxied even when unmatched TUN traffic is direct"
+        )
     }
 
     private static func testDefaultActionSetsCatchAllOutbound() throws {
@@ -445,15 +674,43 @@ struct VerifySplitTunneling {
         // Whitelist mode: unmatched traffic goes direct without a hand-written rule.
         let directTag = try catchAll(.direct)["outboundTag"] as? String
         precondition(directTag == "direct", "expected defaultAction .direct to flip the catch-all to direct")
+
+        // Xray's implicit no-rule fallback is the first outbound. It must agree
+        // with the explicit catch-all as a defense against unclassified TUN flows.
+        let directData = try writer.tunnelConfigData(
+            for: configuration,
+            interfaceName: "utun9",
+            defaultAction: .direct
+        )
+        let directPayload = try JSONSerialization.jsonObject(with: directData) as? [String: Any]
+        let directOutbounds = directPayload?["outbounds"] as? [[String: Any]]
+        precondition(directOutbounds?.first?["tag"] as? String == "direct")
+
+        let proxyData = try writer.tunnelConfigData(
+            for: configuration,
+            interfaceName: "utun9",
+            defaultAction: .proxy
+        )
+        let proxyPayload = try JSONSerialization.jsonObject(with: proxyData) as? [String: Any]
+        let proxyOutbounds = proxyPayload?["outbounds"] as? [[String: Any]]
+        precondition(proxyOutbounds?.first?["tag"] as? String == "proxy")
     }
 
     private static func directOutbound(from data: Data) throws -> [String: Any] {
+        try outbound(tag: "direct", from: data)
+    }
+
+    private static func proxyOutbound(from data: Data) throws -> [String: Any] {
+        try outbound(tag: "proxy", from: data)
+    }
+
+    private static func outbound(tag: String, from data: Data) throws -> [String: Any] {
         let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         let outbounds = (payload?["outbounds"] as? [[String: Any]]) ?? []
-        guard let direct = outbounds.first(where: { $0["tag"] as? String == "direct" }) else {
-            preconditionFailure("expected a direct outbound in the tunnel config")
+        guard let outbound = outbounds.first(where: { $0["tag"] as? String == tag }) else {
+            preconditionFailure("expected a \(tag) outbound in the tunnel config")
         }
-        return direct
+        return outbound
     }
 
     private static func generatedSplitTunnelRoutingRules(for rules: [SplitTunnelRule]) throws -> [[String: Any]] {
@@ -465,16 +722,20 @@ struct VerifySplitTunneling {
 
         let data = try writer.tunnelConfigData(for: configuration, interfaceName: "utun9", splitTunnelRules: rules)
         let allRules = try routingRulesArray(from: data)
+        let policyRules = allRules.filter {
+            $0["outboundTag"] as? String != "dns-out"
+                && $0["ip"] as? [String] != ["198.18.0.0/15", "fc00::/18"]
+        }
 
         let enabledCount = rules.filter { $0.isEnabled }.count
         precondition(
-            allRules.count == baselineRules.count + enabledCount,
+            policyRules.count == baselineRules.count + enabledCount,
             "expected exactly one routing rule per enabled split-tunnel rule"
         )
 
         // Split-tunnel rules are inserted after the fixed block rules and before the final catch-all proxy rule.
         let insertionIndex = baselineRules.count - 1
-        return Array(allRules[insertionIndex ..< insertionIndex + enabledCount])
+        return Array(policyRules[insertionIndex ..< insertionIndex + enabledCount])
     }
 
     private static func routingRulesArray(from data: Data) throws -> [[String: Any]] {
@@ -513,7 +774,7 @@ struct VerifySplitTunneling {
     }
 
     private static func sampleGeoIPData() -> Data {
-        let cidr = protoMessage(1, Data([10, 0, 0, 0])) + protoVarintField(2, 8)
+        let cidr = protoMessage(1, Data([10, 0, 0, 0])) + protoVarintField(2, 12)
         let privateEntry = protoMessage(1, Data("private".utf8)) + protoMessage(2, cidr)
         return protoMessage(1, privateEntry)
     }

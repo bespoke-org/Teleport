@@ -6,28 +6,40 @@ import Foundation
 /// process boundary. `@unchecked Sendable` places synchronization responsibility
 /// on this implementation rather than on the compiler.
 final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
-    private let bundle: Bundle
     private let fileManager: FileManager
     private let paths: XrayTunRuntimePaths
     private let helperClient: PrivilegedHelperClient
-    private let helperInstaller: PrivilegedHelperInstaller
+    private let runtimeURLProvider: () -> URL?
+    private let assetDirectoryURLProvider: () throws -> URL
+    private let ensureHelperInstalled: (URL) async throws -> Void
 
     init(
         bundle: Bundle = .main,
         fileManager: FileManager = .default,
         helperClient: PrivilegedHelperClient = PrivilegedHelperClient(),
         helperInstaller: PrivilegedHelperInstaller? = nil,
-        paths: XrayTunRuntimePaths? = nil
+        paths: XrayTunRuntimePaths? = nil,
+        runtimeURLProvider: (() -> URL?)? = nil,
+        assetDirectoryURLProvider: (() throws -> URL)? = nil,
+        ensureHelperInstalled: ((URL) async throws -> Void)? = nil
     ) {
-        self.bundle = bundle
+        let installer = helperInstaller ?? PrivilegedHelperInstaller(bundle: bundle)
         self.fileManager = fileManager
         self.paths = paths ?? XrayTunRuntimePaths(fileManager: fileManager)
         self.helperClient = helperClient
-        self.helperInstaller = helperInstaller ?? PrivilegedHelperInstaller(bundle: bundle)
+        self.runtimeURLProvider = runtimeURLProvider ?? {
+            bundle.url(forResource: "xray", withExtension: nil)
+        }
+        self.assetDirectoryURLProvider = assetDirectoryURLProvider ?? {
+            try GeodataUpdateService(fileManager: fileManager).resolvedAssetDirectoryURL(bundle: bundle)
+        }
+        self.ensureHelperInstalled = ensureHelperInstalled ?? { runtimeURL in
+            try await installer.ensureInstalled(runtimeURL: runtimeURL)
+        }
     }
 
     func runtimeURL() -> URL? {
-        bundle.url(forResource: "xray", withExtension: nil)
+        runtimeURLProvider()
     }
 
     func start(session: XrayTunLaunchSession) async throws {
@@ -37,19 +49,26 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
             throw XrayRuntimeManager.RuntimeError.binaryNotFound
         }
 
+        let sessionID = UUID()
         do {
-            try await helperInstaller.ensureInstalled(runtimeURL: runtimeURL)
-            let sessionID = UUID()
+            let assetDirectoryURL = try assetDirectoryURLProvider()
+            try await ensureHelperInstalled(runtimeURL)
             _ = try await XrayTunStartCorrelation.perform(
                 persist: { pid in
                     try self.persistSessionState(for: session, sessionID: sessionID, pid: pid)
                 },
                 start: {
-                    try await self.helperClient.start(session: session, paths: self.paths, sessionID: sessionID)
+                    try await self.helperClient.start(
+                        session: session,
+                        paths: self.paths,
+                        assetDirectoryURL: assetDirectoryURL,
+                        sessionID: sessionID
+                    )
                 }
             )
         } catch {
-            throw XrayTunRuntimeError.startFailed(summary: readableSummary(from: error), details: diagnosticDetails(from: error))
+            await rollbackFailedStart(session: session, sessionID: sessionID, cause: error)
+            throw XrayTunRuntimeError.startFailed(summary: readableSummary(from: error), details: await diagnosticDetails(from: error))
         }
     }
 
@@ -80,11 +99,9 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
         let pid = sessionState?.pid ?? readPID()
         let protectedHost = sessionState?.protectedHost ?? readProtectedHost()
         let outboundInterface = sessionState?.outboundInterface
+        var resolvedSessionID = sessionState?.sessionID
         do {
-            let sessionID: UUID
-            if let cachedSessionID = sessionState?.sessionID {
-                sessionID = cachedSessionID
-            } else {
+            if resolvedSessionID == nil {
                 let status = try await helperClient.status()
                 if status.phase == .idle {
                     removeSessionState()
@@ -100,26 +117,43 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
                         "The running privileged helper session has no correlation identifier"
                     )
                 }
-                sessionID = observedSessionID
+                resolvedSessionID = observedSessionID
             }
 
-            try await helperClient.stop(
-                paths: paths,
+            try await stopSession(
+                sessionID: resolvedSessionID!,
                 protectedHost: protectedHost,
-                outboundInterface: outboundInterface,
-                sessionID: sessionID
+                outboundInterface: outboundInterface
             )
-            removeSessionState()
         } catch PrivilegedHelperClientError.unavailable(_) where pid == nil && protectedHost == nil {
             return
+        } catch let clientError as PrivilegedHelperClientError {
+            switch clientError {
+            case .unavailable, .incompatibleService:
+                do {
+                    guard let runtimeURL = runtimeURL() else {
+                        throw XrayRuntimeManager.RuntimeError.binaryNotFound
+                    }
+                    try await ensureHelperInstalled(runtimeURL)
+                    try await stopSession(
+                        sessionID: resolvedSessionID ?? UUID(),
+                        protectedHost: protectedHost,
+                        outboundInterface: outboundInterface
+                    )
+                } catch {
+                    throw XrayTunRuntimeError.stopFailed(summary: readableSummary(from: error), details: await diagnosticDetails(from: error))
+                }
+            default:
+                throw XrayTunRuntimeError.stopFailed(summary: readableSummary(from: clientError), details: await diagnosticDetails(from: clientError))
+            }
         } catch {
-            throw XrayTunRuntimeError.stopFailed(summary: readableSummary(from: error), details: diagnosticDetails(from: error))
+            throw XrayTunRuntimeError.stopFailed(summary: readableSummary(from: error), details: await diagnosticDetails(from: error))
         }
     }
 
     func cleanupIfHelperAvailable(protectedHost fallbackProtectedHost: String? = nil) async throws {
         if let runtimeURL = runtimeURL() {
-            try? await helperInstaller.ensureInstalled(runtimeURL: runtimeURL)
+            try? await ensureHelperInstalled(runtimeURL)
         }
         guard let response = try? await helperClient.status(), response.success else {
             return
@@ -152,6 +186,37 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
             sessionID: observedSessionID
         )
         removeSessionState()
+    }
+
+    private func stopSession(
+        sessionID: UUID,
+        protectedHost: String?,
+        outboundInterface: String?
+    ) async throws {
+        try await helperClient.stop(
+            paths: paths,
+            protectedHost: protectedHost,
+            outboundInterface: outboundInterface,
+            sessionID: sessionID
+        )
+        removeSessionState()
+    }
+
+    private func rollbackFailedStart(
+        session: XrayTunLaunchSession,
+        sessionID: UUID,
+        cause: Error
+    ) async {
+        guard readSessionState()?.sessionID == sessionID else { return }
+        if case PrivilegedHelperClientError.unavailable = cause {
+            removeSessionState()
+            return
+        }
+        try? await stopSession(
+            sessionID: sessionID,
+            protectedHost: session.protectedHost,
+            outboundInterface: session.outboundInterface
+        )
     }
 
     func capturedLogOutput() async -> String? {
@@ -207,9 +272,18 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
         return error.localizedDescription
     }
 
-    private func diagnosticDetails(from error: Error) -> String {
+    private func diagnosticDetails(from error: Error) async -> String {
         let errorText = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-        let controlLog = tailControlLog().trimmingCharacters(in: .whitespacesAndNewlines)
+        var controlLog = tailControlLog()
+        if let clientError = error as? PrivilegedHelperClientError,
+           case .commandFailed = clientError,
+           let ipcControlLog = try? await helperClient.readLog(
+               logName: "xray-tun-control.log",
+               maxBytes: 256 * 1024
+           ).details {
+            controlLog = ipcControlLog
+        }
+        controlLog = controlLog.trimmingCharacters(in: .whitespacesAndNewlines)
         return [errorText, controlLog].filter { !$0.isEmpty }.joined(separator: "\n")
     }
 

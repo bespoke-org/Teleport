@@ -1,7 +1,7 @@
 import Combine
 import Foundation
 
-struct ConnectionPickerItem: Identifiable, Equatable {
+nonisolated struct ConnectionPickerItem: Identifiable, Equatable {
     let id: UUID
     let sourceID: UUID?
     let displayName: String
@@ -13,7 +13,7 @@ struct ConnectionPickerItem: Identifiable, Equatable {
     }
 }
 
-struct SubscriptionPickerItem: Identifiable, Equatable {
+nonisolated struct SubscriptionPickerItem: Identifiable, Equatable {
     let id: UUID
     let displayName: String
 

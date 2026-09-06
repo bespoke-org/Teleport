@@ -3,7 +3,7 @@ import Foundation
 /// Builds Xray JSON for two distinct execution models: an unprivileged local
 /// SOCKS/HTTP proxy and a root-owned TUN process. Dynamic dictionaries mirror
 /// Xray's external schema, then `JSONSerialization` turns them into bytes.
-struct XrayConfigurationWriter {
+nonisolated struct XrayConfigurationWriter {
     let proxyEndpoint: ProxyEndpoint
 
     func writeConfig(for configuration: ConnectionConfiguration) throws -> URL {
@@ -41,20 +41,19 @@ struct XrayConfigurationWriter {
         try writePayload(makeTunnelPayload(configuration: configuration, interfaceName: interfaceName, outboundInterface: outboundInterface, directSendThrough: directSendThrough, splitTunnelRules: splitTunnelRules, defaultAction: defaultAction), to: outputURL)
     }
 
-    func tunnelConfigData(for configuration: ConnectionConfiguration, interfaceName: String, outboundInterface: String = "auto", directSendThrough: String? = nil, splitTunnelRules: [SplitTunnelRule] = [], defaultAction: SplitTunnelRuleAction = .proxy) throws -> Data {
-        try encodePayload(makeTunnelPayload(configuration: configuration, interfaceName: interfaceName, outboundInterface: outboundInterface, directSendThrough: directSendThrough, splitTunnelRules: splitTunnelRules, defaultAction: defaultAction))
+    func tunnelConfigData(for configuration: ConnectionConfiguration, interfaceName: String, outboundInterface: String = "auto", directSendThrough: String? = nil, proxyServerAddress: String? = nil, splitTunnelRules: [SplitTunnelRule] = [], defaultAction: SplitTunnelRuleAction = .proxy) throws -> Data {
+        try encodePayload(makeTunnelPayload(configuration: configuration, interfaceName: interfaceName, outboundInterface: outboundInterface, directSendThrough: directSendThrough, proxyServerAddress: proxyServerAddress, splitTunnelRules: splitTunnelRules, defaultAction: defaultAction))
     }
 
-    /// Writes atomically so Xray never observes a partially serialized config.
-    // TODO(gpt-5.6-sol): The config contains connection credentials. Explicitly set
-    // the resulting file to 0600 instead of relying on the parent directory and the
-    // process umask; the privileged helper already enforces 0600 for its copy.
+    /// Writes atomically so Xray never observes a partially serialized config and
+    /// restricts the credential-bearing file to the current user.
     private func writePayload(_ payload: [String: Any], to outputURL: URL) throws -> URL {
         let directory = outputURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
         let data = try encodePayload(payload)
         try data.write(to: outputURL, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: outputURL.path)
         return outputURL
     }
 
@@ -111,11 +110,25 @@ struct XrayConfigurationWriter {
         ]
     }
 
-    private func makeTunnelPayload(configuration: ConnectionConfiguration, interfaceName: String, outboundInterface: String, directSendThrough: String? = nil, splitTunnelRules: [SplitTunnelRule] = [], defaultAction: SplitTunnelRuleAction = .proxy) -> [String: Any] {
+    private func makeTunnelPayload(configuration: ConnectionConfiguration, interfaceName: String, outboundInterface: String, directSendThrough: String? = nil, proxyServerAddress: String? = nil, splitTunnelRules: [SplitTunnelRule] = [], defaultAction: SplitTunnelRuleAction = .proxy) -> [String: Any] {
         let streamSettings = makeStreamSettings(configuration: configuration)
+        var proxyStreamSettings = streamSettings
+        if outboundInterface != "auto", !outboundInterface.isEmpty {
+            proxyStreamSettings["sockopt"] = ["interface": outboundInterface]
+        }
         let splitTunnelRoutingRules = splitTunnelRules
             .filter { $0.isEnabled }
             .map { makeSplitTunnelRoutingRule(for: $0) }
+        let localProxyRoutingRules: [[String: Any]] = [[
+            "type": "field",
+            "inboundTag": ["socks-in", "http-in"],
+            "network": "tcp,udp",
+            "outboundTag": "proxy"
+        ]]
+        // DNS is deliberately not intercepted or faked. The proxy server is pinned
+        // to a numeric address and every outbound dials original IPs, so Xray never
+        // needs a resolver of its own; app DNS simply follows the default action
+        // like any other flow. Domain rules rely on sniffing (see below).
 
         // The default routes point every destination at the TUN, so a plain freedom
         // outbound would loop split-tunnel "direct" traffic straight back into Xray.
@@ -134,12 +147,7 @@ struct XrayConfigurationWriter {
             directOutbound["sendThrough"] = directSendThrough
         }
 
-        // TODO(gpt-5.6-sol): This branch captures only `0.0.0.0/0`. Port and
-        // harden the partial dual-stack work from the IPv6/startup worktrees: require
-        // successful `::/1` and `8000::/1` installation, validate actual IPv6 egress
-        // and proxy-host protection, and clean up only session-owned routes. Until
-        // then, disclose and enforce IPv4-only behavior in the user-facing UI.
-        return [
+        var payload: [String: Any] = [
             "log": [
                 "loglevel": "warning"
             ],
@@ -151,10 +159,12 @@ struct XrayConfigurationWriter {
                         "name": interfaceName,
                         "MTU": 9000,
                         "gateway": [
-                            "172.18.0.1/30"
+                            "172.18.0.1/30",
+                            "fdfe:dcba:9876::1/126"
                         ],
                         "autoSystemRoutingTable": [
-                            "0.0.0.0/0"
+                            "0.0.0.0/0",
+                            "::/0"
                         ],
                         "autoOutboundsInterface": outboundInterface
                     ],
@@ -202,8 +212,8 @@ struct XrayConfigurationWriter {
                 [
                     "tag": "proxy",
                     "protocol": configuration.protocolType.rawValue,
-                    "settings": makeOutboundSettings(configuration: configuration),
-                    "streamSettings": streamSettings
+                    "settings": makeOutboundSettings(configuration: configuration, addressOverride: proxyServerAddress),
+                    "streamSettings": proxyStreamSettings
                 ],
                 directOutbound,
                 [
@@ -214,7 +224,7 @@ struct XrayConfigurationWriter {
             ],
             "routing": [
                 "domainStrategy": "AsIs",
-                "rules": [
+                "rules": localProxyRoutingRules + [
                     [
                         "type": "field",
                         "network": "udp",
@@ -241,6 +251,20 @@ struct XrayConfigurationWriter {
                 ]
             ]
         ]
+
+        // Xray falls back to the first outbound whenever no routing rule is
+        // selected. Keep that implicit fallback aligned with the explicit final
+        // catch-all rule; relying on the latter alone is not sufficient for TUN
+        // flows that the router declines to classify.
+        if var outbounds = payload["outbounds"] as? [[String: Any]],
+           let defaultOutboundIndex = outbounds.firstIndex(where: { $0["tag"] as? String == defaultAction.rawValue }),
+           defaultOutboundIndex != 0 {
+            let defaultOutbound = outbounds.remove(at: defaultOutboundIndex)
+            outbounds.insert(defaultOutbound, at: 0)
+            payload["outbounds"] = outbounds
+        }
+
+        return payload
     }
 
     private func makeSplitTunnelRoutingRule(for rule: SplitTunnelRule) -> [String: Any] {
@@ -276,7 +300,8 @@ struct XrayConfigurationWriter {
         return routingRule
     }
 
-    private func makeOutboundSettings(configuration: ConnectionConfiguration) -> [String: Any] {
+    private func makeOutboundSettings(configuration: ConnectionConfiguration, addressOverride: String? = nil) -> [String: Any] {
+        let serverAddress = addressOverride ?? configuration.host
         switch configuration.protocolType {
         case .vless:
             var user: [String: Any] = [
@@ -290,7 +315,7 @@ struct XrayConfigurationWriter {
 
             return [
                 "vnext": [[
-                    "address": configuration.host,
+                    "address": serverAddress,
                     "port": configuration.port,
                     "users": [user]
                 ]]
@@ -299,7 +324,7 @@ struct XrayConfigurationWriter {
         case .trojan:
             return [
                 "servers": [[
-                    "address": configuration.host,
+                    "address": serverAddress,
                     "port": configuration.port,
                     "password": configuration.trojanPassword ?? ""
                 ]]

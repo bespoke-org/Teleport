@@ -7,6 +7,7 @@ struct VerifyPersistence {
         try testKeychainReadStatusClassification()
         try testFreshStoreHasNoSnapshotAndNoLoadError()
         try testSaveAndLoadRoundTrip()
+        try testLegacyStateFileMigratesToKeychain()
         try testLoadFailureRefusesToOverwriteExistingSnapshot()
         print("verify_persistence: all checks passed")
     }
@@ -85,6 +86,42 @@ struct VerifyPersistence {
             precondition(store.lastLoadError == nil, "a successful save/load round trip should not report a load error")
             precondition(loaded.showsLatencyInMenuBarPicker == false, "expected the round-tripped snapshot to match what was saved")
         }
+    }
+
+    private static func testLegacyStateFileMigratesToKeychain() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("teleport-verify-persistence-migration-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let fileManager = TempFileManager(root: root)
+        let store = ConfigurationStore(
+            fileManager: fileManager,
+            keychainService: "dev.x.teleport.configuration.verify",
+            keychainAccount: "verify-migration-\(UUID().uuidString)"
+        )
+        defer { store.deleteKeychainItemForTesting() }
+
+        let legacySnapshot = AppSnapshot(
+            savedConnections: [],
+            subscriptionSources: [],
+            selectedConnectionID: nil,
+            proxyEndpoint: .default,
+            showsLatencyInMenuBarPicker: false
+        )
+        let legacyFileURL = root
+            .appendingPathComponent("teleport", isDirectory: true)
+            .appendingPathComponent("state.json")
+        try JSONEncoder().encode(legacySnapshot).write(to: legacyFileURL, options: .atomic)
+
+        precondition(store.hasSavedSnapshot, "expected the legacy state file to count as a saved snapshot")
+        let migrated = store.load()
+        precondition(!migrated.showsLatencyInMenuBarPicker, "expected legacy settings to be returned during migration")
+        precondition(store.hasSavedSnapshot, "expected the migrated Keychain snapshot to exist")
+        precondition(!fileManager.fileExists(atPath: legacyFileURL.path), "expected plaintext state to be removed after migration")
+
+        let loadedAgain = store.load()
+        precondition(!loadedAgain.showsLatencyInMenuBarPicker, "expected the migrated Keychain snapshot to survive a second load")
     }
 
     // This is the regression the fix targets: once load() has flagged a Keychain read

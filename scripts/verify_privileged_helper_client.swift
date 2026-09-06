@@ -33,6 +33,31 @@ private final class ScriptedTransport: VPNHelperTransport, @unchecked Sendable {
     }
 }
 
+private final class NoopCreateDirectoryFileManager: FileManager {
+    override func createDirectory(
+        at url: URL,
+        withIntermediateDirectories createIntermediates: Bool,
+        attributes: [FileAttributeKey: Any]? = nil
+    ) throws {}
+}
+
+private final class RecoveryProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedSessionID: UUID?
+    private var storedInstallCount = 0
+
+    var sessionID: UUID? { lock.withLock { storedSessionID } }
+    var installCount: Int { lock.withLock { storedInstallCount } }
+
+    func record(sessionID: UUID) {
+        lock.withLock { storedSessionID = sessionID }
+    }
+
+    func recordInstall() {
+        lock.withLock { storedInstallCount += 1 }
+    }
+}
+
 private final class LostStopReplyProxy: NSObject, VPNHelperXPCProtocol, @unchecked Sendable {
     private let lock = NSLock()
     private let sessionID: UUID
@@ -144,6 +169,8 @@ private enum VerifyPrivilegedHelperClient {
         try await verifyFailedReconciliationIsCommandFailure()
         try await verifyUnavailableAndUnknownReconciliationAreIndeterminate()
         try await verifyStartCorrelationPersistenceOrderingAndFailureRetention()
+        try await verifyFailedRuntimeStartRollsBackMatchingSession()
+        try await verifyUnavailableRuntimeStopReinstallsAndRetries()
         try await verifyLostXPCStopReplyDoesNotReplayMutation()
         try await verifyRuntimeResolvesMissingSessionWithoutInventingIdentity()
         try await verifyInvalidStopResponsePreservesCachedState()
@@ -195,12 +222,14 @@ private enum VerifyPrivilegedHelperClient {
         precondition(status.success && status.version == "8" && status.phase == .idle)
         let diagnostics = try await client.readLog(logName: "xray-tun.log", maxBytes: Int.max)
         precondition(diagnostics.success && diagnostics.details == "diagnostic")
+        let config = try await client.readLog(logName: "xray-tun-config.json", maxBytes: Int.max)
+        precondition(config.success && config.payload.log == .config && config.details == "diagnostic")
         let processIdentifier = try await client.start(session: launch, paths: paths, sessionID: sessionID)
         precondition(processIdentifier == nil)
         try await client.stop(paths: paths, protectedHost: launch.protectedHost, outboundInterface: launch.outboundInterface, sessionID: sessionID)
 
-        precondition(transport.calls.map(\.0) == [.status, .readDiagnostics, .startSession, .stopSession])
-        precondition(transport.calls.map(\.2) == [3, 5, 20, 15])
+        precondition(transport.calls.map(\.0) == [.status, .readDiagnostics, .readDiagnostics, .startSession, .stopSession])
+        precondition(transport.calls.map(\.2) == [3, 5, 5, 20, 15])
         let requestIDs = try transport.calls.map { command, data, _ -> UUID in
             switch command {
             case .status:
@@ -435,6 +464,109 @@ private enum VerifyPrivilegedHelperClient {
         )
         precondition(pid == 42)
         precondition(successfulEvents == ["persist:nil", "start", "persist:42"])
+    }
+
+    private static func verifyFailedRuntimeStartRollsBackMatchingSession() async throws {
+        let paths = try temporaryRuntimePaths(named: "failed-start-rollback")
+        defer { removeTemporaryRuntimePaths(paths) }
+        let probe = RecoveryProbe()
+        let transport = ScriptedTransport { command, data, _, _ in
+            switch command {
+            case .startSession:
+                let request: VPNHelperRequestEnvelope<StartSessionRequest> = try VPNHelperCodec.decodeRequest(data)
+                let sessionID = request.sessionID!
+                probe.record(sessionID: sessionID)
+                return try VPNHelperCodec.encodeResponse(VPNHelperResponseEnvelope<StartSessionResponse>(
+                    revision: VPNHelperProtocol.revision,
+                    requestID: request.requestID,
+                    sessionID: sessionID,
+                    payload: nil,
+                    failure: VPNHelperProtocolFailure(
+                        code: .commandFailed,
+                        summary: "start failed",
+                        details: nil,
+                        retryDisposition: .never
+                    )
+                ))
+            case .stopSession:
+                let request: VPNHelperRequestEnvelope<StopSessionRequest> = try VPNHelperCodec.decodeRequest(data)
+                precondition(request.sessionID == probe.sessionID)
+                return try response(
+                    requestID: request.requestID,
+                    sessionID: request.sessionID,
+                    payload: StopSessionResponse(phase: .idle, summary: nil, details: nil)
+                )
+            case .readDiagnostics:
+                let request: VPNHelperRequestEnvelope<ReadDiagnosticsRequest> = try VPNHelperCodec.decodeRequest(data)
+                precondition(request.payload.log == .control)
+                return try response(
+                    requestID: request.requestID,
+                    sessionID: nil,
+                    payload: DiagnosticsResponse(log: .control, text: "specific control failure", metadata: "test", wasTruncated: false)
+                )
+            default:
+                preconditionFailure("Unexpected command: \(command)")
+            }
+        }
+        let manager = PrivilegedXrayRuntimeManager(
+            fileManager: NoopCreateDirectoryFileManager(),
+            helperClient: PrivilegedHelperClient(transport: transport),
+            paths: paths,
+            runtimeURLProvider: { URL(fileURLWithPath: "/tmp/test-xray") },
+            assetDirectoryURLProvider: { URL(fileURLWithPath: "/tmp/test-assets", isDirectory: true) },
+            ensureHelperInstalled: { _ in }
+        )
+
+        do {
+            try await manager.start(session: launchSession())
+            preconditionFailure("Expected start failure")
+        } catch let XrayTunRuntimeError.startFailed(_, details) {
+            precondition(details.contains("specific control failure"))
+        }
+
+        precondition(transport.calls.map(\.0) == [.startSession, .stopSession, .readDiagnostics])
+        precondition(!FileManager.default.fileExists(atPath: paths.sessionStateFileURL.path))
+    }
+
+    private static func verifyUnavailableRuntimeStopReinstallsAndRetries() async throws {
+        let paths = try temporaryRuntimePaths(named: "unavailable-stop-recovery")
+        defer { removeTemporaryRuntimePaths(paths) }
+        let sessionID = UUID()
+        let state = XrayTunSessionState(
+            sessionID: sessionID,
+            pid: nil,
+            protectedHost: "example.com",
+            tunnelInterfaceName: "utun9",
+            outboundInterface: "en0",
+            configPath: paths.configFileURL.path,
+            startedAt: Date()
+        )
+        try JSONEncoder().encode(state).write(to: paths.sessionStateFileURL, options: .atomic)
+
+        let probe = RecoveryProbe()
+        let transport = ScriptedTransport { command, data, _, index in
+            precondition(command == .stopSession)
+            let request: VPNHelperRequestEnvelope<StopSessionRequest> = try VPNHelperCodec.decodeRequest(data)
+            precondition(request.sessionID == sessionID)
+            if index == 0 { throw VPNHelperTransportError.unavailable("not running") }
+            return try response(
+                requestID: request.requestID,
+                sessionID: sessionID,
+                payload: StopSessionResponse(phase: .idle, summary: nil, details: nil)
+            )
+        }
+        let manager = PrivilegedXrayRuntimeManager(
+            helperClient: PrivilegedHelperClient(transport: transport),
+            paths: paths,
+            runtimeURLProvider: { URL(fileURLWithPath: "/tmp/test-xray") },
+            ensureHelperInstalled: { _ in probe.recordInstall() }
+        )
+
+        try await manager.stop()
+
+        precondition(probe.installCount == 1)
+        precondition(transport.calls.map(\.0) == [.stopSession, .stopSession])
+        precondition(!FileManager.default.fileExists(atPath: paths.sessionStateFileURL.path))
     }
 
     private static func verifyLostXPCStopReplyDoesNotReplayMutation() async throws {

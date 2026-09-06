@@ -1,5 +1,18 @@
 import Foundation
 
+private struct PresentableFailure: VPNHelperClientPresentableError {
+    let clientSummary: String
+}
+
+private struct PresentableFailingExecutor: HelperCommandExecuting, Sendable {
+    let summary: String
+
+    func status(request: StatusRequest) throws -> StatusResponse { throw PresentableFailure(clientSummary: summary) }
+    func start(request: StartSessionRequest, sessionID: UUID) throws -> StartSessionResponse { throw PresentableFailure(clientSummary: summary) }
+    func stop(request: StopSessionRequest, sessionID: UUID) throws -> StopSessionResponse { throw PresentableFailure(clientSummary: summary) }
+    func readDiagnostics(request: ReadDiagnosticsRequest) throws -> DiagnosticsResponse { throw PresentableFailure(clientSummary: summary) }
+}
+
 private struct SecretFailure: LocalizedError, Sendable {
     let secret: String
     var errorDescription: String? { "Shell failed with root output: \(secret)" }
@@ -25,20 +38,27 @@ private struct SecretFailingExecutor: HelperCommandExecuting, Sendable {
     }
 }
 
+private enum DispatchTestError: Error {
+    case failedStart
+}
+
 private final class RecordingExecutor: HelperCommandExecuting, @unchecked Sendable {
     private let lock = NSLock()
     private var recordedCommands: [VPNHelperCommand] = []
     private var statusPhase: VPNHelperSessionPhase = .idle
+    private var startCount = 0
     private let blockStart: Bool
     private let blockStop: Bool
+    private let failedStartNumber: Int?
     let startEntered = DispatchSemaphore(value: 0)
     let releaseStart = DispatchSemaphore(value: 0)
     let stopEntered = DispatchSemaphore(value: 0)
     let releaseStop = DispatchSemaphore(value: 0)
 
-    init(blockStart: Bool = false, blockStop: Bool = false) {
+    init(blockStart: Bool = false, blockStop: Bool = false, failedStartNumber: Int? = nil) {
         self.blockStart = blockStart
         self.blockStop = blockStop
+        self.failedStartNumber = failedStartNumber
     }
 
     var commands: [VPNHelperCommand] {
@@ -58,12 +78,15 @@ private final class RecordingExecutor: HelperCommandExecuting, @unchecked Sendab
     func start(request: StartSessionRequest, sessionID: UUID) throws -> StartSessionResponse {
         lock.lock()
         recordedCommands.append(.startSession)
-        statusPhase = .running
+        startCount += 1
+        let shouldFail = startCount == failedStartNumber
+        if !shouldFail { statusPhase = .running }
         lock.unlock()
         if blockStart {
             startEntered.signal()
             precondition(releaseStart.wait(timeout: .now() + 5) == .success)
         }
+        if shouldFail { throw DispatchTestError.failedStart }
         return StartSessionResponse(phase: .running, summary: nil, details: nil)
     }
 
@@ -102,6 +125,8 @@ private enum VerifyHelperCommandDispatch {
         try await verifyStatusAdmittedDuringStartUsesQueuedSessionCorrelation()
         try await verifyStatusAdmittedDuringStopUsesQueuedSessionCorrelation()
         try await verifyMismatchedStopDoesNotExecute()
+        try await verifyFailedStartAdvancesStopCorrelation()
+        try await verifyPresentableCommandFailurePreservesSafeSummary()
         try await verifyCommandFailureDoesNotExposeSecrets()
         try await verifyCompletedDuplicateReturnsExactBytesOnce()
         try await verifyInProgressDuplicateIsDeterministic()
@@ -245,7 +270,7 @@ private enum VerifyHelperCommandDispatch {
         let idle: VPNHelperResponseEnvelope<StatusResponse> = try VPNHelperCodec.decodeResponse(
             await dispatcher.dispatch(command: .status, requestData: try makeStatusData(requestID: UUID()))
         )
-        precondition(idle.sessionID == sessionID)
+        precondition(idle.sessionID == nil)
         precondition(idle.payload?.phase == .idle)
     }
 
@@ -268,9 +293,9 @@ private enum VerifyHelperCommandDispatch {
         let startResponse: VPNHelperResponseEnvelope<StartSessionResponse> = try await VPNHelperCodec.decodeResponse(startResponseData)
         let statusResponse: VPNHelperResponseEnvelope<StatusResponse> = try await VPNHelperCodec.decodeResponse(statusResponseData)
         precondition(startResponse.payload?.phase == .running)
-        precondition(statusResponse.payload?.phase == .running)
+        precondition(statusResponse.payload?.phase == .starting)
         precondition(statusResponse.sessionID == sessionID)
-        precondition(executor.commands == [.startSession, .status])
+        precondition(executor.commands == [.startSession])
     }
 
     private static func verifyStatusAdmittedDuringStopUsesQueuedSessionCorrelation() async throws {
@@ -292,9 +317,9 @@ private enum VerifyHelperCommandDispatch {
         let stopResponse: VPNHelperResponseEnvelope<StopSessionResponse> = try await VPNHelperCodec.decodeResponse(stopResponseData)
         let statusResponse: VPNHelperResponseEnvelope<StatusResponse> = try await VPNHelperCodec.decodeResponse(statusResponseData)
         precondition(stopResponse.payload?.phase == .idle)
-        precondition(statusResponse.payload?.phase == .idle)
+        precondition(statusResponse.payload?.phase == .stopping)
         precondition(statusResponse.sessionID == sessionID)
-        precondition(executor.commands == [.stopSession, .status])
+        precondition(executor.commands == [.stopSession])
     }
 
     private static func verifyMismatchedStopDoesNotExecute() async throws {
@@ -322,6 +347,55 @@ private enum VerifyHelperCommandDispatch {
         )
         precondition(status.sessionID == activeSessionID)
         precondition(status.payload?.phase == .running)
+    }
+
+    private static func verifyFailedStartAdvancesStopCorrelation() async throws {
+        let executor = RecordingExecutor(failedStartNumber: 2)
+        let dispatcher = HelperCommandDispatcher(executor: executor)
+        let previousSessionID = UUID()
+        let failedSessionID = UUID()
+
+        _ = await dispatcher.dispatch(
+            command: .startSession,
+            requestData: try makeStartData(requestID: UUID(), sessionID: previousSessionID, protectedHost: "example.com")
+        )
+        _ = await dispatcher.dispatch(
+            command: .stopSession,
+            requestData: try makeStopData(requestID: UUID(), sessionID: previousSessionID)
+        )
+
+        let failedStart = await dispatcher.dispatch(
+            command: .startSession,
+            requestData: try makeStartData(requestID: UUID(), sessionID: failedSessionID, protectedHost: "example.com")
+        )
+        try assertFailure(failedStart, as: StartSessionResponse.self, code: .commandFailed)
+
+        let status: VPNHelperResponseEnvelope<StatusResponse> = try VPNHelperCodec.decodeResponse(
+            await dispatcher.dispatch(command: .status, requestData: try makeStatusData(requestID: UUID()))
+        )
+        precondition(status.sessionID == failedSessionID)
+        precondition(status.payload?.phase == .failed)
+
+        let stop = await dispatcher.dispatch(
+            command: .stopSession,
+            requestData: try makeStopData(requestID: UUID(), sessionID: failedSessionID)
+        )
+        let stopResponse: VPNHelperResponseEnvelope<StopSessionResponse> = try VPNHelperCodec.decodeResponse(stop)
+        precondition(stopResponse.payload?.phase == .idle)
+        precondition(executor.commands == [.startSession, .stopSession, .startSession, .stopSession])
+    }
+
+    private static func verifyPresentableCommandFailurePreservesSafeSummary() async throws {
+        let summary = "Installed Xray runtime is missing"
+        let dispatcher = HelperCommandDispatcher(executor: PresentableFailingExecutor(summary: summary))
+        let responseData = await dispatcher.dispatch(
+            command: .status,
+            requestData: try makeStatusData(requestID: UUID())
+        )
+        let response: VPNHelperResponseEnvelope<StatusResponse> = try VPNHelperCodec.decodeResponse(responseData)
+        precondition(response.failure?.code == .commandFailed)
+        precondition(response.failure?.summary == summary)
+        precondition(response.failure?.details == nil)
     }
 
     private static func verifyCommandFailureDoesNotExposeSecrets() async throws {
@@ -398,6 +472,7 @@ private enum VerifyHelperCommandDispatch {
             sessionID: sessionID,
             payload: StartSessionRequest(
                 stateDirectoryPath: "/Users/test/Library/Application Support/teleport",
+                assetDirectoryPath: "/Users/test/Library/Application Support/teleport/geodata-resolved",
                 configData: Data("{}".utf8),
                 protectedHost: protectedHost,
                 tunnelInterfaceName: "utun9",

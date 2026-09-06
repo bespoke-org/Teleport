@@ -1,6 +1,6 @@
 import Foundation
 
-enum GeodataKind: String, CaseIterable {
+nonisolated enum GeodataKind: String, CaseIterable {
     case geosite
     case geoip
 
@@ -21,7 +21,6 @@ enum GeodataUpdateError: LocalizedError {
     case invalidResponse
     case emptyPayload
     case tooSmall
-    case tooLarge
     case unreadablePayload(GeodataKind)
     case bundledDefaultMissing
 
@@ -39,8 +38,6 @@ enum GeodataUpdateError: LocalizedError {
             return "The downloaded file was empty."
         case .tooSmall:
             return "The downloaded file is too small to be valid geodata. Check the URL."
-        case .tooLarge:
-            return "The download exceeded the size limit for geodata. Check the URL."
         case let .unreadablePayload(kind):
             return "The downloaded file is not readable \(kind.displayName) data. Check that the URL points at \(kind.fileName)."
         case .bundledDefaultMissing:
@@ -54,7 +51,15 @@ enum GeodataUpdateError: LocalizedError {
 /// "resolved" directory always contains exactly one usable file per kind
 /// (custom override if present, otherwise the bundled default) and is what
 /// gets delivered to the privileged helper for VPN mode.
-struct GeodataUpdateService {
+nonisolated struct GeodataUpdateService {
+    private struct ResolvedAssetStamp: Codable, Equatable {
+        let sourcePath: String
+        let byteCount: Int
+        let modificationTime: TimeInterval
+    }
+
+    private static let resolvedManifestFileName = ".source-manifest.json"
+
     /// A floor well below real geodata size, kept as a cheap first rejection; the
     /// actual check is `GeodataFormat.validate`.
     ///
@@ -65,10 +70,6 @@ struct GeodataUpdateService {
     /// that either, since geodata legitimately changes and the URL is user-supplied,
     /// so the source itself remains the thing being trusted.
     private static let minimumPlausibleByteCount = 4096
-
-    /// Real geodata is a few megabytes; this ceiling only stops a wrong or hostile
-    /// URL from making the app read an unbounded file into memory.
-    private static let maximumPlausibleByteCount = 64 * 1024 * 1024
 
     private let fileManager: FileManager
 
@@ -114,10 +115,14 @@ struct GeodataUpdateService {
     @discardableResult
     func store(_ data: Data, for kind: GeodataKind) throws -> Bool {
         try fileManager.createDirectory(at: customDirectoryURL, withIntermediateDirectories: true)
+        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: customDirectoryURL.path)
         let destination = customFileURL(for: kind)
-        let changed = (try? Data(contentsOf: destination)) != data
+        if (try? Data(contentsOf: destination)) == data {
+            return false
+        }
         try data.write(to: destination, options: .atomic)
-        return changed
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
+        return true
     }
 
     func removeCustomGeodata(for kind: GeodataKind) throws {
@@ -132,29 +137,56 @@ struct GeodataUpdateService {
     /// this is cheap to call on every connect.
     func resolvedAssetDirectoryURL(bundle: Bundle = .main) throws -> URL {
         let resolvedDirectoryURL = applicationSupportDirectoryURL.appendingPathComponent("geodata-resolved", isDirectory: true)
+        let manifestURL = resolvedDirectoryURL.appendingPathComponent(Self.resolvedManifestFileName)
         try fileManager.createDirectory(at: resolvedDirectoryURL, withIntermediateDirectories: true)
+        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: resolvedDirectoryURL.path)
+
+        var manifest = (try? Data(contentsOf: manifestURL))
+            .flatMap { try? JSONDecoder().decode([String: ResolvedAssetStamp].self, from: $0) } ?? [:]
+        var manifestChanged = false
 
         for kind in GeodataKind.allCases {
             let sourceURL = try resolvedSourceURL(for: kind, bundle: bundle)
             let destinationURL = resolvedDirectoryURL.appendingPathComponent(kind.fileName)
+            let sourceStamp = try resolvedAssetStamp(for: sourceURL, kind: kind)
 
             if fileManager.fileExists(atPath: destinationURL.path),
-               fileManager.contentsEqual(atPath: sourceURL.path, andPath: destinationURL.path) {
+               manifest[kind.rawValue] == sourceStamp {
                 continue
             }
             // Custom files live in a user-writable directory and are only checked at
             // download time, so re-validate whatever actually changed before it is
             // copied into the directory the privileged helper is pointed at. Bundled
-            // defaults are covered by the app signature and skipped, which also keeps
-            // the common (unchanged) path free of any parsing.
+            // defaults are covered by the app signature and skipped.
             if sourceURL == customFileURL(for: kind) {
                 try GeodataFormat.validate(Data(contentsOf: sourceURL), kind: kind)
             }
             try? fileManager.removeItem(at: destinationURL)
             try fileManager.copyItem(at: sourceURL, to: destinationURL)
+            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destinationURL.path)
+            manifest[kind.rawValue] = sourceStamp
+            manifestChanged = true
         }
 
+        if manifestChanged || !fileManager.fileExists(atPath: manifestURL.path) {
+            let data = try JSONEncoder().encode(manifest)
+            try data.write(to: manifestURL, options: .atomic)
+            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: manifestURL.path)
+        }
         return resolvedDirectoryURL
+    }
+
+    private func resolvedAssetStamp(for sourceURL: URL, kind: GeodataKind) throws -> ResolvedAssetStamp {
+        let values = try sourceURL.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        guard let byteCount = values.fileSize,
+              let modificationDate = values.contentModificationDate else {
+            throw GeodataUpdateError.unreadablePayload(kind)
+        }
+        return ResolvedAssetStamp(
+            sourcePath: sourceURL.standardizedFileURL.path,
+            byteCount: byteCount,
+            modificationTime: modificationDate.timeIntervalSince1970
+        )
     }
 
     private func resolvedSourceURL(for kind: GeodataKind, bundle: Bundle) throws -> URL {
@@ -180,9 +212,9 @@ struct GeodataUpdateService {
         let session = URLSession(configuration: .ephemeral)
         defer { session.finishTasksAndInvalidate() }
 
-        // `download(for:)` streams to a temporary file, so the size can be rejected
-        // before anything is read into memory. `data(for:)` would have to buffer the
-        // whole response first, which is precisely what the ceiling exists to stop.
+        // `download(for:)` streams the network response to a temporary file instead
+        // of buffering it during transfer. The completed payload is then loaded for
+        // protobuf validation without imposing an arbitrary dataset-size ceiling.
         let temporaryURL: URL
         let response: URLResponse
         do {
@@ -202,14 +234,6 @@ struct GeodataUpdateService {
 
         guard (200 ... 299).contains(httpResponse.statusCode) else {
             throw GeodataUpdateError.networkFailure("Download failed with status \(httpResponse.statusCode)")
-        }
-
-        let attributes = try? fileManager.attributesOfItem(atPath: temporaryURL.path)
-        guard let byteCount = attributes?[.size] as? Int else {
-            throw GeodataUpdateError.invalidResponse
-        }
-        guard byteCount <= Self.maximumPlausibleByteCount else {
-            throw GeodataUpdateError.tooLarge
         }
 
         return try Data(contentsOf: temporaryURL)

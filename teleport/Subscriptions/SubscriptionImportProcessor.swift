@@ -1,6 +1,6 @@
 import Foundation
 
-struct SubscriptionImportProcessor {
+nonisolated struct SubscriptionImportProcessor {
     static func importEntries(
         links: [String],
         parser: ConnectionLinkParser,

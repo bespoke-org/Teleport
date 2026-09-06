@@ -33,6 +33,9 @@ struct VerifyCore {
         precondition(content.contains("\"protocol\" : \"vless\""))
         precondition(content.contains("example.com"))
         precondition(content.contains("wsSettings"))
+        let attributes = try FileManager.default.attributesOfItem(atPath: configURL.path)
+        let permissions = (attributes[.posixPermissions] as? NSNumber)?.intValue ?? -1
+        precondition(permissions & 0o777 == 0o600, "expected the credential-bearing Xray config to be user-only")
 
         let realityLink = "vless://123e4567-e89b-12d3-a456-426614174000@example.com:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.microsoft.com&fp=chrome&pbk=abc123abc123abc123abc123abc123abc123abc123&sid=a1b2c3d4&type=tcp#Reality"
         let realityConfiguration = try parser.parse(realityLink)

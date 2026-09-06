@@ -22,10 +22,6 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
 
     func restorePreviousState() throws {}
 
-    // TODO(gpt-5.6-sol): Add an explicit rollback/reconciliation path around the
-    // entire VPN start transaction. A thrown IPC error is not proof that root-side
-    // start failed, yet this backend currently reports failure without attempting
-    // to adopt or stop a possibly active helper session.
     func start(_ request: ConnectionRequest) async throws {
         // Route inspection and `networksetup` are blocking process calls; only the
         // helper handshake below is genuinely asynchronous.
@@ -34,17 +30,22 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
                 throw XrayTunConnectionError.existingVPNDetected(existingVPNInterface)
             }
 
-            try systemProxyService.disableProxy()
-
             let configuration = request.configuration
+            let resolvedAddresses = routeInspector.resolvedAddresses(for: configuration.host)
+            guard !resolvedAddresses.isEmpty else {
+                throw XrayTunConnectionError.proxyAddressResolutionFailed(configuration.host)
+            }
+            guard let protectedRoute = resolvedAddresses.lazy.compactMap({ address -> (String, String)? in
+                guard let interface = self.routeInspector.outboundInterface(for: address) else { return nil }
+                return (address, interface)
+            }).first else {
+                throw XrayTunConnectionError.proxyRouteUnavailable(configuration.host)
+            }
+            let (protectedAddress, outboundInterface) = protectedRoute
 
-            // Prefer the interface used to reach the proxy server; fall back to the
-            // current default-route interface so split-tunnel "direct" traffic can be
-            // bound to a real uplink on any host/network, not just when the per-host
-            // lookup happens to succeed.
-            let outboundInterface = routeInspector.outboundInterface(for: configuration.host)
-                ?? routeInspector.defaultRouteInterface()
-                ?? "auto"
+            // Pin Xray to the same reachable numeric endpoint that receives the
+            // protected physical route. This avoids a second DNS answer selecting a
+            // different address after the TUN defaults have been installed.
             let directSendThrough = routeInspector.ipv4Address(for: outboundInterface)
             let tunnelInterfaceName = routeInspector.nextAvailableTunnelInterfaceName()
             let configData = try XrayConfigurationWriter(proxyEndpoint: request.localProxy).tunnelConfigData(
@@ -52,24 +53,34 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
                 interfaceName: tunnelInterfaceName,
                 outboundInterface: outboundInterface,
                 directSendThrough: directSendThrough,
+                proxyServerAddress: protectedAddress,
                 splitTunnelRules: request.splitTunnelPolicy.rules,
                 defaultAction: request.splitTunnelPolicy.defaultAction
             )
+            try systemProxyService.suspendProxyForVPN()
             return XrayTunLaunchSession(
                 configData: configData,
-                protectedHost: configuration.host,
+                protectedHost: protectedAddress,
                 tunnelInterfaceName: tunnelInterfaceName,
                 outboundInterface: outboundInterface
             )
         }
 
-        try await runtimeManager.start(session: session)
-        // The helper's `start` response already follows TUN and route readiness;
-        // this final check only consults the app's cached PID and is not an
-        // authoritative helper health check.
-        guard await runtimeManager.waitUntilRunning() else {
-            let detail = await runtimeManager.capturedLogOutput()?.trimmingCharacters(in: .whitespacesAndNewlines)
-            throw XrayRuntimeManager.RuntimeError.startupTimedOut(detail)
+        do {
+            try await runtimeManager.start(session: session)
+            // The helper's `start` response already follows TUN and route readiness;
+            // this final check only consults the app's cached PID and is not an
+            // authoritative helper health check.
+            guard await runtimeManager.waitUntilRunning() else {
+                let detail = await runtimeManager.capturedLogOutput()?.trimmingCharacters(in: .whitespacesAndNewlines)
+                throw XrayRuntimeManager.RuntimeError.startupTimedOut(detail)
+            }
+        } catch {
+            try? await runtimeManager.stop()
+            try? await BlockingWork.run { [systemProxyService] in
+                try systemProxyService.restoreSavedProxyState()
+            }
+            throw error
         }
     }
 
@@ -80,16 +91,25 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
 
     func stop() async throws {
         try await runtimeManager.stop()
+        try await BlockingWork.run { [systemProxyService] in
+            try systemProxyService.restoreSavedProxyState()
+        }
     }
 }
 
 enum XrayTunConnectionError: LocalizedError {
     case existingVPNDetected(String)
+    case proxyAddressResolutionFailed(String)
+    case proxyRouteUnavailable(String)
 
     var errorDescription: String? {
         switch self {
         case let .existingVPNDetected(interface):
             return "Another VPN appears to be active on \(interface). Disconnect it before using Teleport VPN mode, or use System Proxy mode."
+        case let .proxyAddressResolutionFailed(host):
+            return "Teleport could not resolve the proxy server \(host) before installing VPN routes. Check the network and try again."
+        case let .proxyRouteUnavailable(host):
+            return "Teleport could not find a reachable physical route to the proxy server \(host). Reconnect to the network and try again."
         }
     }
 }

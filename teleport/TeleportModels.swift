@@ -72,7 +72,7 @@ enum ConnectionHealthLatencyKind: String, Codable {
     case proxyRequest
 }
 
-struct ConnectionHealthCheck: Codable, Equatable {
+nonisolated struct ConnectionHealthCheck: Codable, Equatable {
     var state: ConnectionHealthState
     var checkedAt: Date?
     var latencyMilliseconds: Int?
@@ -100,7 +100,7 @@ struct ConnectionHealthCheck: Codable, Equatable {
 
 }
 
-struct ProxyEndpoint: Codable, Equatable {
+nonisolated struct ProxyEndpoint: Codable, Equatable {
     let host: String
     let httpPort: Int
     let socksPort: Int
@@ -108,7 +108,7 @@ struct ProxyEndpoint: Codable, Equatable {
     static let `default` = ProxyEndpoint(host: "127.0.0.1", httpPort: 8080, socksPort: 1080)
 }
 
-enum ConnectionProtocolType: String, Codable, CaseIterable {
+nonisolated enum ConnectionProtocolType: String, Codable, CaseIterable {
     case vless
     case trojan
 
@@ -117,7 +117,7 @@ enum ConnectionProtocolType: String, Codable, CaseIterable {
     }
 }
 
-enum ConnectionTransport: String, Codable, CaseIterable {
+nonisolated enum ConnectionTransport: String, Codable, CaseIterable {
     case tcp
     case ws
     case grpc
@@ -125,13 +125,13 @@ enum ConnectionTransport: String, Codable, CaseIterable {
     case raw
 }
 
-enum ConnectionSecurity: String, Codable, CaseIterable {
+nonisolated enum ConnectionSecurity: String, Codable, CaseIterable {
     case none
     case tls
     case reality
 }
 
-struct ConnectionConfiguration: Codable, Equatable {
+nonisolated struct ConnectionConfiguration: Codable, Equatable {
     let rawLink: String
     let protocolType: ConnectionProtocolType
     let host: String
@@ -375,12 +375,12 @@ private extension String {
     }
 }
 
-struct ConnectionSourceMetadata: Codable, Equatable {
+nonisolated struct ConnectionSourceMetadata: Codable, Equatable {
     let subscriptionSourceID: UUID
     let subscriptionEntryID: String
 }
 
-struct SavedConnection: Codable, Equatable, Identifiable {
+nonisolated struct SavedConnection: Codable, Equatable, Identifiable {
     let id: UUID
     let configuration: ConnectionConfiguration
     let savedAt: Date
@@ -423,7 +423,7 @@ struct SavedConnection: Codable, Equatable, Identifiable {
     }
 }
 
-struct SubscriptionSource: Codable, Equatable, Identifiable {
+nonisolated struct SubscriptionSource: Codable, Equatable, Identifiable {
     let id: UUID
     var urlString: String
     var title: String

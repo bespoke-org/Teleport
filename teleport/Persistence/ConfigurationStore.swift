@@ -2,6 +2,8 @@ import Foundation
 import Security
 
 final class ConfigurationStore {
+    private let fileManager: FileManager
+    private let legacyFileURL: URL
     private let keychainService: String
     private let keychainAccount: String
     private let encoder = JSONEncoder()
@@ -18,10 +20,12 @@ final class ConfigurationStore {
         keychainService: String = ConfigurationStore.defaultKeychainService,
         keychainAccount: String = ConfigurationStore.defaultKeychainAccount
     ) {
+        self.fileManager = fileManager
         self.keychainService = keychainService
         self.keychainAccount = keychainAccount
         let baseURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let directoryURL = baseURL.appendingPathComponent("teleport", isDirectory: true)
+        legacyFileURL = directoryURL.appendingPathComponent("state.json")
         try? fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
         try? fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directoryURL.path)
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -45,7 +49,7 @@ final class ConfigurationStore {
     }
 
     var hasSavedSnapshot: Bool {
-        keychainSnapshotData() != nil
+        keychainSnapshotData() != nil || fileManager.fileExists(atPath: legacyFileURL.path)
     }
 
     func load() -> AppSnapshot {
@@ -61,6 +65,16 @@ final class ConfigurationStore {
         case let .failed(status):
             lastLoadError = ConfigurationStoreError.keychainReadFailed(status)
             return AppSnapshot(savedConnections: [], subscriptionSources: [], selectedConnectionID: nil, proxyEndpoint: .default)
+        }
+
+        if let data = try? Data(contentsOf: legacyFileURL),
+           let snapshot = decodeSnapshot(from: data) {
+            // Direct upgrades from v0.1.0 still have their only snapshot here.
+            // Delete the plaintext copy only after the Keychain migration succeeds.
+            if (try? save(snapshot)) != nil {
+                try? fileManager.removeItem(at: legacyFileURL)
+            }
+            return snapshot
         }
 
         return AppSnapshot(savedConnections: [], subscriptionSources: [], selectedConnectionID: nil, proxyEndpoint: .default)

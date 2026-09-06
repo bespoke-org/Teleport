@@ -1,5 +1,9 @@
 import Foundation
 
+nonisolated protocol VPNHelperClientPresentableError: Error, Sendable {
+    var clientSummary: String { get }
+}
+
 nonisolated enum VPNHelperFailureCode: String, Codable, Sendable {
     case incompatibleService
     case malformedPayload
@@ -48,6 +52,11 @@ extension StartSessionRequest: VPNHelperPayloadValidating {
 
     fileprivate func validate() throws {
         try validateStateDirectoryPath(stateDirectoryPath)
+        try validateNonEmpty(assetDirectoryPath, field: "assetDirectoryPath")
+        guard assetDirectoryPath.hasPrefix("/"),
+              assetDirectoryPath == URL(fileURLWithPath: assetDirectoryPath).standardizedFileURL.path else {
+            throw protocolFailure(.malformedPayload, "The asset directory path is not a normalized absolute path")
+        }
         guard !configData.isEmpty else {
             throw protocolFailure(.malformedPayload, "The Xray configuration is empty")
         }

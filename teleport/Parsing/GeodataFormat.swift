@@ -76,7 +76,7 @@ nonisolated enum GeodataFormat {
         while let field = try reader.nextField() {
             switch (field.number, field.wireType) {
             case (1, 0):
-                type = Int(try reader.readVarint())
+                type = try reader.readIntVarint()
             case (2, 2):
                 value = try reader.readString()
             case (3, 2):
@@ -148,7 +148,7 @@ nonisolated enum GeodataFormat {
             case (1, 2):
                 address = [UInt8](try reader.readLengthDelimited())
             case (2, 0):
-                prefixLength = Int(try reader.readVarint())
+                prefixLength = try reader.readIntVarint()
             default:
                 try reader.skip(field)
             }
@@ -158,7 +158,7 @@ nonisolated enum GeodataFormat {
     }
 }
 
-private struct ProtobufReader {
+nonisolated private struct ProtobufReader {
     struct Field {
         let number: Int
         let wireType: Int
@@ -174,7 +174,10 @@ private struct ProtobufReader {
     mutating func nextField() throws -> Field? {
         guard offset < bytes.count else { return nil }
         let key = try readVarint()
-        return Field(number: Int(key >> 3), wireType: Int(key & 0x7))
+        guard let fieldNumber = Int(exactly: key >> 3) else {
+            throw ProtobufError.malformed
+        }
+        return Field(number: fieldNumber, wireType: Int(key & 0x7))
     }
 
     mutating func readVarint() throws -> UInt64 {
@@ -190,9 +193,17 @@ private struct ProtobufReader {
         throw ProtobufError.malformed
     }
 
+    mutating func readIntVarint() throws -> Int {
+        let value = try readVarint()
+        guard let result = Int(exactly: value) else {
+            throw ProtobufError.malformed
+        }
+        return result
+    }
+
     mutating func readLengthDelimited() throws -> Data {
-        let length = Int(try readVarint())
-        guard length >= 0, offset + length <= bytes.count else { throw ProtobufError.malformed }
+        let length = try readIntVarint()
+        guard length <= bytes.count - offset else { throw ProtobufError.malformed }
         let start = offset
         offset += length
         return Data(bytes[start ..< offset])
@@ -221,7 +232,7 @@ private struct ProtobufReader {
     }
 
     private mutating func advance(_ count: Int) throws {
-        guard count >= 0, offset + count <= bytes.count else { throw ProtobufError.malformed }
+        guard count >= 0, count <= bytes.count - offset else { throw ProtobufError.malformed }
         offset += count
     }
 }

@@ -37,6 +37,7 @@ nonisolated struct StatusRequest: Codable, Sendable, Equatable {}
 
 nonisolated struct StartSessionRequest: Codable, Sendable, Equatable {
     let stateDirectoryPath: String
+    let assetDirectoryPath: String
     let configData: Data
     let protectedHost: String
     let tunnelInterfaceName: String
@@ -50,6 +51,7 @@ nonisolated struct StopSessionRequest: Codable, Sendable, Equatable {
 }
 
 nonisolated enum VPNHelperLog: String, Codable, Sendable {
+    case config
     case xray
     case control
 }
