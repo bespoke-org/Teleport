@@ -28,6 +28,7 @@ struct VerifySplitTunneling {
         try testHelperRoutesIPv6AndDoesNotBypassDNS()
         try testGeneratedHelperScriptsHaveValidShellSyntax()
         testProxyAddressResolutionIncludesIPv4AndIPv6()
+        testInterfaceInventoryReadsKernelFacts()
         try testExistingVPNDetectionCoversSplitDefaultsAndIPv6()
         try testTunnelSniffingIncludesQUIC()
         try testTunnelConfigExposesLocalSocksAndHTTPPorts()
@@ -524,6 +525,17 @@ struct VerifySplitTunneling {
             XrayTunRouteInspector.resolvedAddresses(in: output) == ["2001:db8::7", "203.0.113.7"],
             "expected both address families with duplicate DNS answers removed"
         )
+    }
+
+    private static func testInterfaceInventoryReadsKernelFacts() {
+        let names = NetworkInterfaceInventory.interfaceNames()
+        precondition(names.contains("lo0"), "getifaddrs must list the loopback interface")
+        precondition(NetworkInterfaceInventory.ipv4Address(of: "lo0") == "127.0.0.1")
+        precondition(!NetworkInterfaceInventory.hasGlobalIPv6Address("lo0"), "::1 is not a global address")
+        precondition(NetworkInterfaceInventory.isGlobalUnicastIPv6("2606:4700:4700::1111"))
+        precondition(!NetworkInterfaceInventory.isGlobalUnicastIPv6("fe80::1"))
+        precondition(!NetworkInterfaceInventory.isGlobalUnicastIPv6("fd00::1"), "unique-local is not globally routable")
+        precondition(!NetworkInterfaceInventory.isGlobalUnicastIPv6("not-an-address"))
     }
 
     private static func testExistingVPNDetectionCoversSplitDefaultsAndIPv6() throws {

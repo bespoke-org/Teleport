@@ -78,7 +78,11 @@ nonisolated struct XrayTunRouteInspector: Sendable {
     }
 
     func routeInterface(for host: String) -> String? {
-        guard let output = Self.commandOutput(executable: "/sbin/route", arguments: ["-n", "get", host]) else {
+        // `route get` does not infer the family from an IPv6 literal; without
+        // `-inet6` it reports "bad address" and the lookup silently fails.
+        var ipv6 = in6_addr()
+        let familyArguments = host.withCString({ inet_pton(AF_INET6, $0, &ipv6) }) == 1 ? ["-inet6"] : []
+        guard let output = Self.commandOutput(executable: "/sbin/route", arguments: ["-n", "get"] + familyArguments + [host]) else {
             return nil
         }
         return output
@@ -92,31 +96,12 @@ nonisolated struct XrayTunRouteInspector: Sendable {
 
     func ipv4Address(for interfaceName: String) -> String? {
         guard !interfaceName.isEmpty, interfaceName != "auto" else { return nil }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/sbin/ifconfig")
-        process.arguments = [interfaceName]
+        return NetworkInterfaceInventory.ipv4Address(of: interfaceName)
+    }
 
-        let outputPipe = Pipe()
-        process.standardOutput = outputPipe
-        process.standardError = Pipe()
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            return nil
-        }
-
-        guard process.terminationStatus == 0 else { return nil }
-        let output = String(decoding: outputPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        return output
-            .split(separator: "\n")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .first { $0.hasPrefix("inet ") }?
-            .split(separator: " ")
-            .dropFirst()
-            .first
-            .map(String.init)
+    func hasGlobalIPv6(on interfaceName: String) -> Bool {
+        guard !interfaceName.isEmpty, interfaceName != "auto" else { return false }
+        return NetworkInterfaceInventory.hasGlobalIPv6Address(interfaceName)
     }
 
     // TODO(gpt-5.6-sol, needs verification): This is a check-then-use race: the
@@ -134,15 +119,10 @@ nonisolated struct XrayTunRouteInspector: Sendable {
     }
 
     private func existingTunnelInterfaceIndexes() -> Set<Int> {
-        guard let output = Self.commandOutput(executable: "/sbin/ifconfig", arguments: ["-l"]) else {
-            return []
-        }
-        return Set(output
-            .split(separator: " ")
-            .compactMap { name -> Int? in
-                guard name.hasPrefix("utun") else { return nil }
-                return Int(name.dropFirst(4))
-            })
+        Set(NetworkInterfaceInventory.interfaceNames().compactMap { name -> Int? in
+            guard name.hasPrefix("utun") else { return nil }
+            return Int(name.dropFirst(4))
+        })
     }
 
     private static func commandOutput(executable: String, arguments: [String]) -> String? {
