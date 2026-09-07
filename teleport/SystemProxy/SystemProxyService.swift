@@ -88,12 +88,17 @@ nonisolated final class SystemProxyService: @unchecked Sendable {
         guard let snapshot = try loadSavedProxySnapshot() else { return }
 
         let activeServices = Set(try activeNetworkServices())
+        var unrestored: [NetworkServiceProxySnapshot] = []
+
         for serviceSnapshot in snapshot.services {
             guard activeServices.contains(serviceSnapshot.serviceName) else {
-                // The snapshot is deleted below regardless, so a service that was
-                // down at this moment (Wi-Fi during an outage) keeps whatever proxy
-                // settings Teleport wrote, with no record left to restore from.
-                log.warn(Self.subsystem, "not restoring proxy settings for \(serviceSnapshot.serviceName): service is not currently active")
+                // A service that is down right now — Wi-Fi during the very outage
+                // that prompted the teardown — still carries whatever Teleport
+                // wrote to it. Its entry is kept so a later attempt can finish the
+                // job; discarding it here is what left Wi-Fi pointing at a dead
+                // local port with no record of what it should have been.
+                log.warn(Self.subsystem, "deferring proxy restore for \(serviceSnapshot.serviceName): service is not currently active")
+                unrestored.append(serviceSnapshot)
                 continue
             }
             try restoreWebProxy(serviceSnapshot.webProxy, service: serviceSnapshot.serviceName)
@@ -101,10 +106,27 @@ nonisolated final class SystemProxyService: @unchecked Sendable {
             try restoreSOCKSProxy(serviceSnapshot.socksProxy, service: serviceSnapshot.serviceName)
         }
 
-        log.info(Self.subsystem, "restored proxy settings for \(snapshot.services.filter { activeServices.contains($0.serviceName) }.count) of \(snapshot.services.count) snapshotted services; discarding snapshot")
+        let restoredCount = snapshot.services.count - unrestored.count
         SystemStateDump.captureProxySettings("after restoring system proxy", services: Array(activeServices), log: log)
-        try? fileManager.removeItem(at: proxySnapshotURL)
+
+        if unrestored.isEmpty {
+            log.info(Self.subsystem, "restored proxy settings for all \(restoredCount) snapshotted services; discarding snapshot")
+            try? fileManager.removeItem(at: proxySnapshotURL)
+        } else {
+            log.warn(Self.subsystem, "restored \(restoredCount) of \(snapshot.services.count) services; keeping snapshot for \(unrestored.map(\.serviceName).joined(separator: ", "))")
+            try writeProxySnapshot(ProxyStateSnapshot(createdAt: snapshot.createdAt, endpoint: snapshot.endpoint, services: unrestored))
+        }
+
         lastEnabledEndpoint = nil
+    }
+
+    /// Finishes a restore that an earlier one could not complete, for services that
+    /// have come back since. Safe to call whenever Teleport is not routing: with no
+    /// snapshot on disk it does nothing at all.
+    func restoreDeferredProxyStateIfNeeded() throws {
+        guard hasSavedProxySnapshot() else { return }
+        log.info(Self.subsystem, "found a proxy snapshot left by an earlier session; attempting to restore it")
+        try restoreSavedProxyState()
     }
 
     private func persistCurrentProxyStateIfNeeded(endpoint: ProxyEndpoint) throws {
@@ -126,6 +148,10 @@ nonisolated final class SystemProxyService: @unchecked Sendable {
 
         let snapshot = ProxyStateSnapshot(createdAt: Date(), endpoint: endpoint, services: snapshots)
         log.info(Self.subsystem, "saved pre-Teleport proxy snapshot for \(snapshots.count) services: \(snapshots.map(\.serviceName).joined(separator: ", "))")
+        try writeProxySnapshot(snapshot)
+    }
+
+    private func writeProxySnapshot(_ snapshot: ProxyStateSnapshot) throws {
         try fileManager.createDirectory(at: proxyStateDirectoryURL, withIntermediateDirectories: true)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
