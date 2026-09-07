@@ -120,11 +120,14 @@ struct SplitTunnelingSettingsView: View {
                 .pickerStyle(.segmented)
 
                 if newRuleAction == .proxy, viewModel.savedConnections.count > 1 {
+                    // A labeled form row, like Action above it: the bare picker read
+                    // as a stray control with no idea what it selected.
                     connectionPicker(
                         selection: Binding(
                             get: { newRuleConnectionID },
                             set: { newRuleConnectionID = $0 }
-                        )
+                        ),
+                        label: "Connection"
                     )
                 }
 
@@ -276,14 +279,25 @@ struct SplitTunnelingSettingsView: View {
             .frame(width: 180)
             .opacity(rule.isEnabled ? 1 : 0.45)
 
-            if rule.action == .proxy, viewModel.savedConnections.count > 1 {
-                connectionPicker(
-                    selection: Binding(
-                        get: { rule.connectionID },
-                        set: { viewModel.setSplitTunnelRuleConnection(id: rule.id, connectionID: $0) }
-                    )
-                )
-                .frame(width: 150)
+            // Only proxy rules choose a connection, but the slot is kept for every
+            // row so the action pickers and delete buttons stay in one column
+            // instead of shifting from row to row.
+            if viewModel.savedConnections.count > 1 {
+                Group {
+                    if rule.action == .proxy {
+                        connectionPicker(
+                            selection: Binding(
+                                get: { rule.connectionID },
+                                set: { viewModel.setSplitTunnelRuleConnection(id: rule.id, connectionID: $0) }
+                            )
+                        )
+                    } else {
+                        Color.clear
+                    }
+                }
+                // Leading, not centered: a picker centred in a fixed column makes
+                // every row's connection name start at a different x.
+                .frame(width: 150, alignment: .leading)
                 .opacity(rule.isEnabled ? 1 : 0.45)
             }
 
@@ -301,8 +315,8 @@ struct SplitTunnelingSettingsView: View {
     /// entry means "whatever connection is selected", which is how rules written
     /// before this existed behave.
     @ViewBuilder
-    private func connectionPicker(selection: Binding<UUID?>) -> some View {
-        Picker("Via", selection: selection) {
+    private func connectionPicker(selection: Binding<UUID?>, label: String? = nil) -> some View {
+        Picker(label ?? "Connection", selection: selection) {
             // The unassigned entry is simply the selected connection by name: it is
             // the one the rule follows, and naming the mechanism instead of the
             // connection told the reader nothing.
@@ -321,7 +335,8 @@ struct SplitTunnelingSettingsView: View {
                 Text("Unavailable connection").tag(Optional(missingConnectionID))
             }
         }
-        .labelsHidden()
+        // The rules list has its own columns and no room for a repeated label.
+        .modifier(HiddenLabel(isHidden: label == nil))
     }
 
     private func kindLabel(_ kind: SplitTunnelRuleKind) -> String {
@@ -369,6 +384,20 @@ struct SplitTunnelingSettingsView: View {
         } else {
             newRuleValue = ""
             addRuleErrorMessage = "Skipped \(failures.count) invalid entr\(failures.count == 1 ? "y" : "ies"): " + failures.joined(separator: ", ")
+        }
+    }
+}
+
+/// `labelsHidden()` takes no condition, so hiding a label conditionally needs a
+/// modifier of its own.
+private struct HiddenLabel: ViewModifier {
+    let isHidden: Bool
+
+    func body(content: Content) -> some View {
+        if isHidden {
+            content.labelsHidden()
+        } else {
+            content
         }
     }
 }
