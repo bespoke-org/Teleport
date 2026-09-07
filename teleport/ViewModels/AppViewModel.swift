@@ -76,6 +76,7 @@ final class AppViewModel: ObservableObject {
     /// Injected so a verification script never reaches the real system settings.
     private let systemProxyService: SystemProxyService
     private var networkPathObserver: NetworkPathObserver?
+    private var systemWakeObserver: SystemWakeObserver?
     /// The uplink the running session was built on, recorded when it connects.
     private var sessionUplink: SystemUplinkInventory.Uplink?
     /// Set when a session was torn down because the uplink vanished, so the next
@@ -199,6 +200,7 @@ final class AppViewModel: ObservableObject {
         prepareSplitTunnelGeodataMatcher()
         observeConnectionState()
         observeNetworkPath()
+        observeSystemWake()
         startAutoRefreshTimer()
         updateMenuBarAnimation()
         scheduleInitialHealthRefresh()
@@ -1153,6 +1155,7 @@ final class AppViewModel: ObservableObject {
         log.info(Self.subsystem, "terminating")
         let provider = connectionProvider
         networkPathObserver?.stop()
+        systemWakeObserver?.stop()
         Task { @MainActor [weak self] in
             try? await provider.disconnect()
             self?.connectionStateTask?.cancel()
@@ -1197,6 +1200,28 @@ final class AppViewModel: ObservableObject {
         }
         networkPathObserver = observer
         observer.start()
+    }
+
+    /// A routed session does not survive sleep in practice: after wake its Xray
+    /// reaches the server but no tunneled stream receives a byte, and only a
+    /// rebuild recovers it. The uplink is usually unchanged, so the path observer
+    /// would keep it running; wake itself is the trigger. System Proxy mode is
+    /// left alone, as nothing pins it to the machine's sleep state.
+    private func observeSystemWake() {
+        let observer = SystemWakeObserver { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.rebuildSessionAfterWake()
+            }
+        }
+        systemWakeObserver = observer
+        observer.start()
+    }
+
+    private func rebuildSessionAfterWake() {
+        guard !isTerminating, connectionMode == .vpn, hasEstablishedConnection, !isOperationPending else { return }
+        log.warn(Self.subsystem, "machine woke from sleep; rebuilding the session over \(SystemUplinkInventory.current()?.summary ?? "<no uplink>")")
+        sessionUplink = nil
+        rebuildSessionForNewUplink()
     }
 
     private func reconcileSessionWithUplink() {
