@@ -13,6 +13,7 @@ struct VerifyCore {
         try testWireGuardConfigurationFileParsingAndConfigGeneration()
         try testWireGuardLinkParsing()
         try testMalformedAndUnsupportedWireGuardInput()
+        try testRenamingSurvivesReparsing()
         try testMalformedAndUnsupportedLinks()
         try testRuntimeStartupFailureWithoutBundledBinary()
         try testBundledArtifactVerifierAcceptsExpectedHash()
@@ -372,6 +373,40 @@ struct VerifyCore {
                 fatalError("Unexpected error: \(error)")
             }
         }
+    }
+
+    /// A name is stored inside the raw link, which the app re-parses on every
+    /// launch, so renaming must produce something that still parses to the same
+    /// connection. A WireGuard configuration is not a URL: writing the name into a
+    /// "#" fragment would cut the file off at its first comment.
+    private static func testRenamingSurvivesReparsing() throws {
+        let parser = ConnectionLinkParser()
+
+        let link = try parser.parse("vless://123e4567-e89b-12d3-a456-426614174000@example.com:443?security=tls&type=tcp&sni=example.com#Old")
+        let renamedLink = link.withDisplayName("Work VLESS")
+        let reparsedLink = try parser.parse(renamedLink.rawLink)
+        precondition(reparsedLink.remarks == "Work VLESS")
+        precondition(reparsedLink.host == link.host && reparsedLink.vlessUserID == link.vlessUserID)
+
+        // Replacing an existing name comment.
+        let named = try parser.parse(wireGuardConfigurationFile())
+        precondition(named.remarks == "Frankfurt WG")
+        let renamedNamed = named.withDisplayName("wg")
+        let reparsedNamed = try parser.parse(renamedNamed.rawLink)
+        precondition(reparsedNamed.remarks == "wg")
+        precondition(reparsedNamed.wireguard == named.wireguard, "renaming must not disturb the peer material")
+        precondition(reparsedNamed.host == named.host && reparsedNamed.port == named.port)
+
+        // A configuration with no name comment gains one.
+        let anonymous = try parser.parse(
+            wireGuardConfigurationFile().replacingOccurrences(of: "# Frankfurt WG\n", with: "")
+        )
+        precondition(anonymous.remarks == nil)
+        precondition(anonymous.displayName == "example.com:51820")
+        let renamedAnonymous = anonymous.withDisplayName("wg")
+        let reparsedAnonymous = try parser.parse(renamedAnonymous.rawLink)
+        precondition(reparsedAnonymous.remarks == "wg")
+        precondition(reparsedAnonymous.wireguard == anonymous.wireguard)
     }
 
     private static func testMalformedAndUnsupportedLinks() throws {

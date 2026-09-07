@@ -9,6 +9,10 @@ struct ConnectionsSettingsView: View {
     @State private var activeShareMenu: ShareMenuPayload?
     @State private var isShowingAddSheet = false
     @State private var isHoveringAddButton = false
+    /// The connection being renamed, and the name being typed for it.
+    @State private var renamingConnectionID: UUID?
+    @State private var renameDraft = ""
+    @FocusState private var isRenameFieldFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -115,6 +119,9 @@ struct ConnectionsSettingsView: View {
         let health = viewModel.healthCheck(for: connection)
 
         HStack(spacing: 12) {
+            if renamingConnectionID == connection.id {
+                renameField(connection, isSelected: isSelected)
+            } else {
             Button {
                 viewModel.selectConnection(id: connection.id)
             } label: {
@@ -123,8 +130,7 @@ struct ConnectionsSettingsView: View {
                         .foregroundStyle(isSelected ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Text(configuration.displayName)
-                                .foregroundStyle(.primary)
+                            connectionNameView(connection)
                             connectionHealthRow(connection, health: health)
                         }
 
@@ -141,6 +147,20 @@ struct ConnectionsSettingsView: View {
             }
             .buttonStyle(.plain)
             .disabled(!viewModel.canChangeSelection && !isSelected)
+            }
+
+            // Renaming is a visible control, not a right-click discovery: the row's
+            // own button only changes the selection, so there is nowhere on the name
+            // itself to click for this.
+            if !connection.isImported {
+                Button {
+                    beginRename(connection)
+                } label: {
+                    Image(systemName: "pencil")
+                }
+                .buttonStyle(.borderless)
+                .help("Rename this connection")
+            }
 
             Button {
                 viewModel.refreshConnectionHealth(id: connection.id)
@@ -165,6 +185,16 @@ struct ConnectionsSettingsView: View {
             .disabled(isSelected && !viewModel.canChangeSelection)
         }
         .padding(.vertical, 4)
+        // On the row rather than on the name: while a session is running the row's
+        // selection button is disabled, and a disabled control shows no context
+        // menu — renaming has nothing to do with changing the selection.
+        .contextMenu {
+            // Imported entries take their name from the subscription and would be
+            // renamed back on the next refresh.
+            if !connection.isImported {
+                Button("Rename…") { beginRename(connection) }
+            }
+        }
     }
 
     @ViewBuilder
@@ -385,6 +415,49 @@ struct ConnectionsSettingsView: View {
         }
 
         return "waveform.path.ecg"
+    }
+
+    /// A link with no name reads as host:port, which says nothing about what the
+    /// connection is for.
+    @ViewBuilder
+    private func connectionNameView(_ connection: SavedConnection) -> some View {
+        Text(connection.configuration.displayName)
+            .foregroundStyle(.primary)
+    }
+
+    /// Replaces the row's selection button while renaming. It has to sit outside
+    /// that button: the button is disabled while a session is running, and a
+    /// disabled container refuses input for everything inside it, including a text
+    /// field. Renaming does not change the selection, so it stays available.
+    @ViewBuilder
+    private func renameField(_ connection: SavedConnection, isSelected: Bool) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                .foregroundStyle(isSelected ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+
+            TextField("Name", text: $renameDraft)
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 260)
+                .focused($isRenameFieldFocused)
+                .onSubmit { commitRename(connection) }
+                .onExitCommand { renamingConnectionID = nil }
+
+            Button("Save") { commitRename(connection) }
+                .keyboardShortcut(.defaultAction)
+            Button("Cancel") { renamingConnectionID = nil }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func beginRename(_ connection: SavedConnection) {
+        renameDraft = connection.configuration.remarks ?? connection.configuration.displayName
+        renamingConnectionID = connection.id
+        isRenameFieldFocused = true
+    }
+
+    private func commitRename(_ connection: SavedConnection) {
+        viewModel.renameConnection(id: connection.id, to: renameDraft)
+        renamingConnectionID = nil
     }
 
     /// A connection that is not the selected one still joins the session when a

@@ -470,6 +470,32 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    /// Renames a manually added connection. Imported entries take their name from
+    /// the subscription and would be renamed back on the next refresh, so they are
+    /// left alone.
+    func renameConnection(id: UUID, to name: String) {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let index = savedConnections.firstIndex(where: { $0.id == id }),
+              !savedConnections[index].isImported else { return }
+        guard !trimmedName.isEmpty else {
+            setStoredError("Enter a name for the connection")
+            return
+        }
+        guard trimmedName != savedConnections[index].configuration.remarks else { return }
+
+        let renamedConfiguration = savedConnections[index].configuration.withDisplayName(trimmedName)
+        savedConnections[index] = SavedConnection(
+            id: savedConnections[index].id,
+            configuration: renamedConfiguration,
+            savedAt: savedConnections[index].savedAt,
+            source: savedConnections[index].source,
+            healthCheck: savedConnections[index].healthCheck
+        )
+        rebuildSavedConnectionIndexes()
+        setStoredError(nil)
+        persistSettingError()
+    }
+
     func removeConnection(id: UUID) {
         guard let index = savedConnections.firstIndex(where: { $0.id == id }) else { return }
 

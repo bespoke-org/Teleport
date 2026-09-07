@@ -321,10 +321,12 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
         return components.joined(separator: "|")
     }
 
+    /// The name has to live inside `rawLink`, because the app re-parses every
+    /// stored link on launch and rebuilds the configuration from it.
     nonisolated func withDisplayName(_ displayName: String) -> ConnectionConfiguration {
         let trimmedDisplayName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         return ConnectionConfiguration(
-            rawLink: rawLink.withFragment(trimmedDisplayName),
+            rawLink: rawLink.withConnectionName(trimmedDisplayName),
             protocolType: protocolType,
             host: host,
             port: port,
@@ -465,6 +467,25 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
 }
 
 private extension String {
+    /// A URL link carries its name in the fragment. A WireGuard configuration file
+    /// is not a URL: its name is the leading comment, and splitting it on the first
+    /// "#" would cut the file off at that comment.
+    nonisolated func withConnectionName(_ name: String) -> String {
+        guard WireGuardConfigurationParser.looksLikeConfigurationFile(self) else {
+            return withFragment(name)
+        }
+
+        var lines = split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let nameLine = "# " + name
+        if let firstMeaningfulIndex = lines.firstIndex(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }),
+           lines[firstMeaningfulIndex].trimmingCharacters(in: .whitespaces).hasPrefix("#") {
+            lines[firstMeaningfulIndex] = nameLine
+        } else {
+            lines.insert(nameLine, at: 0)
+        }
+        return lines.joined(separator: "\n")
+    }
+
     nonisolated func withFragment(_ fragment: String) -> String {
         let base = split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? self
         guard let encodedFragment = fragment.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed) else {
