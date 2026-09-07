@@ -104,10 +104,11 @@ nonisolated struct XrayTunRouteInspector: Sendable {
         return NetworkInterfaceInventory.hasGlobalIPv6Address(interfaceName)
     }
 
-    // TODO(gpt-5.6-sol, needs verification): This is a check-then-use race: the
-    // app chooses a free name, then the helper creates the TUN later. Another
-    // process may claim that name in between. Prefer helper-side allocation and
-    // return the interface identity that Xray actually created.
+    /// A preference, not a reservation. The name is chosen here and the TUN is
+    /// created by Xray moments later in the helper, so another process can take
+    /// it in between. That is tolerated rather than prevented: the helper's start
+    /// script checks whether the requested name came up and otherwise finds the
+    /// utun Xray actually created, and every route it installs names that one.
     func nextAvailableTunnelInterfaceName() -> String {
         let existingIndexes = existingTunnelInterfaceIndexes()
         let startIndex = 10
