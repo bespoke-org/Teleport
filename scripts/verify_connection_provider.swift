@@ -12,7 +12,60 @@ struct VerifyConnectionProvider {
         try await testDisconnectWaitsForStartupRestoration()
         try await testTerminationCompletesOnlyAfterProviderDisconnect()
         testFactorySelectsProviderByMode()
+        try await testStoredNameSurvivesLoading()
         print("verify_connection_provider: all checks passed")
+    }
+
+    /// Loading re-parses each stored link to pick up parser fixes, but everything
+    /// else the connection carries belongs to the stored connection. A rebuild that
+    /// forgets a field drops it on every launch — which is what happened to names.
+    private static func testStoredNameSurvivesLoading() async throws {
+        let store = ConfigurationStore(
+            keychainService: "dev.x.teleport.verify-connection-provider",
+            keychainAccount: "app-snapshot-name"
+        )
+        defer { store.deleteKeychainItemForTesting() }
+
+        let configuration = try ConnectionLinkParser().parse(
+            "vless://123e4567-e89b-12d3-a456-426614174000@example.com:443?security=tls&type=tcp&sni=example.com#Imported"
+        )
+        let connectionID = UUID()
+        try store.save(
+            AppSnapshot(
+                savedConnections: [
+                    SavedConnection(
+                        id: connectionID,
+                        configuration: configuration,
+                        savedAt: Date(timeIntervalSince1970: 100),
+                        source: ConnectionSourceMetadata(subscriptionSourceID: UUID(), subscriptionEntryID: "entry"),
+                        customName: "Work"
+                    )
+                ],
+                subscriptionSources: [],
+                selectedConnectionID: connectionID,
+                proxyEndpoint: .default
+            )
+        )
+
+        let provider = SystemProxyConnectionProvider(
+            coordinator: BackendConnectionProvider(mode: .systemProxy, backend: RecordingConnectionBackend())
+        )
+        let viewModel = AppViewModel(
+            parser: ConnectionLinkParser(),
+            store: store,
+            connectionProviderFactory: ConnectionProviderFactory(
+                systemProxyProvider: { provider },
+                vpnProvider: { provider }
+            ),
+            subscriptionClient: SubscriptionClient(),
+            healthProbeService: ConnectionHealthProbeService()
+        )
+
+        let loaded = viewModel.savedConnections.first { $0.id == connectionID }
+        precondition(loaded?.customName == "Work", "expected a stored name to survive loading")
+        precondition(loaded?.displayName == "Work")
+        // The link itself is still the one that was stored.
+        precondition(loaded?.configuration.rawLink == configuration.rawLink)
     }
 
     private static func testFactorySelectsProviderByMode() {

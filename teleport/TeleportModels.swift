@@ -502,7 +502,10 @@ nonisolated struct ConnectionSourceMetadata: Codable, Equatable {
 
 nonisolated struct SavedConnection: Codable, Equatable, Identifiable {
     let id: UUID
-    let configuration: ConnectionConfiguration
+    /// Mutable so a caller can refresh the parsed configuration on a copy of the
+    /// connection instead of rebuilding one, which silently drops every field the
+    /// rebuild forgets to carry over.
+    var configuration: ConnectionConfiguration
     let savedAt: Date
     let source: ConnectionSourceMetadata?
     var healthCheck: ConnectionHealthCheck?

@@ -157,16 +157,15 @@ final class AppViewModel: ObservableObject {
         subscriptionSources = snapshot.subscriptionSources
 
         savedConnections = snapshot.savedConnections.map { savedConnection in
+            // Only the parsed configuration is refreshed here; everything else the
+            // connection carries — its name above all — belongs to the stored
+            // connection, not to the link it was parsed from.
+            var connection = savedConnection
             if let reparsedConfiguration = try? parser.parse(savedConnection.configuration.rawLink) {
-                return SavedConnection(
-                    id: savedConnection.id,
-                    configuration: reparsedConfiguration,
-                    savedAt: savedConnection.savedAt,
-                    source: savedConnection.source,
-                    healthCheck: savedConnection.healthCheck?.normalizedForPersistence
-                )
+                connection.configuration = reparsedConfiguration
             }
-            return savedConnection
+            connection.healthCheck = savedConnection.healthCheck?.normalizedForPersistence
+            return connection
         }
 
         selectedConnectionID = snapshot.selectedConnectionID
