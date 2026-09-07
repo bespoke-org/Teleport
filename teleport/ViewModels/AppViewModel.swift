@@ -9,7 +9,7 @@ nonisolated struct ConnectionPickerItem: Identifiable, Equatable {
     init(connection: SavedConnection) {
         id = connection.id
         sourceID = connection.source?.subscriptionSourceID
-        displayName = connection.configuration.displayName
+        displayName = connection.displayName
     }
 }
 
@@ -470,27 +470,16 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    /// Renames a manually added connection. Imported entries take their name from
-    /// the subscription and would be renamed back on the next refresh, so they are
-    /// left alone.
+    /// Names an imported connection as readily as a manual one: the name is kept
+    /// next to the connection, so a subscription refresh carries it forward
+    /// instead of overwriting it. An empty name restores the original.
     func renameConnection(id: UUID, to name: String) {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let index = savedConnections.firstIndex(where: { $0.id == id }),
-              !savedConnections[index].isImported else { return }
-        guard !trimmedName.isEmpty else {
-            setStoredError("Enter a name for the connection")
-            return
-        }
-        guard trimmedName != savedConnections[index].configuration.remarks else { return }
+        guard let index = savedConnections.firstIndex(where: { $0.id == id }) else { return }
+        let newName = trimmedName.isEmpty ? nil : trimmedName
+        guard newName != savedConnections[index].customName else { return }
 
-        let renamedConfiguration = savedConnections[index].configuration.withDisplayName(trimmedName)
-        savedConnections[index] = SavedConnection(
-            id: savedConnections[index].id,
-            configuration: renamedConfiguration,
-            savedAt: savedConnections[index].savedAt,
-            source: savedConnections[index].source,
-            healthCheck: savedConnections[index].healthCheck
-        )
+        savedConnections[index].customName = newName
         rebuildSavedConnectionIndexes()
         setStoredError(nil)
         persistSettingError()
@@ -1595,7 +1584,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private func compareByName(_ lhs: SavedConnection, _ rhs: SavedConnection) -> Bool {
-        lhs.configuration.displayName.localizedStandardCompare(rhs.configuration.displayName) == .orderedAscending
+        lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending
     }
 
     private func latencySortKey(for connection: SavedConnection) -> LatencySortKey {

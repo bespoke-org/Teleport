@@ -12,6 +12,7 @@ struct VerifySubscriptionSupport {
         try testLegacySubscriptionDefaultsDuplicateFilteringToEnabled()
         try testDuplicateSubscriptionImportFiltering()
         try testSelectionPreservationAcrossRefresh()
+        try testCustomNameSurvivesRefresh()
         print("verify_subscription_support: all checks passed")
     }
 
@@ -228,6 +229,52 @@ struct VerifySubscriptionSupport {
             filterDuplicateImports: false
         )
         precondition(unfiltered.importedEntries.count == 3)
+    }
+
+    /// A name the user gave an imported connection has to survive the next
+    /// refresh, which rebuilds every imported entry from the source. Storing it
+    /// inside the link would lose it here.
+    private static func testCustomNameSurvivesRefresh() throws {
+        let parser = ConnectionLinkParser()
+        let sourceID = UUID()
+        let connectionID = UUID()
+        let sourceEntry = sampleLinks()[0]
+        let configuration = try parser.parse(sourceEntry)
+
+        let named = SavedConnection(
+            id: connectionID,
+            configuration: configuration,
+            savedAt: Date(timeIntervalSince1970: 100),
+            source: ConnectionSourceMetadata(subscriptionSourceID: sourceID, subscriptionEntryID: sourceEntry),
+            customName: "Work"
+        )
+        precondition(named.displayName == "Work")
+        // Sharing carries the chosen name even though the stored link is untouched.
+        precondition(named.configuration.rawLink == configuration.rawLink)
+        let sharedConfiguration = try parser.parse(named.shareableLink)
+        precondition(sharedConfiguration.remarks == "Work")
+
+        let refreshed = SubscriptionConnectionReconciler().reconcile(
+            existingConnections: [named],
+            sourceID: sourceID,
+            selectedConnectionID: connectionID,
+            importedEntries: [ImportedSubscriptionEntry(sourceEntryID: sourceEntry, configuration: configuration)],
+            fetchedAt: Date(timeIntervalSince1970: 300),
+            autoSelectFirstImported: false
+        )
+        let refreshedConnection = refreshed.savedConnections.first { $0.id == connectionID }
+        precondition(refreshedConnection?.customName == "Work", "expected a user name to survive a subscription refresh")
+        precondition(refreshedConnection?.displayName == "Work")
+
+        // A connection with no name of its own still reads as the source named it.
+        let unnamed = SavedConnection(
+            id: UUID(),
+            configuration: configuration,
+            savedAt: Date(timeIntervalSince1970: 100),
+            source: nil
+        )
+        precondition(unnamed.displayName == configuration.displayName)
+        precondition(unnamed.shareableLink == configuration.rawLink)
     }
 
     private static func testSelectionPreservationAcrossRefresh() throws {

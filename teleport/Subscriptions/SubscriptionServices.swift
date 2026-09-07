@@ -42,6 +42,15 @@ struct SubscriptionConnectionReconciler {
             }
             return (source.subscriptionEntryID, healthCheck)
         })
+        // A name the user gave an imported connection survives the refresh, like
+        // its identity and health do.
+        let existingNamesByEntry: [String: String] = Dictionary(uniqueKeysWithValues: previousImportedEntries.compactMap { connection in
+            guard let source = connection.source,
+                  let customName = connection.customName else {
+                return nil
+            }
+            return (source.subscriptionEntryID, customName)
+        })
 
         let replacementConnections = importedEntries.map { entry in
             SavedConnection(
@@ -49,11 +58,12 @@ struct SubscriptionConnectionReconciler {
                 configuration: entry.configuration,
                 savedAt: existingSavedAtByEntry[entry.sourceEntryID] ?? fetchedAt,
                 source: ConnectionSourceMetadata(subscriptionSourceID: sourceID, subscriptionEntryID: entry.sourceEntryID),
-                healthCheck: existingHealthByEntry[entry.sourceEntryID]
+                healthCheck: existingHealthByEntry[entry.sourceEntryID],
+                customName: existingNamesByEntry[entry.sourceEntryID]
             )
         }
         .sorted { lhs, rhs in
-            lhs.configuration.displayName.localizedStandardCompare(rhs.configuration.displayName) == .orderedAscending
+            lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending
         }
 
         var updatedConnections = existingConnections.filter { $0.source?.subscriptionSourceID != sourceID }

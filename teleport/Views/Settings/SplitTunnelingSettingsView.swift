@@ -306,10 +306,10 @@ struct SplitTunnelingSettingsView: View {
             // The unassigned entry is simply the selected connection by name: it is
             // the one the rule follows, and naming the mechanism instead of the
             // connection told the reader nothing.
-            Text(viewModel.selectedConnection?.configuration.displayName ?? "Selected connection")
+            Text(viewModel.selectedConnection?.displayName ?? "Selected connection")
                 .tag(UUID?.none)
             ForEach(viewModel.savedConnections.filter { $0.id != viewModel.selectedConnectionID }) { connection in
-                Text(connection.configuration.displayName)
+                Text(connection.displayName)
                     .tag(Optional(connection.id))
             }
             // A rule can outlive the connection it named (a removed subscription

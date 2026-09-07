@@ -152,15 +152,13 @@ struct ConnectionsSettingsView: View {
             // Renaming is a visible control, not a right-click discovery: the row's
             // own button only changes the selection, so there is nowhere on the name
             // itself to click for this.
-            if !connection.isImported {
-                Button {
-                    beginRename(connection)
-                } label: {
-                    Image(systemName: "pencil")
-                }
-                .buttonStyle(.borderless)
-                .help("Rename this connection")
+            Button {
+                beginRename(connection)
+            } label: {
+                Image(systemName: "pencil")
             }
+            .buttonStyle(.borderless)
+            .help("Rename this connection")
 
             Button {
                 viewModel.refreshConnectionHealth(id: connection.id)
@@ -171,8 +169,8 @@ struct ConnectionsSettingsView: View {
             .disabled(viewModel.isRefreshingHealth(for: connection.id) || viewModel.isQueuedHealth(for: connection.id))
 
             shareButton(
-                title: connection.configuration.displayName,
-                value: connection.configuration.rawLink,
+                title: connection.displayName,
+                value: connection.shareableLink,
                 copyTitle: shareCopyTitle(for: connection.configuration)
             )
 
@@ -189,11 +187,7 @@ struct ConnectionsSettingsView: View {
         // selection button is disabled, and a disabled control shows no context
         // menu — renaming has nothing to do with changing the selection.
         .contextMenu {
-            // Imported entries take their name from the subscription and would be
-            // renamed back on the next refresh.
-            if !connection.isImported {
-                Button("Rename…") { beginRename(connection) }
-            }
+            Button("Rename…") { beginRename(connection) }
         }
     }
 
@@ -305,6 +299,9 @@ struct ConnectionsSettingsView: View {
         let health = viewModel.healthCheck(for: connection)
 
         HStack(spacing: 12) {
+            if renamingConnectionID == connection.id {
+                renameField(connection, isSelected: isSelected)
+            } else {
             Button {
                 viewModel.selectConnection(id: connection.id)
             } label: {
@@ -314,8 +311,7 @@ struct ConnectionsSettingsView: View {
 
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Text(configuration.displayName)
-                                .foregroundStyle(.primary)
+                            connectionNameView(connection)
                             connectionHealthRow(connection, health: health)
                         }
 
@@ -332,6 +328,15 @@ struct ConnectionsSettingsView: View {
             }
             .buttonStyle(.plain)
             .disabled(!viewModel.canChangeSelection && !isSelected)
+            }
+
+            Button {
+                beginRename(connection)
+            } label: {
+                Image(systemName: "pencil")
+            }
+            .buttonStyle(.borderless)
+            .help("Rename this connection")
 
             Button {
                 viewModel.refreshConnectionHealth(id: connection.id)
@@ -342,8 +347,8 @@ struct ConnectionsSettingsView: View {
             .disabled(viewModel.isRefreshingHealth(for: connection.id) || viewModel.isQueuedHealth(for: connection.id))
 
             shareButton(
-                title: configuration.displayName,
-                value: configuration.rawLink,
+                title: connection.displayName,
+                value: connection.shareableLink,
                 copyTitle: shareCopyTitle(for: configuration)
             )
         }
@@ -421,7 +426,7 @@ struct ConnectionsSettingsView: View {
     /// connection is for.
     @ViewBuilder
     private func connectionNameView(_ connection: SavedConnection) -> some View {
-        Text(connection.configuration.displayName)
+        Text(connection.displayName)
             .foregroundStyle(.primary)
     }
 
@@ -450,7 +455,7 @@ struct ConnectionsSettingsView: View {
     }
 
     private func beginRename(_ connection: SavedConnection) {
-        renameDraft = connection.configuration.remarks ?? connection.configuration.displayName
+        renameDraft = connection.displayName
         renamingConnectionID = connection.id
         isRenameFieldFocused = true
     }

@@ -506,9 +506,26 @@ nonisolated struct SavedConnection: Codable, Equatable, Identifiable {
     let savedAt: Date
     let source: ConnectionSourceMetadata?
     var healthCheck: ConnectionHealthCheck?
+    /// A name the user gave this connection. It is stored next to the connection
+    /// rather than inside the link, because a subscription refresh rebuilds the
+    /// configuration from the source and would drop anything written into it.
+    var customName: String?
 
     var isImported: Bool {
         source != nil
+    }
+
+    /// What the connection is called everywhere in the app.
+    var displayName: String {
+        guard let customName, !customName.isEmpty else { return configuration.displayName }
+        return customName
+    }
+
+    /// The link to share: the user's name is applied to it here, so a shared link
+    /// carries the visible name without the stored link ever being rewritten.
+    var shareableLink: String {
+        guard let customName, !customName.isEmpty else { return configuration.rawLink }
+        return configuration.withDisplayName(customName).rawLink
     }
 
     init(
@@ -516,13 +533,15 @@ nonisolated struct SavedConnection: Codable, Equatable, Identifiable {
         configuration: ConnectionConfiguration,
         savedAt: Date,
         source: ConnectionSourceMetadata? = nil,
-        healthCheck: ConnectionHealthCheck? = nil
+        healthCheck: ConnectionHealthCheck? = nil,
+        customName: String? = nil
     ) {
         self.id = id
         self.configuration = configuration
         self.savedAt = savedAt
         self.source = source
         self.healthCheck = healthCheck
+        self.customName = customName
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -531,6 +550,7 @@ nonisolated struct SavedConnection: Codable, Equatable, Identifiable {
         case savedAt
         case source
         case healthCheck
+        case customName
     }
 
     init(from decoder: Decoder) throws {
@@ -540,6 +560,7 @@ nonisolated struct SavedConnection: Codable, Equatable, Identifiable {
         savedAt = try container.decode(Date.self, forKey: .savedAt)
         source = try container.decodeIfPresent(ConnectionSourceMetadata.self, forKey: .source)
         healthCheck = try container.decodeIfPresent(ConnectionHealthCheck.self, forKey: .healthCheck)?.normalizedForPersistence
+        customName = try container.decodeIfPresent(String.self, forKey: .customName)
     }
 }
 

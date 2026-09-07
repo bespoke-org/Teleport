@@ -77,7 +77,7 @@ struct MenuBarView: View {
             subscriptionItems: viewModel.subscriptionPickerItems,
             importedItemsBySourceID: viewModel.importedConnectionPickerItemsBySourceID,
             selectedConnectionID: viewModel.selectedConnectionID,
-            selectedDisplayName: viewModel.selectedConnection?.configuration.displayName ?? "Select connection",
+            selectedDisplayName: viewModel.selectedConnection?.displayName ?? "Select connection",
             subtitle: connectionSubtitle,
             canChangeSelection: viewModel.canChangeSelection,
             showsLatency: viewModel.showsLatencyInMenuBarPicker,
