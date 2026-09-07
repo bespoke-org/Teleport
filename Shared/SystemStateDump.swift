@@ -90,11 +90,14 @@ nonisolated enum SystemStateDump {
 
     /// Proxy settings are dumped per service rather than as one command, because
     /// `networksetup` has no "show every proxy" form.
-    static func captureProxySettings(_ label: String, services: [String], log: TeleportLog = .shared) {
+    ///
+    /// `services` is an autoclosure because listing them costs a process spawn, and
+    /// with dumps off — the default — that spawn would be paid for nothing.
+    static func captureProxySettings(_ label: String, services: @autoclosure () -> [String], log: TeleportLog = .shared) {
         guard isEnabled else { return }
 
         var text = ""
-        for service in services {
+        for service in services() {
             for arguments in [["-getwebproxy", service], ["-getsecurewebproxy", service], ["-getsocksfirewallproxy", service]] {
                 guard let output = run("/usr/sbin/networksetup", arguments) else { continue }
                 text += "\(service) \(arguments[0]):\n"

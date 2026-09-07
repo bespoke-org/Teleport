@@ -258,7 +258,12 @@ private struct NerdShitSettingsView: View {
                 Button("Reveal", systemImage: "folder") {
                     NSWorkspace.shared.activateFileViewerSelecting([selectedLog.url])
                 }
-                .help("Show \(selectedLog.url.lastPathComponent) in Finder")
+                // Helper-owned logs live in a root-only directory that Finder cannot
+                // enter; they reach this window only through the helper's read command.
+                .disabled(selectedLog.helperLogName != nil)
+                .help(selectedLog.helperLogName == nil
+                    ? "Show \(selectedLog.url.lastPathComponent) in Finder"
+                    : "Root-owned; readable only here, or with sudo from \(selectedLog.url.path)")
             }
 
             Text(logMetadata)

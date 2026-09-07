@@ -159,7 +159,9 @@ nonisolated final class TeleportLog: @unchecked Sendable {
         return formatter
     }()
 
-    private static func timestamp() -> String {
+    /// Public so other files written alongside this log (Xray's own output) can
+    /// stamp their separators in the same format and be lined up by eye.
+    static func timestamp() -> String {
         formatter.string(from: Date())
     }
 }

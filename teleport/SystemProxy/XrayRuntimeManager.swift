@@ -139,7 +139,10 @@ nonisolated final class XrayRuntimeManager: @unchecked Sendable {
         let logURL = directory.appendingPathComponent("xray.log")
 
         // Appending forever is the other way to lose the log, so one previous
-        // generation is kept and older output is dropped at a bounded size.
+        // generation is kept and older output is dropped at a bounded size. The
+        // check happens only here: Xray writes to the descriptor directly for the
+        // life of the run, so the file cannot be rotated underneath it, and a long
+        // session at a verbose log level grows past the limit until the next start.
         let currentBytes = (try? FileManager.default.attributesOfItem(atPath: logURL.path)[.size] as? NSNumber)??.intValue ?? 0
         if currentBytes > Self.maximumLogBytes {
             let rotatedURL = directory.appendingPathComponent("xray.log.1")
@@ -152,7 +155,7 @@ nonisolated final class XrayRuntimeManager: @unchecked Sendable {
         }
         let handle = try FileHandle(forWritingTo: logURL)
         _ = try handle.seekToEnd()
-        try handle.write(contentsOf: Data("\n===== xray started \(Date()) =====\n".utf8))
+        try handle.write(contentsOf: Data("\n===== xray started \(TeleportLog.timestamp()) =====\n".utf8))
         return handle
     }
 
