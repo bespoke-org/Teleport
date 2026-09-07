@@ -279,25 +279,14 @@ struct SplitTunnelingSettingsView: View {
             .frame(width: 180)
             .opacity(rule.isEnabled ? 1 : 0.45)
 
-            // Only proxy rules choose a connection, but the slot is kept for every
-            // row so the action pickers and delete buttons stay in one column
-            // instead of shifting from row to row.
-            if viewModel.savedConnections.count > 1 {
-                Group {
-                    if rule.action == .proxy {
-                        connectionPicker(
-                            selection: Binding(
-                                get: { rule.connectionID },
-                                set: { viewModel.setSplitTunnelRuleConnection(id: rule.id, connectionID: $0) }
-                            )
-                        )
-                    } else {
-                        Color.clear
-                    }
-                }
-                // Leading, not centered: a picker centred in a fixed column makes
-                // every row's connection name start at a different x.
-                .frame(width: 150, alignment: .leading)
+            if rule.action == .proxy, viewModel.savedConnections.count > 1 {
+                connectionPicker(
+                    selection: Binding(
+                        get: { rule.connectionID },
+                        set: { viewModel.setSplitTunnelRuleConnection(id: rule.id, connectionID: $0) }
+                    )
+                )
+                .frame(width: 150)
                 .opacity(rule.isEnabled ? 1 : 0.45)
             }
 
