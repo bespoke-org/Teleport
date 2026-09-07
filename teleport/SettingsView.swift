@@ -226,7 +226,7 @@ private struct NerdShitSettingsView: View {
 
             Toggle(isOn: $dumpsSystemState) {
                 Text("Dump system state around every change")
-                Text("Records the routing table, resolvers, packet filter and proxy settings before and after Teleport changes them. Off by default: each capture adds a few KB to the log.")
+                Text("Records the routing table, resolvers, packet filter and proxy settings before and after Teleport changes them. Off by default: each capture adds a few KB to the log and makes connecting take a moment longer.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

@@ -32,6 +32,9 @@ nonisolated enum SystemStateDump {
         return UserDefaults.standard.bool(forKey: defaultsKey)
     }
 
+    /// Only the start request carries the flag. Stop follows whatever the marker
+    /// says, so a session started with dumps on is dumped at both ends even if the
+    /// toggle was flipped in between — the pair is what makes a dump useful.
     static func setMarker(_ enabled: Bool) {
         if enabled {
             FileManager.default.createFile(atPath: markerFileURL.path, contents: nil, attributes: [.posixPermissions: 0o600])
@@ -43,6 +46,12 @@ nonisolated enum SystemStateDump {
     /// Writes a labelled snapshot to the log. `label` should say where in a sequence
     /// this is ("before enabling system proxy", "after tunnel start"), because the
     /// point of a dump is the diff between two of them.
+    ///
+    /// Runs synchronously on the caller's thread — in the app that is the main
+    /// actor, so with dumps on, connect and disconnect stall for the time it takes
+    /// to spawn the probes, a few hundred milliseconds. Deliberate: the capture has
+    /// to land between the two states it brackets, which moving it off-thread would
+    /// not guarantee.
     static func capture(_ label: String, log: TeleportLog = .shared) {
         guard isEnabled else { return }
 
@@ -106,24 +115,48 @@ nonisolated enum SystemStateDump {
 
         let pipe = Pipe()
         process.standardOutput = pipe
-        process.standardError = Pipe()
+        // Nothing reads stderr, so it must not be a pipe: a probe that fills an
+        // unread pipe blocks on the write, never closes stdout, and the read below
+        // would wait on it forever.
+        process.standardError = FileHandle.nullDevice
+
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
 
         guard (try? process.run()) != nil else { return nil }
 
-        // Read before waiting: a probe that fills the pipe buffer would otherwise
-        // block forever with the parent waiting on a child that cannot write.
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-
-        let deadline = Date().addingTimeInterval(timeout)
-        while process.isRunning && Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.02)
+        // The read happens on its own thread so the deadline applies to the whole
+        // probe. Reading inline would block until the child closed stdout, which a
+        // hung child never does — and this runs inside the helper's start handler,
+        // so a hung probe would be a hung connect.
+        let collected = OutputBox()
+        let reader = Thread {
+            collected.data = pipe.fileHandleForReading.readDataToEndOfFile()
         }
-        if process.isRunning {
+        reader.start()
+
+        let timedOut = exited.wait(timeout: .now() + timeout) == .timedOut
+        if timedOut {
             process.terminate()
-            return String(decoding: data, as: UTF8.self) + "\n<probe timed out>"
+            // Reap the child; otherwise it stays a zombie for the life of this process.
+            process.waitUntilExit()
         }
+        // Termination closes the child's stdout, so the reader finishes either way.
+        collected.wait()
 
-        let output = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        let output = String(decoding: collected.data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        if timedOut {
+            return output + "\n<probe timed out after \(Int(timeout))s>"
+        }
         return output.isEmpty ? "<empty>" : output
+    }
+
+    /// Hands the reader thread's output back to the caller. `@unchecked` because the
+    /// semaphore orders the two accesses: the reader writes, signals, and only then
+    /// does the caller read.
+    private final class OutputBox: @unchecked Sendable {
+        var data = Data() { didSet { done.signal() } }
+        private let done = DispatchSemaphore(value: 0)
+        func wait() { done.wait() }
     }
 }
