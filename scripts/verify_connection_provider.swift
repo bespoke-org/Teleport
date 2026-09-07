@@ -11,6 +11,7 @@ struct VerifyConnectionProvider {
         try await testDisconnectRunsAfterActiveConnect()
         try await testDisconnectWaitsForStartupRestoration()
         try await testTerminationCompletesOnlyAfterProviderDisconnect()
+        try await testLostRuntimeFailsTheSessionAndRestoresSettings()
         testFactorySelectsProviderByMode()
         try await testStoredNameSurvivesLoading()
         print("verify_connection_provider: all checks passed")
@@ -154,6 +155,43 @@ struct VerifyConnectionProvider {
         let disconnectStates = await disconnectReader.value
         precondition(stateLabels(disconnectStates) == ["connected", "disconnecting", "idle"])
         precondition(backend.recordedCalls() == ["start", "reconnect", "stop"])
+    }
+
+    /// Xray dying under a connected session used to leave the system pointed at a
+    /// dead local port with the app still saying "connected". The provider now
+    /// watches the runtime and, when it is gone, fails the session and runs the
+    /// backend's teardown so settings are put back.
+    private static func testLostRuntimeFailsTheSessionAndRestoresSettings() async throws {
+        let backend = RecordingConnectionBackend()
+        let provider = BackendConnectionProvider(mode: .systemProxy, backend: backend, supervisionInterval: 0.05)
+        await awaitInitialState(provider)
+
+        backend.setRuntimeActive(true)
+        try await provider.connect(try makeRequest())
+        let connectedState = await provider.currentState()
+        precondition(stateLabels([connectedState]) == ["connected"])
+
+        // Still alive: the supervisor must not touch a healthy session.
+        try await Task.sleep(nanoseconds: 200_000_000)
+        let stillConnectedState = await provider.currentState()
+        precondition(stateLabels([stillConnectedState]) == ["connected"])
+        precondition(backend.recordedCalls() == ["start"])
+
+        let failureReader = collectStates(from: provider.stateUpdates(), count: 2)
+        backend.setRuntimeActive(false)
+        let states = await failureReader.value
+        precondition(stateLabels(states) == ["connected", "failed"], "expected a lost runtime to fail the session, got \(stateLabels(states))")
+
+        // The teardown that restores proxy settings or routes follows the failure.
+        let deadline = Date().addingTimeInterval(2)
+        while backend.recordedCalls() != ["start", "stop"] && Date() < deadline {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        precondition(backend.recordedCalls() == ["start", "stop"], "expected the backend teardown to run after a lost runtime")
+
+        // Only once: the supervisor stops with the session it was watching.
+        try await Task.sleep(nanoseconds: 200_000_000)
+        precondition(backend.recordedCalls() == ["start", "stop"])
     }
 
     private static func testProviderPublishesStartAndStopFailures() async throws {
@@ -486,12 +524,23 @@ struct VerifyConnectionProvider {
         var startError: Error?
         var stopError: Error?
         var hasRestorableStateValue = false
+        var hasActiveRuntimeSessionValue = false
         let startGate = Gate()
         let restoreGate = Gate()
         let stopGate = Gate()
 
         func hasRestorableState() -> Bool { hasRestorableStateValue }
-        func hasActiveRuntimeSession() -> Bool { false }
+        func hasActiveRuntimeSession() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return hasActiveRuntimeSessionValue
+        }
+
+        func setRuntimeActive(_ active: Bool) {
+            lock.lock()
+            hasActiveRuntimeSessionValue = active
+            lock.unlock()
+        }
 
         func restorePreviousState() async throws {
             record("restore")

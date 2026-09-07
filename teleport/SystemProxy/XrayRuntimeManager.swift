@@ -14,6 +14,13 @@ nonisolated final class XrayRuntimeManager: @unchecked Sendable {
     private let errorBufferLock = NSLock()
     private var errorBuffer = Data()
     private let assetDirectoryURLProvider: () throws -> URL
+    private let log: TeleportLog
+    /// Set by `stop()` before it signals the child, so its termination handler can
+    /// tell an exit that was asked for from one that was not. Guarded by
+    /// `errorBufferLock`, which already serializes the handler's other access.
+    private var expectsExit = false
+
+    static let subsystem = "xray"
 
     /// Assets come from the same resolver VPN mode uses, so both modes see one
     /// geosite/geoip pair — the user's custom downloads when there are any, the
@@ -22,9 +29,11 @@ nonisolated final class XrayRuntimeManager: @unchecked Sendable {
     /// no asset directory in the bundle to point Xray at.
     init(
         bundle: Bundle = .main,
-        assetDirectoryURLProvider: (() throws -> URL)? = nil
+        assetDirectoryURLProvider: (() throws -> URL)? = nil,
+        log: TeleportLog = .shared
     ) {
         self.bundle = bundle
+        self.log = log
         self.assetDirectoryURLProvider = assetDirectoryURLProvider ?? {
             try GeodataUpdateService().resolvedAssetDirectoryURL(bundle: bundle)
         }
@@ -57,6 +66,7 @@ nonisolated final class XrayRuntimeManager: @unchecked Sendable {
         let logFileHandle = try makeLogFileHandle()
         errorBufferLock.lock()
         errorBuffer = Data()
+        expectsExit = false
         errorBufferLock.unlock()
 
         pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
@@ -73,9 +83,18 @@ nonisolated final class XrayRuntimeManager: @unchecked Sendable {
         errorPipe = pipe
         self.logFileHandle = logFileHandle
 
-        // TODO(gpt-5.6-sol): Observe unexpected process termination and notify the
-        // connection backend so it can disable or restore macOS proxy settings.
-        // Otherwise the system may remain configured to use dead localhost ports.
+        // Reacting to the death — restoring proxy settings, failing the session —
+        // is the provider's job, which supervises `isRunning`. This only records
+        // that it happened and how, since the provider cannot see the exit status.
+        process.terminationHandler = { [weak self] process in
+            guard let self else { return }
+            self.errorBufferLock.lock()
+            let expected = self.expectsExit
+            self.errorBufferLock.unlock()
+            guard !expected else { return }
+            let how = process.terminationReason == .uncaughtSignal ? "signal" : "status"
+            self.log.warn(Self.subsystem, "xray exited on its own (\(how) \(process.terminationStatus)); the session will be failed and settings restored")
+        }
         try process.run()
         self.process = process
     }
@@ -104,6 +123,9 @@ nonisolated final class XrayRuntimeManager: @unchecked Sendable {
         }
 
         if process.isRunning {
+            errorBufferLock.lock()
+            expectsExit = true
+            errorBufferLock.unlock()
             process.terminate()
 
             let deadline = Date().addingTimeInterval(1)
