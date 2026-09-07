@@ -8,6 +8,9 @@ final class ConfigurationStore {
     private let keychainAccount: String
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
+    private let log: TeleportLog
+
+    static let subsystem = "persistence"
 
     private static let defaultKeychainService = "dev.x.teleport.configuration"
     private static let defaultKeychainAccount = "app-snapshot"
@@ -18,9 +21,11 @@ final class ConfigurationStore {
     init(
         fileManager: FileManager = .default,
         keychainService: String = ConfigurationStore.defaultKeychainService,
-        keychainAccount: String = ConfigurationStore.defaultKeychainAccount
+        keychainAccount: String = ConfigurationStore.defaultKeychainAccount,
+        log: TeleportLog = .shared
     ) {
         self.fileManager = fileManager
+        self.log = log
         self.keychainService = keychainService
         self.keychainAccount = keychainAccount
         let baseURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -58,34 +63,81 @@ final class ConfigurationStore {
         switch keychainSnapshotResult() {
         case let .found(data):
             if let snapshot = decodeSnapshot(from: data) {
+                log.info(Self.subsystem, "loaded snapshot: \(snapshot.savedConnections.count) connections, \(snapshot.subscriptionSources.count) subscriptions, mode \(snapshot.connectionMode)")
                 return snapshot
             }
+
+            // The item is there but this build cannot decode it, which one
+            // incompatible model change between two builds is enough to cause.
+            // Treated exactly like a read failure rather than as "no data":
+            // without the save-guard the first autosave after launch (a health
+            // probe, a subscription refresh) would encode the current empty state
+            // over the only copy of the user's connections.
+            let backupURL = backUpUndecodableSnapshot(data)
+            lastLoadError = ConfigurationStoreError.snapshotCouldNotBeDecoded(backupURL: backupURL)
+            log.error(Self.subsystem, "keychain snapshot could not be decoded (\(data.count) bytes); refusing to save, raw copy at \(backupURL?.path ?? "<backup failed>")")
+            return AppSnapshot(savedConnections: [], subscriptionSources: [], selectedConnectionID: nil, proxyEndpoint: .default)
         case .notFound:
-            break
+            log.info(Self.subsystem, "no keychain snapshot yet")
         case let .failed(status):
             lastLoadError = ConfigurationStoreError.keychainReadFailed(status)
+            log.error(Self.subsystem, "keychain read failed with OSStatus \(status); refusing to save")
             return AppSnapshot(savedConnections: [], subscriptionSources: [], selectedConnectionID: nil, proxyEndpoint: .default)
         }
 
-        if let data = try? Data(contentsOf: legacyFileURL),
-           let snapshot = decodeSnapshot(from: data) {
-            // Direct upgrades from v0.1.0 still have their only snapshot here.
-            // Delete the plaintext copy only after the Keychain migration succeeds.
-            if (try? save(snapshot)) != nil {
-                try? fileManager.removeItem(at: legacyFileURL)
+        if let data = try? Data(contentsOf: legacyFileURL) {
+            if let snapshot = decodeSnapshot(from: data) {
+                // Direct upgrades from v0.1.0 still have their only snapshot here.
+                // Delete the plaintext copy only after the Keychain migration succeeds.
+                if (try? save(snapshot)) != nil {
+                    try? fileManager.removeItem(at: legacyFileURL)
+                    log.info(Self.subsystem, "migrated legacy state.json into keychain")
+                }
+                return snapshot
             }
-            return snapshot
+
+            let backupURL = backUpUndecodableSnapshot(data)
+            lastLoadError = ConfigurationStoreError.snapshotCouldNotBeDecoded(backupURL: backupURL)
+            log.error(Self.subsystem, "legacy state.json could not be decoded; refusing to save, raw copy at \(backupURL?.path ?? "<backup failed>")")
+            return AppSnapshot(savedConnections: [], subscriptionSources: [], selectedConnectionID: nil, proxyEndpoint: .default)
         }
 
         return AppSnapshot(savedConnections: [], subscriptionSources: [], selectedConnectionID: nil, proxyEndpoint: .default)
     }
 
+    /// Keeps the bytes we could not decode, so a snapshot this build rejects is
+    /// still recoverable by hand (or by a later build that understands it). Named
+    /// with a timestamp because a user who relaunches a few times before noticing
+    /// should not overwrite the first, most complete copy.
+    private func backUpUndecodableSnapshot(_ data: Data) -> URL? {
+        let directoryURL = legacyFileURL.deletingLastPathComponent()
+            .appendingPathComponent("unreadable-snapshots", isDirectory: true)
+        guard (try? fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)) != nil else { return nil }
+        try? fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directoryURL.path)
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withYear, .withMonth, .withDay, .withTime]
+        let stamp = formatter.string(from: Date()).replacingOccurrences(of: ":", with: "-")
+        let backupURL = directoryURL.appendingPathComponent("snapshot-\(stamp).json")
+
+        guard (try? data.write(to: backupURL, options: [.atomic])) != nil else { return nil }
+        try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backupURL.path)
+        return backupURL
+    }
+
     func save(_ snapshot: AppSnapshot) throws {
-        if lastLoadError != nil {
+        if let lastLoadError {
+            log.warn(Self.subsystem, "refused to save \(snapshot.savedConnections.count) connections after a failed load: \(LogRedaction.error(lastLoadError))")
             throw ConfigurationStoreError.refusedToOverwriteAfterLoadFailure
         }
         let data = try encoder.encode(snapshot)
-        try saveKeychainSnapshotData(data)
+        do {
+            try saveKeychainSnapshotData(data)
+        } catch {
+            log.error(Self.subsystem, "save failed: \(LogRedaction.error(error))")
+            throw error
+        }
+        log.info(Self.subsystem, "saved snapshot: \(snapshot.savedConnections.count) connections, \(snapshot.subscriptionSources.count) subscriptions")
     }
 
     private func decodeSnapshot(from data: Data) -> AppSnapshot? {
@@ -173,6 +225,7 @@ final class ConfigurationStore {
 enum ConfigurationStoreError: LocalizedError {
     case keychainWriteFailed(OSStatus)
     case keychainReadFailed(OSStatus)
+    case snapshotCouldNotBeDecoded(backupURL: URL?)
     case refusedToOverwriteAfterLoadFailure
 
     var errorDescription: String? {
@@ -181,6 +234,9 @@ enum ConfigurationStoreError: LocalizedError {
             return "Failed to save Teleport configuration secrets to Keychain: OSStatus \(status)"
         case let .keychainReadFailed(status):
             return "Failed to read Teleport configuration secrets from Keychain (OSStatus \(status)). Your saved connections were not lost — unlock Keychain Access and restart Teleport."
+        case let .snapshotCouldNotBeDecoded(backupURL):
+            let location = backupURL.map { " A copy of it was kept at \($0.path)." } ?? ""
+            return "Teleport could not read its saved settings — they were written by a different version of the app. Nothing was deleted, and Teleport will not overwrite them.\(location)"
         case .refusedToOverwriteAfterLoadFailure:
             return "Refusing to save: the previous Keychain read failed, so saving now could overwrite your existing settings."
         }
