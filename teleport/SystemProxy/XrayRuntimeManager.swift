@@ -13,9 +13,21 @@ nonisolated final class XrayRuntimeManager: @unchecked Sendable {
     private let bundle: Bundle
     private let errorBufferLock = NSLock()
     private var errorBuffer = Data()
+    private let assetDirectoryURLProvider: () throws -> URL
 
-    init(bundle: Bundle = .main) {
+    /// Assets come from the same resolver VPN mode uses, so both modes see one
+    /// geosite/geoip pair — the user's custom downloads when there are any, the
+    /// bundled files otherwise. Asking the bundle directly does not work: the
+    /// resource phase flattens the .dat files into Contents/Resources, so there is
+    /// no asset directory in the bundle to point Xray at.
+    init(
+        bundle: Bundle = .main,
+        assetDirectoryURLProvider: (() throws -> URL)? = nil
+    ) {
         self.bundle = bundle
+        self.assetDirectoryURLProvider = assetDirectoryURLProvider ?? {
+            try GeodataUpdateService().resolvedAssetDirectoryURL(bundle: bundle)
+        }
     }
 
     var isRunning: Bool {
@@ -37,7 +49,7 @@ nonisolated final class XrayRuntimeManager: @unchecked Sendable {
         process.arguments = ["run", "-c", configURL.path]
 
         let environment = ProcessInfo.processInfo.environment.merging([
-            "XRAY_LOCATION_ASSET": assetDirectoryURL()?.path ?? ""
+            "XRAY_LOCATION_ASSET": try assetDirectoryURLProvider().path
         ]) { _, new in new }
         process.environment = environment
 
@@ -160,14 +172,6 @@ nonisolated final class XrayRuntimeManager: @unchecked Sendable {
     }
 
     private static let maximumLogBytes = 5 * 1024 * 1024
-
-    private func assetDirectoryURL() -> URL? {
-        // TODO(gpt-5.6-sol): The current Xcode resource phase flattens `geoip.dat`
-        // and `geosite.dat` into `Contents/Resources`, so this directory lookup
-        // returns nil and `XRAY_LOCATION_ASSET` is set to an empty string. Preserve
-        // the folder in the bundle or resolve one shared asset layout in both modes.
-        bundle.url(forResource: "xray-assets", withExtension: nil)
-    }
 
     private static func canOpenTCPConnection(host: String, port: Int, timeout: TimeInterval) async -> Bool {
         guard let rawPort = UInt16(exactly: port),
