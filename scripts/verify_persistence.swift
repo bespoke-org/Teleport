@@ -10,6 +10,9 @@ struct VerifyPersistence {
         try testLegacyStateFileMigratesToKeychain()
         try testLoadFailureRefusesToOverwriteExistingSnapshot()
         try testSessionConnectionsSurviveAndOldSnapshotsStaySingleConnection()
+        try testGoodSnapshotIsRetainedAndNotDuplicated()
+        try testShrinkingSaveKeepsThePreviousSnapshot()
+        try testRetainedSnapshotsArePruned()
         print("verify_persistence: all checks passed")
     }
 
@@ -36,6 +39,98 @@ struct VerifyPersistence {
     // item") was treated identically to "nothing was ever saved", which let a later
     // save() silently overwrite real Keychain data with an empty snapshot. This checks
     // the mapping directly, without needing to force a real Keychain failure.
+    private static func retainedSnapshotCount(_ store: ConfigurationStore) -> Int {
+        let contents = (try? FileManager.default.contentsOfDirectory(
+            at: store.snapshotBackupDirectoryURL,
+            includingPropertiesForKeys: nil
+        )) ?? []
+        return contents.filter { $0.pathExtension == "json" }.count
+    }
+
+    /// A snapshot that loads cleanly is copied aside, so no later write can be the
+    /// only copy of it. Loading the same bytes again must not spend a generation,
+    /// or five uneventful launches would push out every copy that differs.
+    private static func testGoodSnapshotIsRetainedAndNotDuplicated() throws {
+        try withIsolatedStore(name: "retain") { store in
+            try store.save(AppSnapshot(
+                savedConnections: [],
+                subscriptionSources: [],
+                selectedConnectionID: nil,
+                proxyEndpoint: .default,
+                showsLatencyInMenuBarPicker: false
+            ))
+
+            _ = store.load()
+            precondition(retainedSnapshotCount(store) == 1, "expected a good load to retain a copy")
+
+            _ = store.load()
+            _ = store.load()
+            precondition(retainedSnapshotCount(store) == 1, "expected identical reloads to reuse one generation")
+        }
+    }
+
+    /// The regression this whole guard exists for: an in-memory state that lost
+    /// connections must not be able to replace the stored one without leaving the
+    /// stored one behind. Deleting a connection is allowed — losing it is not.
+    private static func testShrinkingSaveKeepsThePreviousSnapshot() throws {
+        try withIsolatedStore(name: "shrink") { store in
+            let connection = SavedConnection(
+                id: UUID(),
+                configuration: try ConnectionLinkParser().parse("trojan://secret@example.com:443?security=tls&type=tcp#kept"),
+                savedAt: Date()
+            )
+            try store.save(AppSnapshot(
+                savedConnections: [connection],
+                subscriptionSources: [],
+                selectedConnectionID: connection.id,
+                proxyEndpoint: .default
+            ))
+
+            // No reload in between, which is the shape of the failure this guards
+            // against: an in-memory state that lost connections to a bug, persisted
+            // by an autosave without anyone having read the stored one again.
+            precondition(retainedSnapshotCount(store) == 0, "expected no retained copy before the shrinking save")
+
+            try store.save(AppSnapshot(
+                savedConnections: [],
+                subscriptionSources: [],
+                selectedConnectionID: nil,
+                proxyEndpoint: .default
+            ))
+
+            precondition(
+                retainedSnapshotCount(store) == 1,
+                "expected a shrinking save to keep a copy of the snapshot it replaced"
+            )
+
+            let newest = ((try? FileManager.default.contentsOfDirectory(
+                at: store.snapshotBackupDirectoryURL,
+                includingPropertiesForKeys: nil
+            )) ?? [])
+                .filter { $0.pathExtension == "json" }
+                .sorted { $0.lastPathComponent < $1.lastPathComponent }
+                .last
+            let recovered = try JSONDecoder().decode(AppSnapshot.self, from: Data(contentsOf: newest!))
+            precondition(recovered.savedConnections.count == 1, "expected the kept copy to still hold the connection")
+        }
+    }
+
+    private static func testRetainedSnapshotsArePruned() throws {
+        try withIsolatedStore(name: "prune") { store in
+            for index in 0..<12 {
+                try store.save(AppSnapshot(
+                    savedConnections: [],
+                    subscriptionSources: [],
+                    selectedConnectionID: nil,
+                    proxyEndpoint: ProxyEndpoint(host: "127.0.0.1", httpPort: 8080 + index, socksPort: 1080)
+                ))
+                _ = store.load()
+            }
+            let count = retainedSnapshotCount(store)
+            precondition(count <= 5, "expected retained snapshots to be pruned, found \(count)")
+        }
+    }
+
     private static func testKeychainReadStatusClassification() throws {
         let someData = Data([0x01, 0x02, 0x03])
 
@@ -123,7 +218,8 @@ struct VerifyPersistence {
         let store = ConfigurationStore(
             fileManager: fileManager,
             keychainService: "dev.x.teleport.configuration.verify",
-            keychainAccount: "verify-migration-\(UUID().uuidString)"
+            keychainAccount: "verify-migration-\(UUID().uuidString)",
+            log: TeleportLog(directoryURL: root, fileName: "verify.log")
         )
         defer { store.deleteKeychainItemForTesting() }
 
@@ -139,8 +235,8 @@ struct VerifyPersistence {
             .appendingPathComponent("state.json")
         try JSONEncoder().encode(legacySnapshot).write(to: legacyFileURL, options: .atomic)
 
-        precondition(store.hasSavedSnapshot, "expected the legacy state file to count as a saved snapshot")
         let migrated = store.load()
+        precondition(store.hasSavedSnapshot, "expected the legacy state file to count as a saved snapshot")
         precondition(!migrated.showsLatencyInMenuBarPicker, "expected legacy settings to be returned during migration")
         precondition(store.hasSavedSnapshot, "expected the migrated Keychain snapshot to exist")
         precondition(!fileManager.fileExists(atPath: legacyFileURL.path), "expected plaintext state to be removed after migration")
@@ -188,7 +284,10 @@ struct VerifyPersistence {
         let store = ConfigurationStore(
             fileManager: TempFileManager(root: root),
             keychainService: "dev.x.teleport.configuration.verify",
-            keychainAccount: "verify-\(name)-\(UUID().uuidString)"
+            keychainAccount: "verify-\(name)-\(UUID().uuidString)",
+            // Into the throwaway root, so a verify run does not write test noise
+            // into the log a real incident is read from.
+            log: TeleportLog(directoryURL: root, fileName: "verify.log")
         )
         defer { store.deleteKeychainItemForTesting() }
 

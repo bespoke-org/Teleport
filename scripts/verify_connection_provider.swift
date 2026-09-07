@@ -19,10 +19,38 @@ struct VerifyConnectionProvider {
     /// Loading re-parses each stored link to pick up parser fixes, but everything
     /// else the connection carries belongs to the stored connection. A rebuild that
     /// forgets a field drops it on every launch — which is what happened to names.
+    /// Redirects Application Support to a throwaway root, so a verify run neither
+    /// reads nor prunes the retained snapshots of the real installation.
+    private final class TempFileManager: FileManager {
+        let root: URL
+        init(root: URL) {
+            self.root = root
+            super.init()
+        }
+
+        override func urls(for directory: FileManager.SearchPathDirectory, in domainMask: FileManager.SearchPathDomainMask) -> [URL] {
+            if directory == .applicationSupportDirectory {
+                return [root]
+            }
+            return super.urls(for: directory, in: domainMask)
+        }
+    }
+
+    private static func makeIsolatedRoot(_ name: String) throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("teleport-verify-connection-provider-\(name)-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
+    }
+
     private static func testStoredNameSurvivesLoading() async throws {
+        let root = try makeIsolatedRoot("name")
+        defer { try? FileManager.default.removeItem(at: root) }
         let store = ConfigurationStore(
+            fileManager: TempFileManager(root: root),
             keychainService: "dev.x.teleport.verify-connection-provider",
-            keychainAccount: "app-snapshot-name"
+            keychainAccount: "app-snapshot-name",
+            log: TeleportLog(directoryURL: root, fileName: "verify.log")
         )
         defer { store.deleteKeychainItemForTesting() }
 
@@ -239,9 +267,13 @@ struct VerifyConnectionProvider {
     }
 
     private static func testTerminationCompletesOnlyAfterProviderDisconnect() async throws {
+        let root = try makeIsolatedRoot("termination")
+        defer { try? FileManager.default.removeItem(at: root) }
         let store = ConfigurationStore(
+            fileManager: TempFileManager(root: root),
             keychainService: "dev.x.teleport.verify-connection-provider",
-            keychainAccount: "app-snapshot"
+            keychainAccount: "app-snapshot",
+            log: TeleportLog(directoryURL: root, fileName: "verify.log")
         )
         defer { store.deleteKeychainItemForTesting() }
         // Pre-seeding the isolated item stops AppViewModel's init from seeding the

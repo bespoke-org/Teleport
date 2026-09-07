@@ -19,10 +19,17 @@ nonisolated final class TeleportLog: @unchecked Sendable {
     /// The app writes under the user's Logs directory (visible in Console.app and
     /// in Finder); the helper runs as root with no home directory of its own and
     /// writes next to the rest of its root-owned state.
-    static let shared = TeleportLog(
-        directoryURL: defaultDirectoryURL(),
-        fileName: getuid() == 0 ? "helper.log" : "teleport.log"
-    )
+    static let shared: TeleportLog = {
+        let log = TeleportLog(
+            directoryURL: defaultDirectoryURL(),
+            fileName: getuid() == 0 ? "helper.log" : "teleport.log"
+        )
+        // Writes are queued, so a process that ends without draining the queue loses
+        // its last lines — which for a short-lived tool is most of them, and for the
+        // app is the part written while something was going wrong.
+        atexit { TeleportLog.shared.flush() }
+        return log
+    }()
 
     /// Rotation keeps the log bounded without a daily job. 5 MB holds several weeks
     /// of lifecycle events, and four generations survive a few reboots of noise.

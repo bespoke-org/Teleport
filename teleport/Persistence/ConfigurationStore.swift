@@ -45,6 +45,17 @@ final class ConfigurationStore {
     /// persisting until it is resolved (e.g. after unlocking Keychain and relaunching).
     private(set) var lastLoadError: Error?
 
+    /// Whether the most recent `load()` actually found a stored item. Callers used to
+    /// answer this with a second Keychain read, which could disagree with the one
+    /// `load()` made — and a disagreement that says "nothing saved" makes the caller
+    /// seed defaults and write them over the real snapshot. One read, one answer.
+    private(set) var lastLoadFoundStoredSnapshot = false
+
+    /// Connection count of the snapshot currently believed to be in the Keychain, so
+    /// `save()` can tell a save that drops connections from one that does not. Nil
+    /// until a load or save establishes it.
+    private var persistedConnectionCount: Int?
+
     /// Forces `lastLoadError` without going through a real Keychain failure, since
     /// deterministically forcing SecItemCopyMatching to fail would require locking the
     /// system Keychain (risking flakiness and leftover state). Pass `nil` to clear it.
@@ -53,16 +64,26 @@ final class ConfigurationStore {
         lastLoadError = status.map(ConfigurationStoreError.keychainReadFailed)
     }
 
+    /// Answered from the last `load()` rather than from a fresh read, so a caller
+    /// deciding whether to seed defaults cannot be told "nothing is saved" about a
+    /// snapshot that `load()` just read successfully.
     var hasSavedSnapshot: Bool {
-        keychainSnapshotData() != nil || fileManager.fileExists(atPath: legacyFileURL.path)
+        lastLoadFoundStoredSnapshot
     }
 
     func load() -> AppSnapshot {
         lastLoadError = nil
+        lastLoadFoundStoredSnapshot = false
+        persistedConnectionCount = nil
 
         switch keychainSnapshotResult() {
         case let .found(data):
+            lastLoadFoundStoredSnapshot = true
             if let snapshot = decodeSnapshot(from: data) {
+                persistedConnectionCount = snapshot.savedConnections.count
+                // Every launch that reads a good snapshot leaves a copy behind, so
+                // no later write is ever the only copy of what was there.
+                retainGoodSnapshot(data, reason: "loaded")
                 log.info(Self.subsystem, "loaded snapshot: \(snapshot.savedConnections.count) connections, \(snapshot.subscriptionSources.count) subscriptions, mode \(snapshot.connectionMode)")
                 return snapshot
             }
@@ -86,7 +107,10 @@ final class ConfigurationStore {
         }
 
         if let data = try? Data(contentsOf: legacyFileURL) {
+            lastLoadFoundStoredSnapshot = true
             if let snapshot = decodeSnapshot(from: data) {
+                persistedConnectionCount = snapshot.savedConnections.count
+                retainGoodSnapshot(data, reason: "legacy")
                 // Direct upgrades from v0.1.0 still have their only snapshot here.
                 // Delete the plaintext copy only after the Keychain migration succeeds.
                 if (try? save(snapshot)) != nil {
@@ -115,10 +139,7 @@ final class ConfigurationStore {
         guard (try? fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)) != nil else { return nil }
         try? fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directoryURL.path)
 
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withYear, .withMonth, .withDay, .withTime]
-        let stamp = formatter.string(from: Date()).replacingOccurrences(of: ":", with: "-")
-        let backupURL = directoryURL.appendingPathComponent("snapshot-\(stamp).json")
+        let backupURL = directoryURL.appendingPathComponent("snapshot-\(Self.fileStamp()).json")
 
         guard (try? data.write(to: backupURL, options: [.atomic])) != nil else { return nil }
         try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backupURL.path)
@@ -130,6 +151,19 @@ final class ConfigurationStore {
             log.warn(Self.subsystem, "refused to save \(snapshot.savedConnections.count) connections after a failed load: \(LogRedaction.error(lastLoadError))")
             throw ConfigurationStoreError.refusedToOverwriteAfterLoadFailure
         }
+
+        // A save that drops connections is not refused — deleting one is an ordinary
+        // thing to do — but it is never allowed to be the only copy. Whatever is in
+        // the Keychain right now is written aside first, so an in-memory state that
+        // lost connections to a bug is recoverable rather than merely logged.
+        if let previousCount = persistedConnectionCount, snapshot.savedConnections.count < previousCount {
+            var backupPath = "<none>"
+            if case let .found(currentData) = keychainSnapshotResult() {
+                backupPath = retainGoodSnapshot(currentData, reason: "shrink")?.path ?? "<backup failed>"
+            }
+            log.warn(Self.subsystem, "save drops connections \(previousCount) -> \(snapshot.savedConnections.count); previous snapshot kept at \(backupPath)")
+        }
+
         let data = try encoder.encode(snapshot)
         do {
             try saveKeychainSnapshotData(data)
@@ -137,7 +171,57 @@ final class ConfigurationStore {
             log.error(Self.subsystem, "save failed: \(LogRedaction.error(error))")
             throw error
         }
+        persistedConnectionCount = snapshot.savedConnections.count
+        lastLoadFoundStoredSnapshot = true
         log.info(Self.subsystem, "saved snapshot: \(snapshot.savedConnections.count) connections, \(snapshot.subscriptionSources.count) subscriptions")
+    }
+
+    /// Rolling copies of snapshots that decoded cleanly. Kept separately from the
+    /// unreadable ones because these are the ones worth restoring from directly:
+    /// they are known-good, and the newest predates whatever went wrong.
+    @discardableResult
+    private func retainGoodSnapshot(_ data: Data, reason: String) -> URL? {
+        let directoryURL = snapshotBackupDirectoryURL
+        guard (try? fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)) != nil else { return nil }
+        try? fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directoryURL.path)
+
+        let existing = sortedBackupURLs(in: directoryURL)
+
+        // An unchanged snapshot re-read on every launch would otherwise push the
+        // generations that differ from it out of the window within five launches.
+        if let newest = existing.last, (try? Data(contentsOf: newest)) == data {
+            return newest
+        }
+
+        let backupURL = directoryURL.appendingPathComponent("snapshot-\(Self.fileStamp())-\(reason).json")
+        guard (try? data.write(to: backupURL, options: [.atomic])) != nil else { return nil }
+        try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backupURL.path)
+
+        for staleURL in (existing + [backupURL]).dropLast(Self.retainedSnapshotGenerations) {
+            try? fileManager.removeItem(at: staleURL)
+        }
+        return backupURL
+    }
+
+    var snapshotBackupDirectoryURL: URL {
+        legacyFileURL.deletingLastPathComponent().appendingPathComponent("snapshots", isDirectory: true)
+    }
+
+    /// Newest last. Names begin with a sortable timestamp, so lexicographic order is
+    /// chronological order and no attribute lookups are needed.
+    private func sortedBackupURLs(in directoryURL: URL) -> [URL] {
+        let contents = (try? fileManager.contentsOfDirectory(at: directoryURL, includingPropertiesForKeys: nil)) ?? []
+        return contents.filter { $0.pathExtension == "json" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    /// Five launches back is far enough to cover "I only noticed a few restarts
+    /// later", which is how the loss this guards against was actually discovered.
+    private static let retainedSnapshotGenerations = 5
+
+    private static func fileStamp() -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withYear, .withMonth, .withDay, .withTime]
+        return formatter.string(from: Date()).replacingOccurrences(of: ":", with: "-")
     }
 
     private func decodeSnapshot(from data: Data) -> AppSnapshot? {
