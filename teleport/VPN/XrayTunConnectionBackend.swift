@@ -14,6 +14,22 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
         self.systemProxyService = systemProxyService
     }
 
+    /// The reachable numeric address of one server and the physical interface
+    /// that reaches it.
+    private func protectedRoute(for configuration: ConnectionConfiguration) throws -> (address: String, interface: String) {
+        let resolvedAddresses = routeInspector.resolvedAddresses(for: configuration.host)
+        guard !resolvedAddresses.isEmpty else {
+            throw XrayTunConnectionError.proxyAddressResolutionFailed(configuration.host)
+        }
+        guard let route = resolvedAddresses.lazy.compactMap({ address -> (String, String)? in
+            guard let interface = self.routeInspector.outboundInterface(for: address) else { return nil }
+            return (address, interface)
+        }).first else {
+            throw XrayTunConnectionError.proxyRouteUnavailable(configuration.host)
+        }
+        return route
+    }
+
     func hasRestorableState() -> Bool { false }
 
     func hasActiveRuntimeSession() async -> Bool {
@@ -30,30 +46,40 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
                 throw XrayTunConnectionError.existingVPNDetected(existingVPNInterface)
             }
 
-            let configuration = request.configuration
-            let resolvedAddresses = routeInspector.resolvedAddresses(for: configuration.host)
-            guard !resolvedAddresses.isEmpty else {
-                throw XrayTunConnectionError.proxyAddressResolutionFailed(configuration.host)
+            // Every connection in the session is pinned to the same reachable
+            // numeric endpoint that receives its protected physical route. This
+            // avoids a second DNS answer selecting a different address after the
+            // TUN defaults have been installed. The uplink comes from the default
+            // connection's route, as it did when a session had only one server.
+            let (defaultAddress, outboundInterface) = try self.protectedRoute(for: request.defaultConnection.configuration)
+            var outbounds = [RoutedProxyOutbound(
+                connectionID: request.defaultConnection.id,
+                configuration: request.defaultConnection.configuration,
+                serverAddress: defaultAddress
+            )]
+            var protectedHosts = [defaultAddress]
+            // An additional connection that cannot be routed fails the whole start:
+            // its rules would otherwise fall back to the default outbound without
+            // the user being told their traffic went somewhere else.
+            for connection in request.additionalConnections {
+                let (address, _) = try self.protectedRoute(for: connection.configuration)
+                outbounds.append(RoutedProxyOutbound(
+                    connectionID: connection.id,
+                    configuration: connection.configuration,
+                    serverAddress: address
+                ))
+                if !protectedHosts.contains(address) {
+                    protectedHosts.append(address)
+                }
             }
-            guard let protectedRoute = resolvedAddresses.lazy.compactMap({ address -> (String, String)? in
-                guard let interface = self.routeInspector.outboundInterface(for: address) else { return nil }
-                return (address, interface)
-            }).first else {
-                throw XrayTunConnectionError.proxyRouteUnavailable(configuration.host)
-            }
-            let (protectedAddress, outboundInterface) = protectedRoute
 
-            // Pin Xray to the same reachable numeric endpoint that receives the
-            // protected physical route. This avoids a second DNS answer selecting a
-            // different address after the TUN defaults have been installed.
             let directSendThrough = routeInspector.ipv4Address(for: outboundInterface)
             let tunnelInterfaceName = routeInspector.nextAvailableTunnelInterfaceName()
             let configData = try XrayConfigurationWriter(proxyEndpoint: request.localProxy).tunnelConfigData(
-                for: configuration,
+                for: outbounds,
                 interfaceName: tunnelInterfaceName,
                 outboundInterface: outboundInterface,
                 directSendThrough: directSendThrough,
-                proxyServerAddress: protectedAddress,
                 splitTunnelRules: request.splitTunnelPolicy.rules,
                 defaultAction: request.splitTunnelPolicy.defaultAction,
                 dnsPolicy: TunnelDNSPolicy(
@@ -64,7 +90,7 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
             try systemProxyService.suspendProxyForVPN()
             return XrayTunLaunchSession(
                 configData: configData,
-                protectedHosts: [protectedAddress],
+                protectedHosts: protectedHosts,
                 tunnelInterfaceName: tunnelInterfaceName,
                 outboundInterface: outboundInterface
             )

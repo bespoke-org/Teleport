@@ -250,7 +250,7 @@ struct VerifyConnectionProvider {
             "vless://123e4567-e89b-12d3-a456-426614174000@example.com:443?security=tls&type=tcp&sni=example.com#Provider"
         )
         return ConnectionRequest(
-            configuration: configuration,
+            defaultConnection: RoutedConnection(id: UUID(), configuration: configuration),
             localProxy: .default,
             splitTunnelPolicy: SplitTunnelPolicy(rules: [], defaultAction: .proxy)
         )

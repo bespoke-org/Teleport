@@ -9,6 +9,7 @@ struct VerifyPersistence {
         try testSaveAndLoadRoundTrip()
         try testLegacyStateFileMigratesToKeychain()
         try testLoadFailureRefusesToOverwriteExistingSnapshot()
+        try testSessionConnectionsSurviveAndOldSnapshotsStaySingleConnection()
         print("verify_persistence: all checks passed")
     }
 
@@ -86,6 +87,30 @@ struct VerifyPersistence {
             precondition(store.lastLoadError == nil, "a successful save/load round trip should not report a load error")
             precondition(loaded.showsLatencyInMenuBarPicker == false, "expected the round-tripped snapshot to match what was saved")
         }
+    }
+
+    /// Which connections a session carries is derived from the rules, so the only
+    /// new persisted state is the connection a rule names.
+    private static func testSessionConnectionsSurviveAndOldSnapshotsStaySingleConnection() throws {
+        let connectionID = UUID()
+        let rule = SplitTunnelRule(value: "example.com", kind: .domain, action: .proxy, connectionID: connectionID)
+        let roundTripped = try JSONDecoder().decode(
+            SplitTunnelRule.self,
+            from: try JSONEncoder().encode(rule)
+        )
+        precondition(roundTripped.connectionID == connectionID)
+
+        // A rule written before rules could name a connection routes through the
+        // selected one.
+        let ruleData = try JSONSerialization.data(withJSONObject: [
+            "id": UUID().uuidString,
+            "value": "example.com",
+            "kind": "domain",
+            "action": "proxy",
+            "isEnabled": true
+        ])
+        let legacyRule = try JSONDecoder().decode(SplitTunnelRule.self, from: ruleData)
+        precondition(legacyRule.connectionID == nil, "expected a pre-upgrade rule to use the default connection")
     }
 
     private static func testLegacyStateFileMigratesToKeychain() throws {

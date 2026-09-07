@@ -193,6 +193,28 @@ final class AppViewModel: ObservableObject {
         selectedConnection?.configuration
     }
 
+    /// Every connection this session dials, the default one first. A connection
+    /// joins simply by being named in an active rule: the config carries the
+    /// outbounds the rules actually use, with no separate opt-in to keep in sync.
+    var routedConnections: [SavedConnection] {
+        guard let selectedConnection else { return [] }
+        var connections = [selectedConnection]
+        var seen: Set<UUID> = [selectedConnection.id]
+        for rule in activeSplitTunnelRules where rule.action == .proxy {
+            guard let connectionID = rule.connectionID,
+                  seen.insert(connectionID).inserted,
+                  let connection = savedConnectionsByID[connectionID] else { continue }
+            connections.append(connection)
+        }
+        return connections
+    }
+
+    /// How many active rules send traffic through this connection, so the
+    /// connections list can show what a connection is used for.
+    func activeRuleCount(routingThrough id: UUID) -> Int {
+        activeSplitTunnelRules.filter { $0.action == .proxy && $0.connectionID == id }.count
+    }
+
     var manualConnections: [SavedConnection] {
         savedConnections.filter { $0.source == nil }
     }
@@ -451,7 +473,7 @@ final class AppViewModel: ObservableObject {
     func removeConnection(id: UUID) {
         guard let index = savedConnections.firstIndex(where: { $0.id == id }) else { return }
 
-        if selectedConnectionID == id && hasActiveConnectionSession {
+        if (selectedConnectionID == id || routedConnections.contains { $0.id == id }) && hasActiveConnectionSession {
             setStoredError("Disconnect before removing the active connection")
             return
         }
@@ -658,10 +680,15 @@ final class AppViewModel: ObservableObject {
     }
 
     @discardableResult
-    func addSplitTunnelRule(value: String, action: SplitTunnelRuleAction) -> Result<SplitTunnelRule, SplitTunnelRuleValidationError> {
+    func addSplitTunnelRule(value: String, action: SplitTunnelRuleAction, connectionID: UUID? = nil) -> Result<SplitTunnelRule, SplitTunnelRuleValidationError> {
         switch SplitTunnelRuleClassifier.classify(value) {
         case let .success(classified):
-            let rule = SplitTunnelRule(value: classified.value, kind: classified.kind, action: action)
+            let rule = SplitTunnelRule(
+                value: classified.value,
+                kind: classified.kind,
+                action: action,
+                connectionID: action == .proxy ? connectionID : nil
+            )
             // splitTunnelProfiles always has at least one profile (enforced by
             // removeSplitTunnelProfile and the AppSnapshot default), so this index
             // is always valid in practice.
@@ -698,6 +725,22 @@ final class AppViewModel: ObservableObject {
               let ruleIndex = splitTunnelProfiles[profileIndex].rules.firstIndex(where: { $0.id == id }),
               splitTunnelProfiles[profileIndex].rules[ruleIndex].action != action else { return }
         splitTunnelProfiles[profileIndex].rules[ruleIndex].action = action
+        // Only a proxy rule can name a connection; leaving a stale id behind would
+        // silently reappear if the rule were switched back to Proxy later.
+        if action != .proxy {
+            splitTunnelProfiles[profileIndex].rules[ruleIndex].connectionID = nil
+        }
+        schedulePersist()
+        scheduleSplitTunnelLiveApply()
+    }
+
+    /// `nil` routes the rule through the session's default connection.
+    func setSplitTunnelRuleConnection(id: UUID, connectionID: UUID?) {
+        guard let profileIndex = selectedSplitTunnelProfileIndex,
+              let ruleIndex = splitTunnelProfiles[profileIndex].rules.firstIndex(where: { $0.id == id }),
+              splitTunnelProfiles[profileIndex].rules[ruleIndex].action == .proxy,
+              splitTunnelProfiles[profileIndex].rules[ruleIndex].connectionID != connectionID else { return }
+        splitTunnelProfiles[profileIndex].rules[ruleIndex].connectionID = connectionID
         schedulePersist()
         scheduleSplitTunnelLiveApply()
     }
@@ -1152,8 +1195,19 @@ final class AppViewModel: ObservableObject {
     }
 
     private func makeConnectionRequest(configuration: ConnectionConfiguration) -> ConnectionRequest {
-        ConnectionRequest(
-            configuration: configuration,
+        // The caller may connect to a configuration that is not the current
+        // selection (a menu-bar pick, for example), so the default connection is
+        // taken from the argument and the extras are matched against it.
+        let defaultConnectionID = savedConnections.first { $0.configuration == configuration }?.id
+            ?? selectedConnectionID
+            ?? UUID()
+        let additionalConnections = routedConnections.compactMap { connection -> RoutedConnection? in
+            guard connection.id != defaultConnectionID else { return nil }
+            return RoutedConnection(id: connection.id, configuration: connection.configuration)
+        }
+        return ConnectionRequest(
+            defaultConnection: RoutedConnection(id: defaultConnectionID, configuration: configuration),
+            additionalConnections: additionalConnections,
             localProxy: proxyEndpoint,
             splitTunnelPolicy: SplitTunnelPolicy(
                 rules: activeSplitTunnelRules,
