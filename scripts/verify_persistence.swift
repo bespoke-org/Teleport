@@ -13,6 +13,7 @@ struct VerifyPersistence {
         try testGoodSnapshotIsRetainedAndNotDuplicated()
         try testShrinkingSaveKeepsThePreviousSnapshot()
         try testRetainedSnapshotsArePruned()
+        try testUndecodableSnapshotIsKeptAndSavingIsRefused()
         print("verify_persistence: all checks passed")
     }
 
@@ -40,18 +41,14 @@ struct VerifyPersistence {
     // save() silently overwrite real Keychain data with an empty snapshot. This checks
     // the mapping directly, without needing to force a real Keychain failure.
     private static func retainedSnapshotCount(_ store: ConfigurationStore) -> Int {
-        let contents = (try? FileManager.default.contentsOfDirectory(
-            at: store.snapshotBackupDirectoryURL,
-            includingPropertiesForKeys: nil
-        )) ?? []
-        return contents.filter { $0.pathExtension == "json" }.count
+        store.retainedSnapshotAccounts().count
     }
 
     /// A snapshot that loads cleanly is copied aside, so no later write can be the
     /// only copy of it. Loading the same bytes again must not spend a generation,
     /// or five uneventful launches would push out every copy that differs.
     private static func testGoodSnapshotIsRetainedAndNotDuplicated() throws {
-        try withIsolatedStore(name: "retain") { store in
+        try withIsolatedStore(name: "retain") { store, _ in
             try store.save(AppSnapshot(
                 savedConnections: [],
                 subscriptionSources: [],
@@ -73,7 +70,7 @@ struct VerifyPersistence {
     /// connections must not be able to replace the stored one without leaving the
     /// stored one behind. Deleting a connection is allowed — losing it is not.
     private static func testShrinkingSaveKeepsThePreviousSnapshot() throws {
-        try withIsolatedStore(name: "shrink") { store in
+        try withIsolatedStore(name: "shrink") { store, root in
             let connection = SavedConnection(
                 id: UUID(),
                 configuration: try ConnectionLinkParser().parse("trojan://secret@example.com:443?security=tls&type=tcp#kept"),
@@ -103,20 +100,21 @@ struct VerifyPersistence {
                 "expected a shrinking save to keep a copy of the snapshot it replaced"
             )
 
-            let newest = ((try? FileManager.default.contentsOfDirectory(
-                at: store.snapshotBackupDirectoryURL,
-                includingPropertiesForKeys: nil
-            )) ?? [])
-                .filter { $0.pathExtension == "json" }
-                .sorted { $0.lastPathComponent < $1.lastPathComponent }
-                .last
-            let recovered = try JSONDecoder().decode(AppSnapshot.self, from: Data(contentsOf: newest!))
+            let newest = store.retainedSnapshotAccounts().last!
+            let recovered = try JSONDecoder().decode(AppSnapshot.self, from: store.snapshotBackupData(account: newest)!)
             precondition(recovered.savedConnections.count == 1, "expected the kept copy to still hold the connection")
+
+            // Kept in the Keychain, not on disk: a copy of a snapshot is a copy of
+            // every password in it, and the store went into the Keychain for that.
+            let plaintextDirectory = root
+                .appendingPathComponent("teleport", isDirectory: true)
+                .appendingPathComponent("snapshots", isDirectory: true)
+            precondition(!FileManager.default.fileExists(atPath: plaintextDirectory.path), "expected no plaintext copy on disk")
         }
     }
 
     private static func testRetainedSnapshotsArePruned() throws {
-        try withIsolatedStore(name: "prune") { store in
+        try withIsolatedStore(name: "prune") { store, _ in
             for index in 0..<12 {
                 try store.save(AppSnapshot(
                     savedConnections: [],
@@ -128,6 +126,37 @@ struct VerifyPersistence {
             }
             let count = retainedSnapshotCount(store)
             precondition(count <= 5, "expected retained snapshots to be pruned, found \(count)")
+        }
+    }
+
+    /// The incident this store's guard was written for: a stored item this build
+    /// cannot decode. It must be surfaced as an error, saving must be refused so the
+    /// first autosave cannot replace it, and the bytes must be kept where a later
+    /// build or a person can get them back.
+    private static func testUndecodableSnapshotIsKeptAndSavingIsRefused() throws {
+        try withIsolatedStore(name: "undecodable") { store, _ in
+            let unreadable = Data("{\"savedConnections\": \"written by a build with a different model\"}".utf8)
+            try store.writeRawSnapshotDataForTesting(unreadable)
+
+            let loaded = store.load()
+            precondition(loaded.savedConnections.isEmpty, "expected an undecodable snapshot to load as empty")
+            precondition(store.hasSavedSnapshot, "expected the undecodable item to still count as a saved snapshot")
+            guard case let .snapshotCouldNotBeDecoded(backupAccount)? = store.lastLoadError as? ConfigurationStoreError else {
+                fatalError("expected lastLoadError to say the snapshot could not be decoded, got \(String(describing: store.lastLoadError))")
+            }
+            precondition(backupAccount != nil, "expected a copy of the unreadable bytes to be kept")
+            precondition(store.unreadableSnapshotAccounts() == [backupAccount!], "expected exactly the kept copy to be listed")
+            precondition(store.snapshotBackupData(account: backupAccount!) == unreadable, "expected the kept copy to be byte-identical")
+
+            do {
+                try store.save(AppSnapshot(savedConnections: [], subscriptionSources: [], selectedConnectionID: nil, proxyEndpoint: .default))
+                fatalError("expected save() to refuse after an undecodable load")
+            } catch is ConfigurationStoreError {
+                // expected
+            }
+
+            // Refusing must mean the original bytes are still the live item.
+            precondition(store.snapshotBackupData(account: backupAccount!) == unreadable, "expected the live item to be untouched")
         }
     }
 
@@ -157,7 +186,7 @@ struct VerifyPersistence {
     }
 
     private static func testFreshStoreHasNoSnapshotAndNoLoadError() throws {
-        try withIsolatedStore(name: "fresh") { store in
+        try withIsolatedStore(name: "fresh") { store, _ in
             precondition(!store.hasSavedSnapshot, "expected a brand-new isolated Keychain item to report no saved snapshot")
 
             let snapshot = store.load()
@@ -167,7 +196,7 @@ struct VerifyPersistence {
     }
 
     private static func testSaveAndLoadRoundTrip() throws {
-        try withIsolatedStore(name: "roundtrip") { store in
+        try withIsolatedStore(name: "roundtrip") { store, _ in
             let saved = AppSnapshot(
                 savedConnections: [],
                 subscriptionSources: [],
@@ -249,7 +278,7 @@ struct VerifyPersistence {
     // failure, save() must refuse rather than silently persist an in-memory snapshot
     // that was only ever populated with defaults because the real data was unreadable.
     private static func testLoadFailureRefusesToOverwriteExistingSnapshot() throws {
-        try withIsolatedStore(name: "refusal") { store in
+        try withIsolatedStore(name: "refusal") { store, _ in
             let saved = AppSnapshot(
                 savedConnections: [],
                 subscriptionSources: [],
@@ -275,7 +304,7 @@ struct VerifyPersistence {
         }
     }
 
-    private static func withIsolatedStore(name: String, _ body: (ConfigurationStore) throws -> Void) throws {
+    private static func withIsolatedStore(name: String, _ body: (ConfigurationStore, URL) throws -> Void) throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("teleport-verify-persistence-\(name)-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -291,6 +320,6 @@ struct VerifyPersistence {
         )
         defer { store.deleteKeychainItemForTesting() }
 
-        try body(store)
+        try body(store, root)
     }
 }
