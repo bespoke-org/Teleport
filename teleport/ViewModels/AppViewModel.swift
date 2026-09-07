@@ -71,7 +71,10 @@ final class AppViewModel: ObservableObject {
     private let splitTunnelGeodataMatcher = SplitTunnelGeodataMatcher()
     private let loginItemService = LoginItemService()
     private let persistenceQueue = DispatchQueue(label: "dev.x.teleport.persistence", qos: .utility)
-    private let log = TeleportLog.shared
+    private let log: TeleportLog
+    /// Only used to finish a proxy restore an earlier run could not complete.
+    /// Injected so a verification script never reaches the real system settings.
+    private let systemProxyService: SystemProxyService
     private var networkPathObserver: NetworkPathObserver?
     /// The uplink the running session was built on, recorded when it connects.
     private var sessionUplink: SystemUplinkInventory.Uplink?
@@ -130,15 +133,19 @@ final class AppViewModel: ObservableObject {
         store: ConfigurationStore,
         connectionProviderFactory: ConnectionProviderFactory,
         subscriptionClient: SubscriptionClient,
-        healthProbeService: ConnectionHealthProbeService
+        healthProbeService: ConnectionHealthProbeService,
+        systemProxyService: SystemProxyService = SystemProxyService(),
+        log: TeleportLog = .shared
     ) {
         self.parser = parser
         self.store = store
         self.connectionProviderFactory = connectionProviderFactory
         self.subscriptionClient = subscriptionClient
         self.healthProbeService = healthProbeService
+        self.systemProxyService = systemProxyService
+        self.log = log
 
-        TeleportLog.shared.info(
+        log.info(
             AppViewModel.subsystem,
             "launched build \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?") (\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?")), state dumps \(SystemStateDump.isEnabled ? "on" : "off")"
         )
@@ -1165,7 +1172,10 @@ final class AppViewModel: ObservableObject {
         case let .failed(failure):
             log.error(Self.subsystem, "\(prefix): failed — \(failure.summary)")
         case .connected:
-            sessionUplink = SystemUplinkInventory.current()
+            // Normally recorded when the session was requested, which is closer to
+            // the moment the helper pinned its routes. Read here only for a session
+            // this process did not start — one still up from a previous run.
+            sessionUplink = sessionUplink ?? SystemUplinkInventory.current()
             awaitsUplinkToReconnect = false
             log.info(Self.subsystem, "\(prefix): connected (mode \(connectionMode)) over uplink \(sessionUplink?.summary ?? "<unknown>")")
             SystemStateDump.capture("after connect", log: log)
@@ -1199,6 +1209,15 @@ final class AppViewModel: ObservableObject {
             awaitsUplinkToReconnect = false
             log.info(Self.subsystem, "uplink is back (\(currentUplink?.summary ?? "<unknown>")); reconnecting")
             reconnectToSelectedConnection()
+            return
+        }
+
+        guard hasEstablishedConnection || isOperationPending else {
+            // Nothing is routing. If an earlier teardown could not put a service's
+            // proxy settings back because that service was down, the path change
+            // that just fired may be it coming back — the moment to finish the job,
+            // rather than waiting for the next launch.
+            restoreDeferredProxyStateIfNeeded()
             return
         }
 
@@ -1247,11 +1266,13 @@ final class AppViewModel: ObservableObject {
     /// proxy settings back, and kept its entry instead of discarding it. Launching
     /// with no session running is the moment to finish that.
     private func restoreDeferredProxyStateIfNeeded() {
+        let service = systemProxyService
+        let log = log
         Task.detached(priority: .utility) {
             do {
-                try SystemProxyService().restoreDeferredProxyStateIfNeeded()
+                try service.restoreDeferredProxyStateIfNeeded()
             } catch {
-                TeleportLog.shared.error(AppViewModel.subsystem, "could not restore deferred proxy state: \(LogFormat.error(error))")
+                log.error(AppViewModel.subsystem, "could not restore deferred proxy state: \(LogFormat.error(error))")
             }
         }
     }
@@ -1273,7 +1294,7 @@ final class AppViewModel: ObservableObject {
         if state != connectionState || isInitialState {
             logConnectionState(state, isInitialState: isInitialState)
         }
-        if isInitialState, case .connected = state {} else if isInitialState {
+        if isInitialState, !state.isConnected {
             // Only with nothing routing: while a session from a previous run is
             // still up, the snapshot describes settings that are meant to stay
             // suspended until it stops.
@@ -1327,6 +1348,10 @@ final class AppViewModel: ObservableObject {
     private func startConnection(using configuration: ConnectionConfiguration) {
         guard !isTerminating else { return }
 
+        // The helper pins routes to the gateway that is current when its script
+        // runs, which is moments from now; the connected state can arrive seconds
+        // later, by which time a roaming machine may already be on another one.
+        sessionUplink = SystemUplinkInventory.current()
         let request = makeConnectionRequest(configuration: configuration)
         let provider = connectionProvider
         let operationID = UUID()

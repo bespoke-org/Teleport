@@ -86,7 +86,14 @@ struct VerifyConnectionProvider {
                 vpnProvider: { provider }
             ),
             subscriptionClient: SubscriptionClient(),
-            healthProbeService: ConnectionHealthProbeService()
+            healthProbeService: ConnectionHealthProbeService(),
+            // Isolated, like the store: a check must not read or write the real
+            // proxy snapshot, nor leave a launch banner in the real log.
+            systemProxyService: SystemProxyService(
+                fileManager: TempFileManager(root: root),
+                log: TeleportLog(directoryURL: root, fileName: "verify.log")
+            ),
+            log: TeleportLog(directoryURL: root, fileName: "verify.log")
         )
 
         let loaded = viewModel.savedConnections.first { $0.id == connectionID }
@@ -298,7 +305,14 @@ struct VerifyConnectionProvider {
                 vpnProvider: { provider }
             ),
             subscriptionClient: SubscriptionClient(),
-            healthProbeService: ConnectionHealthProbeService()
+            healthProbeService: ConnectionHealthProbeService(),
+            // Isolated, like the store: a check must not read or write the real
+            // proxy snapshot, nor leave a launch banner in the real log.
+            systemProxyService: SystemProxyService(
+                fileManager: TempFileManager(root: root),
+                log: TeleportLog(directoryURL: root, fileName: "verify.log")
+            ),
+            log: TeleportLog(directoryURL: root, fileName: "verify.log")
         )
         await awaitInitialState(coordinator)
         try await coordinator.connect(try makeRequest())
