@@ -303,7 +303,10 @@ struct SplitTunnelingSettingsView: View {
     @ViewBuilder
     private func connectionPicker(selection: Binding<UUID?>) -> some View {
         Picker("Via", selection: selection) {
-            Text(viewModel.selectedConnection.map { "Selected connection — \($0.configuration.displayName)" } ?? "Selected connection")
+            // The unassigned entry is simply the selected connection by name: it is
+            // the one the rule follows, and naming the mechanism instead of the
+            // connection told the reader nothing.
+            Text(viewModel.selectedConnection?.configuration.displayName ?? "Selected connection")
                 .tag(UUID?.none)
             ForEach(viewModel.savedConnections.filter { $0.id != viewModel.selectedConnectionID }) { connection in
                 Text(connection.configuration.displayName)
