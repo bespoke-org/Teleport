@@ -144,13 +144,16 @@ struct PrivilegedHelperInstaller: Sendable {
 
     /// Generates the complete administrator shell transaction. Values are quoted
     /// before interpolation, and helper/Xray copies are reverified after staging.
-    // TODO(gpt-5.6-sol): Replace the AppleScript/manual `launchctl` installation
-    // path with `SMAppService` daemon registration once the distribution pipeline
-    // is notarized, and provide a matching unregister/uninstall operation.
-    // TODO(gpt-5.6-sol): Make activation rollback-safe. A failure after `bootout`
-    // can currently leave a stopped daemon or a mixture of old and new helper,
-    // runtime, manifest, and plist files because only the temporary directory is
-    // cleaned up.
+    ///
+    /// The transaction is rollback-safe from the point it touches installed files.
+    /// Whatever is installed is copied aside first; a failure anywhere after the
+    /// daemon is booted out puts every file back and boots the previous daemon
+    /// again, or, on a first install, removes what was placed. Only a script that
+    /// reaches its last line leaves the new files behind.
+    ///
+    /// Installation goes through `launchctl` from an administrator shell rather
+    /// than `SMAppService`, which requires a notarized, Developer ID-signed app to
+    /// register a daemon; see the note on `verifyBundleArtifacts`.
     private func installScript(appBundleURL: URL, helperURL: URL, runtimeURL: URL, manifest: InstallationManifest, plist: String) -> String {
         let q = PrivilegedShellRunner.shellQuote
         let manifestJSON = "{\"helperVersion\":\"\(manifest.helperVersion)\",\"helperSHA256\":\"\(manifest.helperSHA256)\",\"xraySHA256\":\"\(manifest.xraySHA256)\"}"
@@ -191,7 +194,39 @@ struct PrivilegedHelperInstaller: Sendable {
 
         mkdir -p /Library/PrivilegedHelperTools
         tmp_dir=$(/usr/bin/mktemp -d /Library/PrivilegedHelperTools/.teleport-install.XXXXXX)
+
+        # Everything currently installed is kept beside the staging copies, so a
+        # failure after the daemon is booted out can put it all back. A first
+        # install has nothing to keep and is rolled back by removal instead.
+        previous_dir="$tmp_dir/previous"
+        mkdir -p "$previous_dir"
+        had_previous=0
+        for installed in "$HELPER_DST" "$XRAY_DST" "$MANIFEST_DST" "$PLIST_DST"; do
+            if [ -e "$installed" ]; then
+                cp -p "$installed" "$previous_dir/$(basename "$installed")"
+                had_previous=1
+            fi
+        done
+
+        activated=0
+        touched_installed=0
         cleanup() {
+            if [ "$activated" -ne 1 ] && [ "$touched_installed" -eq 1 ]; then
+                echo "Helper installation failed; restoring the previous installation." >&2
+                launchctl bootout "system/$LABEL" >/dev/null 2>&1 || true
+                for installed in "$HELPER_DST" "$XRAY_DST" "$MANIFEST_DST" "$PLIST_DST"; do
+                    kept="$previous_dir/$(basename "$installed")"
+                    if [ -e "$kept" ]; then
+                        mv -f "$kept" "$installed"
+                    else
+                        rm -f "$installed"
+                    fi
+                done
+                if [ "$had_previous" -eq 1 ] && [ -e "$PLIST_DST" ]; then
+                    launchctl bootstrap system "$PLIST_DST" >/dev/null 2>&1 || true
+                    launchctl kickstart -k "system/$LABEL" >/dev/null 2>&1 || true
+                fi
+            fi
             rm -rf "$tmp_dir"
         }
         trap cleanup EXIT
@@ -211,6 +246,7 @@ struct PrivilegedHelperInstaller: Sendable {
         chown root:wheel "$tmp_manifest"
         chmod 644 "$tmp_manifest"
 
+        touched_installed=1
         launchctl bootout "system/$LABEL" >/dev/null 2>&1 || true
         mv -f "$tmp_helper" "$HELPER_DST"
         mv -f "$tmp_xray" "$XRAY_DST"
@@ -227,6 +263,7 @@ struct PrivilegedHelperInstaller: Sendable {
         chmod 644 "$PLIST_DST"
         launchctl bootstrap system "$PLIST_DST"
         launchctl kickstart -k "system/$LABEL" >/dev/null 2>&1 || true
+        activated=1
         """
     }
 
