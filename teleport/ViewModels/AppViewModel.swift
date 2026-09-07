@@ -1111,7 +1111,7 @@ final class AppViewModel: ObservableObject {
         }
 
         awaitsUplinkToReconnect = false
-        log.info(Self.subsystem, "connect requested: mode \(connectionMode), server \(LogRedaction.host(selectedConfiguration.host)):\(selectedConfiguration.port), split tunnel \(isSplitTunnelEnabled ? "on" : "off") with \(activeSplitTunnelRules.count) rules")
+        log.info(Self.subsystem, "connect requested: mode \(connectionMode), server \(LogFormat.host(selectedConfiguration.host)):\(selectedConfiguration.port), split tunnel \(isSplitTunnelEnabled ? "on" : "off") with \(activeSplitTunnelRules.count) rules")
         SystemStateDump.capture("before connect", log: log)
         startConnection(using: selectedConfiguration)
     }
@@ -1251,7 +1251,7 @@ final class AppViewModel: ObservableObject {
             do {
                 try SystemProxyService().restoreDeferredProxyStateIfNeeded()
             } catch {
-                TeleportLog.shared.error(AppViewModel.subsystem, "could not restore deferred proxy state: \(LogRedaction.error(error))")
+                TeleportLog.shared.error(AppViewModel.subsystem, "could not restore deferred proxy state: \(LogFormat.error(error))")
             }
         }
     }

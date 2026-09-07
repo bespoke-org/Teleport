@@ -27,12 +27,17 @@ nonisolated final class TeleportLog: @unchecked Sendable {
         // Writes are queued, so a process that ends without draining the queue loses
         // its last lines — which for a short-lived tool is most of them, and for the
         // app is the part written while something was going wrong.
+        //
+        // Registering from inside the initializer is safe: `shared` is assigned before
+        // any exit handler can run, and `flush` blocks on the log queue, which nothing
+        // else holds once the process is on its way out.
         atexit { TeleportLog.shared.flush() }
         return log
     }()
 
     /// Rotation keeps the log bounded without a daily job. 5 MB holds several weeks
-    /// of lifecycle events, and four generations survive a few reboots of noise.
+    /// of lifecycle events, and three rotated files behind the live one survive a
+    /// few reboots of noise.
     private let maximumBytes: Int
     private let rotatedGenerations: Int
 
@@ -89,7 +94,19 @@ nonisolated final class TeleportLog: @unchecked Sendable {
     // MARK: - File handling
 
     private func appendOnQueue(_ data: Data) {
-        rotateIfNeededOnQueue(additionalBytes: data.count)
+        // One stat per write serves two purposes: it sizes the file for rotation, and
+        // it notices when someone deleted the log underneath an open handle. Without
+        // the second check, writes would keep landing in an unlinked inode until the
+        // next rotation, and the user who cleared the log would see nothing new.
+        let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path)
+        if attributes == nil, handle != nil {
+            try? handle?.close()
+            handle = nil
+        }
+        let currentBytes = (attributes?[.size] as? NSNumber)?.intValue ?? 0
+        if currentBytes + data.count > maximumBytes {
+            rotateOnQueue()
+        }
         guard let handle = handleOnQueue() else { return }
         try? handle.write(contentsOf: data)
     }
@@ -108,11 +125,7 @@ nonisolated final class TeleportLog: @unchecked Sendable {
         return opened
     }
 
-    private func rotateIfNeededOnQueue(additionalBytes: Int) {
-        let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path)
-        let currentBytes = (attributes?[.size] as? NSNumber)?.intValue ?? 0
-        guard currentBytes + additionalBytes > maximumBytes else { return }
-
+    private func rotateOnQueue() {
         try? handle?.close()
         handle = nil
 
@@ -151,10 +164,13 @@ nonisolated final class TeleportLog: @unchecked Sendable {
     }
 }
 
-/// Connection links carry user ids and passwords, so nothing that reaches the log
-/// may contain one. These keep the parts that make an entry useful — which server,
-/// which port — and drop the rest.
-nonisolated enum LogRedaction {
+/// Formatting helpers for values that appear in log lines.
+///
+/// This is not where secrets are removed. Connection links carry user ids and
+/// passwords, and the only protection is that no call site passes a link, a
+/// `SavedConnection`, or anything that prints one. These helpers keep the parts
+/// that make an entry useful — which server, which error — short and uniform.
+nonisolated enum LogFormat {
     static func host(_ value: String?) -> String {
         guard let value, !value.isEmpty else { return "<none>" }
         return value
@@ -167,8 +183,14 @@ nonisolated enum LogRedaction {
         return String(value.uuidString.prefix(8))
     }
 
+    /// Only the description an error type chose to publish. `String(describing:)`
+    /// would print associated values, and a parse error's associated value is the
+    /// input that failed to parse — which for a link is the secret itself.
     static func error(_ value: Error?) -> String {
         guard let value else { return "<none>" }
-        return (value as? LocalizedError)?.errorDescription ?? String(describing: value)
+        if let described = (value as? LocalizedError)?.errorDescription {
+            return described
+        }
+        return (value as NSError).localizedDescription
     }
 }

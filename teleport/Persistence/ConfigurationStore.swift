@@ -148,7 +148,7 @@ final class ConfigurationStore {
 
     func save(_ snapshot: AppSnapshot) throws {
         if let lastLoadError {
-            log.warn(Self.subsystem, "refused to save \(snapshot.savedConnections.count) connections after a failed load: \(LogRedaction.error(lastLoadError))")
+            log.warn(Self.subsystem, "refused to save \(snapshot.savedConnections.count) connections after a failed load: \(LogFormat.error(lastLoadError))")
             throw ConfigurationStoreError.refusedToOverwriteAfterLoadFailure
         }
 
@@ -168,7 +168,7 @@ final class ConfigurationStore {
         do {
             try saveKeychainSnapshotData(data)
         } catch {
-            log.error(Self.subsystem, "save failed: \(LogRedaction.error(error))")
+            log.error(Self.subsystem, "save failed: \(LogFormat.error(error))")
             throw error
         }
         persistedConnectionCount = snapshot.savedConnections.count

@@ -38,7 +38,7 @@ nonisolated final class SystemProxyService: @unchecked Sendable {
             lastEnabledEndpoint = endpoint
             SystemStateDump.captureProxySettings("after enabling system proxy", services: (try? activeNetworkServices()) ?? [], log: log)
         } catch {
-            log.error(Self.subsystem, "enabling system proxy failed, restoring: \(LogRedaction.error(error))")
+            log.error(Self.subsystem, "enabling system proxy failed, restoring: \(LogFormat.error(error))")
             try? restoreSavedProxyState()
             throw error
         }
@@ -60,7 +60,7 @@ nonisolated final class SystemProxyService: @unchecked Sendable {
             }
             lastEnabledEndpoint = nil
         } catch {
-            log.error(Self.subsystem, "suspending system proxies failed, restoring: \(LogRedaction.error(error))")
+            log.error(Self.subsystem, "suspending system proxies failed, restoring: \(LogFormat.error(error))")
             try? restoreSavedProxyState()
             throw error
         }
