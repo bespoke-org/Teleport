@@ -54,7 +54,7 @@ struct XrayTunScriptBuilder: Sendable {
         \(dnsRouteFunctions())
         \(directRouteFunctions())
 
-        for helper_file in "$PID_FILE" "$LOG_FILE" "$PROTECTED_HOST_FILE" "$PROTECTED_GATEWAY_FILE" "$PROTECTED_DNS_FILE" "$CONTROL_LOG_FILE"; do
+        for helper_file in "$PID_FILE" "$LOG_FILE" "$LOG_FILE.1" "$PROTECTED_HOST_FILE" "$PROTECTED_GATEWAY_FILE" "$PROTECTED_DNS_FILE" "$CONTROL_LOG_FILE"; do
             [ ! -L "$helper_file" ] || rm -f "$helper_file"
         done
 
@@ -74,6 +74,12 @@ struct XrayTunScriptBuilder: Sendable {
         route delete -inet6 -net 8000::/1 >/dev/null 2>&1 || true
 
         rm -f "$PID_FILE"
+        # The previous run's output is kept as one older generation: a session
+        # that stopped working is usually followed by a reconnect, and truncating
+        # here destroyed what that session had said before anyone could read it.
+        if [ -s "$LOG_FILE" ]; then
+            mv -f "$LOG_FILE" "$LOG_FILE.1"
+        fi
         : > "$LOG_FILE"
         chmod 600 "$LOG_FILE"
         printf '%s\n' "$PROTECTED_HOSTS" > "$PROTECTED_HOST_FILE"
