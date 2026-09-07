@@ -10,7 +10,6 @@ struct ConnectionHealthProbeResult {
 }
 
 final class ConnectionHealthProbeService: @unchecked Sendable {
-    private let attemptCount: Int
     private let tcpTimeoutSeconds: Int
     private let tunnelProbeTimeoutSeconds: Int
     private let tunnelProbeURL: URL
@@ -18,14 +17,12 @@ final class ConnectionHealthProbeService: @unchecked Sendable {
     private let fileManager: FileManager
 
     init(
-        attemptCount: Int = 4,
         tcpTimeoutSeconds: Int = 3,
         tunnelProbeTimeoutSeconds: Int = 8,
         tunnelProbeURL: URL = URL(string: "https://cp.cloudflare.com/generate_204")!,
         bundle: Bundle = .main,
         fileManager: FileManager = .default
     ) {
-        self.attemptCount = max(1, attemptCount)
         self.tcpTimeoutSeconds = max(1, tcpTimeoutSeconds)
         self.tunnelProbeTimeoutSeconds = max(2, tunnelProbeTimeoutSeconds)
         self.tunnelProbeURL = tunnelProbeURL
@@ -45,28 +42,53 @@ final class ConnectionHealthProbeService: @unchecked Sendable {
         }
 
         let checkedAt = Date()
-        let tunnelResult = await proxyLatencyCheck(connection)
+        var outcome = await proxyLatencyCheck(connection)
+        // A probe that could not run says nothing about the server. The common
+        // cause is transient and local — a port the probe picked is busy — so it is
+        // worth one more attempt before reporting that nothing was learned.
+        if case .indeterminate = outcome {
+            outcome = await proxyLatencyCheck(connection)
+        }
 
-        if let tunnelLatency = tunnelResult.latencyMilliseconds {
+        switch outcome {
+        case let .measured(latency, kind):
             return ConnectionHealthProbeResult(
                 state: .reachable,
                 checkedAt: checkedAt,
-                latencyMilliseconds: tunnelLatency,
-                latencyKind: .proxyRequest,
+                latencyMilliseconds: latency,
+                latencyKind: kind,
                 failureSummary: nil
             )
+        case let .unreachable(summary):
+            return ConnectionHealthProbeResult(
+                state: .unreachable,
+                checkedAt: checkedAt,
+                latencyMilliseconds: nil,
+                latencyKind: nil,
+                failureSummary: summary
+            )
+        case let .indeterminate(summary):
+            // Not a verdict on the server: the probe itself did not get to ask.
+            return ConnectionHealthProbeResult(
+                state: .unknown,
+                checkedAt: checkedAt,
+                latencyMilliseconds: nil,
+                latencyKind: nil,
+                failureSummary: summary
+            )
         }
-
-        return ConnectionHealthProbeResult(
-            state: .unreachable,
-            checkedAt: checkedAt,
-            latencyMilliseconds: nil,
-            latencyKind: nil,
-            failureSummary: tunnelResult.failureSummary ?? "Unavailable"
-        )
     }
 
-    private func proxyLatencyCheck(_ connection: SavedConnection) async -> (latencyMilliseconds: Int?, failureSummary: String?) {
+    /// What a probe attempt learned. Keeping "the server answered", "the server did
+    /// not answer" and "we never managed to ask" apart is the whole point: the
+    /// third must never be shown as the second.
+    private enum ProbeOutcome {
+        case measured(Int, ConnectionHealthLatencyKind)
+        case unreachable(String)
+        case indeterminate(String)
+    }
+
+    private func proxyLatencyCheck(_ connection: SavedConnection) async -> ProbeOutcome {
         let probeEndpoint = temporaryProbeEndpoint()
         let runtimeManager = XrayRuntimeManager(bundle: bundle)
         let writer = XrayConfigurationWriter(proxyEndpoint: probeEndpoint)
@@ -77,24 +99,172 @@ final class ConnectionHealthProbeService: @unchecked Sendable {
             try? fileManager.removeItem(at: probeDirectory)
         }
 
+        // A WireGuard peer scoped to a few subnets cannot carry a request to a
+        // public address, so the request below would time out on a perfectly
+        // healthy peer. Such a peer is judged by its handshake instead, which Xray
+        // reports at debug level.
+        let peer = connection.configuration.wireguard
+        let judgedByHandshake = peer != nil && !(peer?.carriesDefaultRoute ?? true)
+
         do {
-            _ = try writer.writeConfig(for: connection.configuration, to: configURL)
+            _ = try writer.writeConfig(
+                for: connection.configuration,
+                to: configURL,
+                logLevel: peer == nil ? "warning" : "debug",
+                // A probe has to leave through the physical uplink. Otherwise a
+                // running tunnel carries it, and the result describes that tunnel
+                // rather than the server being probed — which is why probing a
+                // server outside the active session failed while the one inside it
+                // succeeded.
+                outboundInterface: SystemUplinkInventory.primaryInterfaceName()
+            )
             try runtimeManager.start(configURL: configURL)
             let isReady = await waitForLocalProxyReady(endpoint: probeEndpoint, connectionID: connection.id)
             guard isReady else {
+                // The local proxy never came up — the probe's own runtime, not the
+                // server, so this is not a verdict about the server.
                 let runtimeError = runtimeManager.stopAndCaptureErrorOutput()?.trimmingCharacters(in: .whitespacesAndNewlines)
-                return (nil, runtimeError.map(Self.summarizedRuntimeFailure) ?? "Proxy startup timed out")
+                return .indeterminate(runtimeError.map(Self.summarizedRuntimeFailure) ?? "The probe's local proxy did not start")
             }
 
-            let requestResult = try await proxyRequestLatencySample(endpoint: probeEndpoint)
-            runtimeManager.stop()
-            return (requestResult, nil)
+            if judgedByHandshake {
+                let outcome = await wireGuardHandshakeOutcome(
+                    peer: peer,
+                    endpoint: probeEndpoint,
+                    runtimeManager: runtimeManager
+                )
+                runtimeManager.stop()
+                return outcome
+            }
+
+            do {
+                let requestResult = try await proxyRequestLatencySample(endpoint: probeEndpoint)
+                runtimeManager.stop()
+                return .measured(requestResult, .proxyRequest)
+            } catch {
+                // A WireGuard peer that carries everything can still refuse the
+                // public probe targets. Its own handshake is the more direct
+                // question, so it decides before the server is called dead.
+                if peer != nil {
+                    let fallback = await wireGuardHandshakeOutcome(
+                        peer: peer,
+                        endpoint: probeEndpoint,
+                        runtimeManager: runtimeManager
+                    )
+                    runtimeManager.stop()
+                    if case .measured = fallback { return fallback }
+                    if case .indeterminate = fallback { return fallback }
+                }
+                runtimeManager.stop()
+                return .unreachable(Self.summarizedProbeFailure(error))
+            }
         } catch {
+            // Writing the config or launching the bundled runtime failed: nothing
+            // was asked of the server.
             let runtimeError = runtimeManager.stopAndCaptureErrorOutput()?.trimmingCharacters(in: .whitespacesAndNewlines)
             if let runtimeError, !runtimeError.isEmpty {
-                return (nil, Self.summarizedRuntimeFailure(runtimeError))
+                return .indeterminate(Self.summarizedRuntimeFailure(runtimeError))
             }
-            return (nil, Self.summarizedProbeFailure(error))
+            return .indeterminate(Self.summarizedProbeFailure(error))
+        }
+    }
+
+    /// A completed handshake means the peer is up and accepted our keys, which is
+    /// all a scoped peer can be asked without a reachable address inside its own
+    /// subnets. WireGuard only handshakes when there is something to send, so the
+    /// probe first asks the tunnel for an address the peer does carry; that request
+    /// is expected to fail and its outcome is ignored — it exists to make Xray dial.
+    private func wireGuardHandshakeOutcome(
+        peer: WireGuardParameters?,
+        endpoint: ProxyEndpoint,
+        runtimeManager: XrayRuntimeManager
+    ) async -> ProbeOutcome {
+        guard let peer else { return .indeterminate("The probe has no WireGuard peer to ask") }
+        guard let target = Self.handshakeTriggerTarget(for: peer) else {
+            return .indeterminate("This peer carries no address the probe could ask for")
+        }
+
+        let startTime = DispatchTime.now().uptimeNanoseconds
+        let deadline = Date().addingTimeInterval(TimeInterval(tunnelProbeTimeoutSeconds))
+        let triggerTask = Task { await Self.sendHandshakeTrigger(to: target, through: endpoint) }
+        defer { triggerTask.cancel() }
+
+        while Date() < deadline {
+            let output = runtimeManager.capturedErrorOutput() ?? ""
+            if Self.containsWireGuardHandshakeResponse(output) {
+                let elapsed = DispatchTime.now().uptimeNanoseconds - startTime
+                return .measured(max(1, Int((Double(elapsed) / 1_000_000).rounded())), .wireGuardHandshake)
+            }
+            // The probe's own runtime died mid-question; the server was never given
+            // a chance to answer.
+            if !runtimeManager.isRunning {
+                return .indeterminate(Self.summarizedRuntimeFailure(output.isEmpty ? "The probe's local proxy stopped" : output))
+            }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+
+        let output = runtimeManager.capturedErrorOutput() ?? ""
+        // Silence from the peer is a verdict; never having asked is not.
+        return Self.containsWireGuardHandshakeAttempt(output)
+            ? .unreachable("The peer did not answer the WireGuard handshake")
+            : .indeterminate("Teleport could not send a WireGuard handshake to this peer")
+    }
+
+    /// An address the peer is known to carry: its own resolver if it publishes one,
+    /// otherwise the base address of a range it accepts. IPv4 comes first — a peer
+    /// with no IPv6 address of its own drops an IPv6 packet before it ever
+    /// handshakes, which would look like silence from the peer.
+    nonisolated static func handshakeTriggerTarget(for peer: WireGuardParameters) -> String? {
+        let candidates = XrayConfigurationWriter.resolverAddresses(peer.dnsServers)
+            + peer.allowedIPs.compactMap { allowedIP -> String? in
+                let base = allowedIP.split(separator: "/").first.map(String.init) ?? allowedIP
+                guard !base.isEmpty, base != "0.0.0.0", base != "::" else { return nil }
+                return base
+            }
+        return candidates.first { !$0.contains(":") } ?? candidates.first
+    }
+
+    /// Whether Xray tried at all. wireguard-go only handshakes when it has traffic
+    /// to send, so an absent initiation means the probe's own request never reached
+    /// the outbound, not that the peer is down.
+    nonisolated static func containsWireGuardHandshakeAttempt(_ output: String) -> Bool {
+        output.lowercased().contains("handshake initiation")
+    }
+
+    private static func sendHandshakeTrigger(to target: String, through endpoint: ProxyEndpoint) async {
+        let host = target.contains(":") ? "[\(target)]" : target
+        // https, not http: App Transport Security refuses cleartext requests, so an
+        // http:// trigger never leaves the app and the tunnel is never dialled. The
+        // TLS handshake here is expected to fail; what matters is that the proxy is
+        // asked to CONNECT, which makes Xray dial through the peer.
+        guard let url = URL(string: "https://\(host)/") else { return }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 4
+        configuration.timeoutIntervalForResource = 4
+        configuration.waitsForConnectivity = false
+        configuration.connectionProxyDictionary = [
+            kCFNetworkProxiesHTTPEnable as String: 1,
+            kCFNetworkProxiesHTTPProxy as String: endpoint.host,
+            kCFNetworkProxiesHTTPPort as String: endpoint.httpPort,
+            kCFNetworkProxiesHTTPSEnable as String: 1,
+            kCFNetworkProxiesHTTPSProxy as String: endpoint.host,
+            kCFNetworkProxiesHTTPSPort as String: endpoint.httpPort
+        ]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        // Whether this answers is irrelevant: sending it is what makes WireGuard
+        // start its handshake.
+        _ = try? await session.data(from: url)
+    }
+
+    /// Xray's wording has changed between releases, so the marker is matched
+    /// loosely: any handshake line that is about receiving rather than sending.
+    nonisolated static func containsWireGuardHandshakeResponse(_ output: String) -> Bool {
+        output.split(separator: "\n").contains { line in
+            let lowercased = line.lowercased()
+            guard lowercased.contains("handshake") else { return false }
+            return lowercased.contains("receiving") || lowercased.contains("received")
         }
     }
 
@@ -153,7 +323,11 @@ final class ConnectionHealthProbeService: @unchecked Sendable {
     }
 
     private func waitForLocalProxyReady(endpoint: ProxyEndpoint, connectionID: UUID) async -> Bool {
-        guard let port = NWEndpoint.Port(rawValue: UInt16(endpoint.httpPort)) else {
+        // Both inbounds must be up: the probe picks its ports at random, and one of
+        // them being taken by another process would otherwise pass as ready and
+        // then fail as if the server were at fault.
+        guard let httpPort = NWEndpoint.Port(rawValue: UInt16(endpoint.httpPort)),
+              let socksPort = NWEndpoint.Port(rawValue: UInt16(endpoint.socksPort)) else {
             return false
         }
 
@@ -161,8 +335,9 @@ final class ConnectionHealthProbeService: @unchecked Sendable {
         let attemptLimit = 20
 
         for _ in 0..<attemptLimit {
-            let sample = await tcpLatencySample(host: host, port: port, connectionID: connectionID)
-            if sample.isReachable {
+            let sample = await tcpLatencySample(host: host, port: httpPort, connectionID: connectionID)
+            if sample.isReachable,
+               await tcpLatencySample(host: host, port: socksPort, connectionID: connectionID).isReachable {
                 return true
             }
 

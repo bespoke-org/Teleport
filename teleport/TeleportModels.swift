@@ -70,6 +70,9 @@ enum ConnectionHealthState: String, Codable {
 enum ConnectionHealthLatencyKind: String, Codable {
     case tcpConnect
     case proxyRequest
+    /// Measured from the peer's answer to a WireGuard handshake, which is what a
+    /// peer carrying only part of the traffic can be asked.
+    case wireGuardHandshake
 }
 
 nonisolated struct ConnectionHealthCheck: Codable, Equatable {
@@ -131,6 +134,19 @@ nonisolated enum ConnectionProtocolType: String, Codable, CaseIterable {
 nonisolated struct WireGuardParameters: Codable, Equatable, Sendable {
     static let defaultAllowedIPs = ["0.0.0.0/0", "::/0"]
     static let defaultMTU = 1420
+
+    /// True when the peer accepts every destination. A peer scoped to a few
+    /// subnets cannot carry a request to a public address, so a probe that asks it
+    /// to would be measuring the scope, not the peer.
+    var carriesDefaultRoute: Bool {
+        // "0.0.0.0/1, 128.0.0.0/1" is a common way of writing a default route that
+        // wg-quick does not have to install as one.
+        let normalized = Set(allowedIPs.map { $0.trimmingCharacters(in: .whitespaces) })
+        if normalized.contains("0.0.0.0/0") || normalized.contains("::/0") {
+            return true
+        }
+        return normalized.contains("0.0.0.0/1") && normalized.contains("128.0.0.0/1")
+    }
 
     let secretKey: String
     let peerPublicKey: String

@@ -6,7 +6,89 @@ struct VerifyConnectionHealth {
         try testHealthMetadataSnapshotRoundTrip()
         try testLegacySnapshotWithoutHealthMetadata()
         try testSubscriptionRefreshPreservesHealthForEquivalentEntry()
+        try testScopedWireGuardPeerIsJudgedByItsHandshake()
         print("verify_connection_health: all checks passed")
+    }
+
+    /// A WireGuard peer that carries only a few subnets cannot deliver a request
+    /// to a public address, so probing it that way measured the peer's scope and
+    /// reported a healthy peer as failed. Such a peer is judged by its handshake.
+    private static func testScopedWireGuardPeerIsJudgedByItsHandshake() throws {
+        let parser = ConnectionLinkParser()
+        let scoped = try parser.parse(wireGuardConfigurationFile(allowedIPs: "10.72.0.0/16"))
+        precondition(scoped.wireguard?.carriesDefaultRoute == false)
+
+        let fullTunnel = try parser.parse(wireGuardConfigurationFile(allowedIPs: "0.0.0.0/0, ::/0"))
+        precondition(fullTunnel.wireguard?.carriesDefaultRoute == true)
+
+        // The handshake is only visible in Xray's log at debug level, and the probe
+        // must leave through the uplink: routed through a running tunnel it would
+        // describe that tunnel instead of the server.
+        let configURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("teleport-verify-health-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: configURL) }
+        _ = try XrayConfigurationWriter(proxyEndpoint: .default).writeConfig(
+            for: scoped,
+            to: configURL,
+            logLevel: "debug",
+            outboundInterface: "en0"
+        )
+        let payload = try JSONSerialization.jsonObject(with: try Data(contentsOf: configURL)) as? [String: Any]
+        precondition((payload?["log"] as? [String: Any])?["loglevel"] as? String == "debug")
+        let probeOutbound = (payload?["outbounds"] as? [[String: Any]])?.first { $0["tag"] as? String == "proxy" }
+        let sockopt = (probeOutbound?["streamSettings"] as? [String: Any])?["sockopt"] as? [String: Any]
+        precondition(sockopt?["interface"] as? String == "en0", "expected a probe to be bound to the uplink")
+
+        // The address the probe pokes has to be one the peer actually carries.
+        precondition(ConnectionHealthProbeService.handshakeTriggerTarget(for: scoped.wireguard!) == "10.72.0.0")
+        let withResolver = try parser.parse(
+            wireGuardConfigurationFile(allowedIPs: "10.72.0.0/16").replacingOccurrences(
+                of: "Address = 172.16.0.2/32",
+                with: "Address = 172.16.0.2/32\nDNS = 10.72.0.53"
+            )
+        )
+        precondition(ConnectionHealthProbeService.handshakeTriggerTarget(for: withResolver.wireguard!) == "10.72.0.53")
+
+        // An IPv6-first peer would otherwise be poked over IPv6, which a peer with
+        // no IPv6 address of its own drops before handshaking at all.
+        let dualStack = try parser.parse(wireGuardConfigurationFile(allowedIPs: "fd00::/8, 10.72.0.0/16"))
+        precondition(ConnectionHealthProbeService.handshakeTriggerTarget(for: dualStack.wireguard!) == "10.72.0.0")
+
+        // Silence from the peer and never asking are different failures.
+        precondition(ConnectionHealthProbeService.containsWireGuardHandshakeAttempt(
+            "2026/09/07 00:00:00 [Debug] peer(abcd…wxyz) - Sending handshake initiation"
+        ))
+        precondition(!ConnectionHealthProbeService.containsWireGuardHandshakeAttempt("2026/09/07 00:00:00 [Warning] core: Xray started"))
+
+        // A default route written as two halves still carries everything, so such a
+        // peer must be probed with a real request rather than by its handshake.
+        let halves = try parser.parse(wireGuardConfigurationFile(allowedIPs: "0.0.0.0/1, 128.0.0.0/1"))
+        precondition(halves.wireguard?.carriesDefaultRoute == true)
+        let partial = try parser.parse(wireGuardConfigurationFile(allowedIPs: "0.0.0.0/1"))
+        precondition(partial.wireguard?.carriesDefaultRoute == false)
+
+        // The marker matches the wording the bundled Xray actually logs, and does
+        // not mistake our own outgoing handshake for the peer's answer.
+        precondition(ConnectionHealthProbeService.containsWireGuardHandshakeResponse(
+            "2026/09/07 00:00:00 [Debug] peer(abcd…wxyz) - Received handshake response"
+        ))
+        precondition(!ConnectionHealthProbeService.containsWireGuardHandshakeResponse(
+            "2026/09/07 00:00:00 [Debug] peer(abcd…wxyz) - Sending handshake initiation"
+        ))
+        precondition(!ConnectionHealthProbeService.containsWireGuardHandshakeResponse(""))
+    }
+
+    private static func wireGuardConfigurationFile(allowedIPs: String) -> String {
+        """
+        [Interface]
+        PrivateKey = cJl3zBqYlKrLmZ1r9gCVKzZ9lHhP5rQ0nX2sYy8vWmM=
+        Address = 172.16.0.2/32
+
+        [Peer]
+        PublicKey = bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=
+        AllowedIPs = \(allowedIPs)
+        Endpoint = wg.example:51820
+        """
     }
 
     private static func testHealthMetadataSnapshotRoundTrip() throws {

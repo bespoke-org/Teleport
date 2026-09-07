@@ -392,6 +392,8 @@ final class AppViewModel: ObservableObject {
                 switch healthCheck.latencyKind {
                 case .proxyRequest:
                     return "Ping \(latency) ms"
+                case .wireGuardHandshake:
+                    return "Handshake \(latency) ms"
                 case .tcpConnect, nil:
                     return "TCP \(latency) ms"
                 }
@@ -404,6 +406,11 @@ final class AppViewModel: ObservableObject {
         case .checking:
             return "Checking…"
         case .unknown:
+            // A probe that could not run says why; it must not read as a verdict
+            // about the server.
+            if let failureSummary = healthCheck.failureSummary, !failureSummary.isEmpty {
+                return failureSummary
+            }
             if let checkedAt = healthCheck.checkedAt {
                 return "Unknown • checked \(Self.relativeFormatter.localizedString(for: checkedAt, relativeTo: Date()))"
             }
@@ -422,6 +429,8 @@ final class AppViewModel: ObservableObject {
                 switch healthCheck.latencyKind {
                 case .proxyRequest:
                     return "Ping \(latency) ms"
+                case .wireGuardHandshake:
+                    return "Handshake \(latency) ms"
                 case .tcpConnect, nil:
                     return "TCP \(latency) ms"
                 }
@@ -434,6 +443,11 @@ final class AppViewModel: ObservableObject {
         case .checking:
             return "Checking…"
         case .unknown:
+            // A probe that could not run says why; it must not read as a verdict
+            // about the server.
+            if let failureSummary = healthCheck.failureSummary, !failureSummary.isEmpty {
+                return failureSummary
+            }
             if let checkedAt = healthCheck.checkedAt {
                 return "Unknown • checked \(Self.relativeFormatter.localizedString(for: checkedAt, relativeTo: Date()))"
             }

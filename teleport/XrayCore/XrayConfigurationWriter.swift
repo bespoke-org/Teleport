@@ -62,8 +62,17 @@ nonisolated struct XrayConfigurationWriter {
         )
     }
 
-    func writeConfig(for configuration: ConnectionConfiguration, to outputURL: URL) throws -> URL {
-        try writePayload(makePayload(configuration: configuration), to: outputURL)
+    /// `logLevel` is raised by the health probe: at "debug" Xray reports each
+    /// WireGuard handshake, which is the only reachability signal a peer that
+    /// carries just a few subnets can give.
+    /// `outboundInterface` binds the proxy outbound to a physical interface. The
+    /// health probe needs it: while a tunnel holds the default routes, an unbound
+    /// probe travels through that tunnel and measures it instead of the server.
+    func writeConfig(for configuration: ConnectionConfiguration, to outputURL: URL, logLevel: String = "warning", outboundInterface: String? = nil) throws -> URL {
+        try writePayload(
+            makePayload(configuration: configuration, logLevel: logLevel, outboundInterface: outboundInterface),
+            to: outputURL
+        )
     }
 
     func writeTunnelConfig(for configuration: ConnectionConfiguration, interfaceName: String, outboundInterface: String = "auto", directSendThrough: String? = nil, splitTunnelRules: [SplitTunnelRule] = [], defaultAction: SplitTunnelRuleAction = .proxy) throws -> URL {
@@ -133,20 +142,23 @@ nonisolated struct XrayConfigurationWriter {
         try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
     }
 
-    private func makePayload(configuration: ConnectionConfiguration) -> [String: Any] {
+    private func makePayload(configuration: ConnectionConfiguration, logLevel: String = "warning", outboundInterface: String? = nil) -> [String: Any] {
         var proxyOutbound: [String: Any] = [
             "tag": "proxy",
             "protocol": configuration.protocolType.rawValue,
             "settings": makeOutboundSettings(configuration: configuration)
         ]
-        let streamSettings = makeStreamSettings(configuration: configuration)
+        var streamSettings = makeStreamSettings(configuration: configuration)
+        if let outboundInterface, !outboundInterface.isEmpty, outboundInterface != "auto" {
+            streamSettings["sockopt"] = ["interface": outboundInterface]
+        }
         if !streamSettings.isEmpty {
             proxyOutbound["streamSettings"] = streamSettings
         }
 
         return [
             "log": [
-                "loglevel": "warning"
+                "loglevel": logLevel
             ],
             "inbounds": [
                 [
