@@ -6,15 +6,20 @@ nonisolated final class SystemProxyService: @unchecked Sendable {
     private let fileManager: FileManager
     private let commandTimeout: TimeInterval
     private var lastEnabledEndpoint: ProxyEndpoint?
+    private let log: TeleportLog
+
+    static let subsystem = "sysproxy"
 
     init(
         processRunner: @escaping (Process) throws -> Void = { try $0.run() },
         fileManager: FileManager = .default,
-        commandTimeout: TimeInterval = 5
+        commandTimeout: TimeInterval = 5,
+        log: TeleportLog = .shared
     ) {
         self.processRunner = processRunner
         self.fileManager = fileManager
         self.commandTimeout = commandTimeout
+        self.log = log
     }
 
     func hasSavedProxySnapshot() -> Bool {
@@ -22,6 +27,8 @@ nonisolated final class SystemProxyService: @unchecked Sendable {
     }
 
     func enableProxy(endpoint: ProxyEndpoint) throws {
+        log.info(Self.subsystem, "enabling system proxy at \(endpoint.host) http \(endpoint.httpPort) socks \(endpoint.socksPort)")
+        SystemStateDump.captureProxySettings("before enabling system proxy", services: (try? activeNetworkServices()) ?? [], log: log)
         try persistCurrentProxyStateIfNeeded(endpoint: endpoint)
 
         do {
@@ -29,7 +36,9 @@ nonisolated final class SystemProxyService: @unchecked Sendable {
             try setSecureWebProxy(enabled: true, host: endpoint.host, port: endpoint.httpPort)
             try setSOCKSProxy(enabled: true, host: endpoint.host, port: endpoint.socksPort)
             lastEnabledEndpoint = endpoint
+            SystemStateDump.captureProxySettings("after enabling system proxy", services: (try? activeNetworkServices()) ?? [], log: log)
         } catch {
+            log.error(Self.subsystem, "enabling system proxy failed, restoring: \(LogRedaction.error(error))")
             try? restoreSavedProxyState()
             throw error
         }
@@ -38,6 +47,7 @@ nonisolated final class SystemProxyService: @unchecked Sendable {
     /// Temporarily disables every system proxy while VPN routing is active, while
     /// retaining a snapshot that can be restored after the tunnel stops.
     func suspendProxyForVPN() throws {
+        log.info(Self.subsystem, "suspending system proxies for VPN routing")
         if !hasSavedProxySnapshot() {
             try persistCurrentProxyStateIfNeeded(endpoint: lastEnabledEndpoint ?? .default)
         }
@@ -50,12 +60,14 @@ nonisolated final class SystemProxyService: @unchecked Sendable {
             }
             lastEnabledEndpoint = nil
         } catch {
+            log.error(Self.subsystem, "suspending system proxies failed, restoring: \(LogRedaction.error(error))")
             try? restoreSavedProxyState()
             throw error
         }
     }
 
     func disableProxy() throws {
+        log.info(Self.subsystem, "disabling system proxy (snapshot \(hasSavedProxySnapshot() ? "present" : "absent"))")
         if hasSavedProxySnapshot() {
             try restoreSavedProxyState()
             return
@@ -76,12 +88,21 @@ nonisolated final class SystemProxyService: @unchecked Sendable {
         guard let snapshot = try loadSavedProxySnapshot() else { return }
 
         let activeServices = Set(try activeNetworkServices())
-        for serviceSnapshot in snapshot.services where activeServices.contains(serviceSnapshot.serviceName) {
+        for serviceSnapshot in snapshot.services {
+            guard activeServices.contains(serviceSnapshot.serviceName) else {
+                // The snapshot is deleted below regardless, so a service that was
+                // down at this moment (Wi-Fi during an outage) keeps whatever proxy
+                // settings Teleport wrote, with no record left to restore from.
+                log.warn(Self.subsystem, "not restoring proxy settings for \(serviceSnapshot.serviceName): service is not currently active")
+                continue
+            }
             try restoreWebProxy(serviceSnapshot.webProxy, service: serviceSnapshot.serviceName)
             try restoreSecureWebProxy(serviceSnapshot.secureWebProxy, service: serviceSnapshot.serviceName)
             try restoreSOCKSProxy(serviceSnapshot.socksProxy, service: serviceSnapshot.serviceName)
         }
 
+        log.info(Self.subsystem, "restored proxy settings for \(snapshot.services.filter { activeServices.contains($0.serviceName) }.count) of \(snapshot.services.count) snapshotted services; discarding snapshot")
+        SystemStateDump.captureProxySettings("after restoring system proxy", services: Array(activeServices), log: log)
         try? fileManager.removeItem(at: proxySnapshotURL)
         lastEnabledEndpoint = nil
     }
@@ -104,6 +125,7 @@ nonisolated final class SystemProxyService: @unchecked Sendable {
         }
 
         let snapshot = ProxyStateSnapshot(createdAt: Date(), endpoint: endpoint, services: snapshots)
+        log.info(Self.subsystem, "saved pre-Teleport proxy snapshot for \(snapshots.count) services: \(snapshots.map(\.serviceName).joined(separator: ", "))")
         try fileManager.createDirectory(at: proxyStateDirectoryURL, withIntermediateDirectories: true)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -261,7 +283,14 @@ nonisolated final class SystemProxyService: @unchecked Sendable {
         let stderr = String(decoding: errorPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
 
         guard process.terminationStatus == 0 else {
+            log.error(Self.subsystem, "networksetup \(arguments.joined(separator: " ")) failed: \(stderr.trimmingCharacters(in: .whitespacesAndNewlines))")
             throw ProxyError.commandFailed(arguments: arguments, standardError: stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+
+        // Only mutations are logged; the -get/-list reads around them would triple
+        // the volume without saying anything about what changed.
+        if arguments.first?.hasPrefix("-set") == true {
+            log.info(Self.subsystem, "networksetup \(arguments.joined(separator: " "))")
         }
 
         return CommandResult(standardOutput: stdout, standardError: stderr)

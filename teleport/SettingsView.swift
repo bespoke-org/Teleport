@@ -197,9 +197,10 @@ private struct GeneralSettingsView: View {
 
 private struct NerdShitSettingsView: View {
     @ObservedObject var viewModel: AppViewModel
-    @State private var selectedLog: NerdLogFile = .systemProxy
+    @State private var selectedLog: NerdLogFile = .app
     @State private var logText = ""
     @State private var logMetadata = ""
+    @State private var dumpsSystemState = UserDefaults.standard.bool(forKey: SystemStateDump.defaultsKey)
 
     private let maxLogBytes: UInt64 = 256 * 1024
 
@@ -211,7 +212,6 @@ private struct NerdShitSettingsView: View {
         .padding(.bottom, 16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onAppear {
-            selectedLog = viewModel.connectionMode == .vpn ? .vpn : .systemProxy
             Task { await refreshLog() }
         }
         .onChange(of: selectedLog) { _, _ in
@@ -221,8 +221,18 @@ private struct NerdShitSettingsView: View {
 
     private var logSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Xray diagnostics")
+            Text("Diagnostics")
                 .font(.headline)
+
+            Toggle(isOn: $dumpsSystemState) {
+                Text("Dump system state around every change")
+                Text("Records the routing table, resolvers, packet filter and proxy settings before and after Teleport changes them. Off by default: each capture adds a few KB to the log.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .onChange(of: dumpsSystemState) { _, newValue in
+                UserDefaults.standard.set(newValue, forKey: SystemStateDump.defaultsKey)
+            }
 
             HStack(spacing: 10) {
                 Picker("Log", selection: $selectedLog) {
@@ -244,6 +254,11 @@ private struct NerdShitSettingsView: View {
                     NSPasteboard.general.setString(logText, forType: .string)
                 }
                 .disabled(logText.isEmpty)
+
+                Button("Reveal", systemImage: "folder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([selectedLog.url])
+                }
+                .help("Show \(selectedLog.url.lastPathComponent) in Finder")
             }
 
             Text(logMetadata)
@@ -378,6 +393,8 @@ private struct LogTextViewer: NSViewRepresentable {
 }
 
 private enum NerdLogFile: String, CaseIterable, Identifiable, Hashable {
+    case app
+    case helper
     case systemProxy
     case vpnConfig
     case vpn
@@ -387,6 +404,10 @@ private enum NerdLogFile: String, CaseIterable, Identifiable, Hashable {
 
     var title: String {
         switch self {
+        case .app:
+            return "Teleport"
+        case .helper:
+            return "Helper"
         case .systemProxy:
             return "System Proxy"
         case .vpnConfig:
@@ -400,8 +421,10 @@ private enum NerdLogFile: String, CaseIterable, Identifiable, Hashable {
 
     var helperLogName: String? {
         switch self {
-        case .systemProxy:
+        case .app, .systemProxy:
             return nil
+        case .helper:
+            return "helper.log"
         case .vpnConfig:
             return "xray-tun-config.json"
         case .vpn:
@@ -413,6 +436,10 @@ private enum NerdLogFile: String, CaseIterable, Identifiable, Hashable {
 
     var url: URL {
         switch self {
+        case .app:
+            return TeleportLog.shared.fileURL
+        case .helper:
+            return Self.helperStateDirectoryURL.appendingPathComponent("helper.log")
         case .systemProxy:
             return Self.applicationSupportDirectoryURL.appendingPathComponent("xray.log")
         case .vpnConfig:

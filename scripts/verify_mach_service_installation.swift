@@ -30,7 +30,7 @@ struct VerifyMachServiceInstallation {
         }
         require(machServices.count == 1, "LaunchDaemon must expose exactly one Mach service")
         require(machServices[VPNHelperProtocol.machServiceName] as? Bool == true, "Expected Mach service must be enabled")
-        require(PrivilegedHelperConstants.version == "9", "Installed helper compatibility version must be 9")
+        require(PrivilegedHelperConstants.version == "10", "Installed helper compatibility version must be 10")
 
         print("verify_mach_service_installation: all checks passed")
     }

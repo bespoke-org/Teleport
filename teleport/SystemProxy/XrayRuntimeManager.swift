@@ -129,16 +129,34 @@ nonisolated final class XrayRuntimeManager: @unchecked Sendable {
         logFileHandle = nil
     }
 
+    /// Appends rather than truncates: the output of the run that just died is the
+    /// output worth reading, and truncating at the next start — which is what a user
+    /// does immediately after a failure — destroyed it before anyone could look.
     private func makeLogFileHandle() throws -> FileHandle {
         let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
             .appendingPathComponent("teleport", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let logURL = directory.appendingPathComponent("xray.log")
-        FileManager.default.createFile(atPath: logURL.path, contents: nil)
+
+        // Appending forever is the other way to lose the log, so one previous
+        // generation is kept and older output is dropped at a bounded size.
+        let currentBytes = (try? FileManager.default.attributesOfItem(atPath: logURL.path)[.size] as? NSNumber)??.intValue ?? 0
+        if currentBytes > Self.maximumLogBytes {
+            let rotatedURL = directory.appendingPathComponent("xray.log.1")
+            try? FileManager.default.removeItem(at: rotatedURL)
+            try? FileManager.default.moveItem(at: logURL, to: rotatedURL)
+        }
+
+        if !FileManager.default.fileExists(atPath: logURL.path) {
+            FileManager.default.createFile(atPath: logURL.path, contents: nil, attributes: [.posixPermissions: 0o600])
+        }
         let handle = try FileHandle(forWritingTo: logURL)
-        try handle.truncate(atOffset: 0)
+        _ = try handle.seekToEnd()
+        try handle.write(contentsOf: Data("\n===== xray started \(Date()) =====\n".utf8))
         return handle
     }
+
+    private static let maximumLogBytes = 5 * 1024 * 1024
 
     private func assetDirectoryURL() -> URL? {
         // TODO(gpt-5.6-sol): The current Xcode resource phase flattens `geoip.dat`

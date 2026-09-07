@@ -44,6 +44,40 @@ nonisolated struct StartSessionRequest: Codable, Sendable, Equatable {
     let protectedHosts: [String]
     let tunnelInterfaceName: String
     let outboundInterface: String
+    /// The root helper has no user defaults of its own, so the app's diagnostics
+    /// choice has to travel with the request that acts on it.
+    let dumpsSystemState: Bool
+
+    init(
+        stateDirectoryPath: String,
+        assetDirectoryPath: String,
+        configData: Data,
+        protectedHosts: [String],
+        tunnelInterfaceName: String,
+        outboundInterface: String,
+        dumpsSystemState: Bool = false
+    ) {
+        self.stateDirectoryPath = stateDirectoryPath
+        self.assetDirectoryPath = assetDirectoryPath
+        self.configData = configData
+        self.protectedHosts = protectedHosts
+        self.tunnelInterfaceName = tunnelInterfaceName
+        self.outboundInterface = outboundInterface
+        self.dumpsSystemState = dumpsSystemState
+    }
+
+    // Decoded leniently so a helper from this build still accepts a request sent by
+    // an older client, which has no such field.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        stateDirectoryPath = try container.decode(String.self, forKey: .stateDirectoryPath)
+        assetDirectoryPath = try container.decode(String.self, forKey: .assetDirectoryPath)
+        configData = try container.decode(Data.self, forKey: .configData)
+        protectedHosts = try container.decode([String].self, forKey: .protectedHosts)
+        tunnelInterfaceName = try container.decode(String.self, forKey: .tunnelInterfaceName)
+        outboundInterface = try container.decode(String.self, forKey: .outboundInterface)
+        dumpsSystemState = try container.decodeIfPresent(Bool.self, forKey: .dumpsSystemState) ?? false
+    }
 }
 
 nonisolated struct StopSessionRequest: Codable, Sendable, Equatable {
@@ -56,6 +90,9 @@ nonisolated enum VPNHelperLog: String, Codable, Sendable {
     case config
     case xray
     case control
+    /// The helper's own event log, which unlike the others spans sessions and
+    /// survives reboots.
+    case helper
 }
 
 nonisolated struct ReadDiagnosticsRequest: Codable, Sendable, Equatable {

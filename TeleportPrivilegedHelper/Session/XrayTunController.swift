@@ -8,6 +8,8 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
     private let shellRunner: HelperShellRunner
     private let scriptBuilder: XrayTunScriptBuilder
 
+    static let subsystem = "helper"
+
     init(
         managedProcess: ManagedXrayProcess = ManagedXrayProcess(installedXrayPath: installedXrayPath),
         shellRunner: HelperShellRunner = HelperShellRunner(),
@@ -42,6 +44,11 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
         }
 
         let helperStateDirectoryPath = try preparedHelperStateDirectoryPath()
+        // Set before the first capture, so the request that turns dumps on is itself
+        // dumped rather than the setting only taking effect from the next session.
+        SystemStateDump.setMarker(request.dumpsSystemState)
+        TeleportLog.shared.info(Self.subsystem, "start session \(LogRedaction.id(sessionID)): tun \(tunnelInterfaceName), uplink \(outboundInterface), \(protectedHosts.count) protected hosts")
+        SystemStateDump.capture("helper: before tunnel start")
         let configPath = try writeHelperConfig(request.configData, helperStateDirectoryPath: helperStateDirectoryPath)
         try managedProcess.terminateManagedXray(helperStateDirectoryPath: helperStateDirectoryPath)
         try managedProcess.terminateLegacyManagedXray(stateDirectoryPath: stateDirectoryPath)
@@ -54,6 +61,8 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
             outboundInterface: outboundInterface,
             installsIPv6Routes: NetworkInterfaceInventory.hasGlobalIPv6Address(outboundInterface)
         ))
+        TeleportLog.shared.info(Self.subsystem, "start session \(LogRedaction.id(sessionID)): tunnel is up")
+        SystemStateDump.capture("helper: after tunnel start")
         // TODO(gpt-5.6-sol): Supervision ends as soon as the startup shell reports
         // readiness. Monitor the validated Xray process afterward and reconcile
         // helper-owned state/routes on unexpected exit instead of waiting for a
@@ -70,6 +79,8 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
         let protectedHosts = try validatedProtectedHosts(request.protectedHosts, required: false)
         let outboundInterface = try validatedOutboundInterface(request.outboundInterface)
         let helperStateDirectoryPath = try preparedHelperStateDirectoryPath()
+        TeleportLog.shared.info(Self.subsystem, "stop session \(LogRedaction.id(sessionID)): uplink \(outboundInterface.isEmpty ? "<none>" : outboundInterface), \(protectedHosts.count) protected hosts")
+        SystemStateDump.capture("helper: before tunnel stop")
         try managedProcess.terminateManagedXray(helperStateDirectoryPath: helperStateDirectoryPath)
         try managedProcess.terminateLegacyManagedXray(stateDirectoryPath: stateDirectoryPath)
         try shellRunner.run(scriptBuilder.makeStopScript(
@@ -77,6 +88,8 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
             protectedHosts: protectedHosts.isEmpty ? nil : protectedHosts,
             outboundInterface: outboundInterface
         ))
+        TeleportLog.shared.info(Self.subsystem, "stop session \(LogRedaction.id(sessionID)): teardown finished")
+        SystemStateDump.capture("helper: after tunnel stop")
         return StopSessionResponse(
             phase: .idle,
             summary: nil,
@@ -93,6 +106,8 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
             logName = "xray-tun.log"
         case .control:
             logName = "xray-tun-control.log"
+        case .helper:
+            logName = "helper.log"
         }
         let maxBytes = max(1, min(request.maximumBytes, maxLogReadBytes))
         let helperStateDirectoryPath = try preparedHelperStateDirectoryPath()

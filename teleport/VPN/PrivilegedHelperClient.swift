@@ -60,7 +60,8 @@ nonisolated struct PrivilegedHelperClient: Sendable {
             configData: session.configData,
             protectedHosts: session.protectedHosts,
             tunnelInterfaceName: session.tunnelInterfaceName,
-            outboundInterface: session.outboundInterface
+            outboundInterface: session.outboundInterface,
+            dumpsSystemState: SystemStateDump.isEnabled
         )
 
         do {
@@ -141,6 +142,8 @@ nonisolated struct PrivilegedHelperClient: Sendable {
             log = .xray
         case "control", "xray-tun-control.log":
             log = .control
+        case "helper", "helper.log":
+            log = .helper
         default:
             throw PrivilegedHelperClientError.invalidResponse("Unsupported privileged helper log selector")
         }

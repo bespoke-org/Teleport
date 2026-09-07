@@ -71,6 +71,9 @@ final class AppViewModel: ObservableObject {
     private let splitTunnelGeodataMatcher = SplitTunnelGeodataMatcher()
     private let loginItemService = LoginItemService()
     private let persistenceQueue = DispatchQueue(label: "dev.x.teleport.persistence", qos: .utility)
+    private let log = TeleportLog.shared
+
+    static let subsystem = "app"
     private lazy var healthProbeQueue = ConnectionHealthProbeQueue(
         healthProbeService: healthProbeService,
         // Full tunnel probes spin up temporary Xray instances; allow a wider fan-out for bulk checks.
@@ -128,6 +131,11 @@ final class AppViewModel: ObservableObject {
         self.connectionProviderFactory = connectionProviderFactory
         self.subscriptionClient = subscriptionClient
         self.healthProbeService = healthProbeService
+
+        TeleportLog.shared.info(
+            AppViewModel.subsystem,
+            "launched build \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?") (\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?")), state dumps \(SystemStateDump.isEnabled ? "on" : "off")"
+        )
 
         var snapshot = store.load()
         var loadErrorMessage: String?
@@ -1095,6 +1103,8 @@ final class AppViewModel: ObservableObject {
             return
         }
 
+        log.info(Self.subsystem, "connect requested: mode \(connectionMode), server \(LogRedaction.host(selectedConfiguration.host)):\(selectedConfiguration.port), split tunnel \(isSplitTunnelEnabled ? "on" : "off") with \(activeSplitTunnelRules.count) rules")
+        SystemStateDump.capture("before connect", log: log)
         startConnection(using: selectedConfiguration)
     }
 
@@ -1102,6 +1112,8 @@ final class AppViewModel: ObservableObject {
         guard !isTerminating else { return }
         let provider = connectionProvider
         let operationID = UUID()
+        log.info(Self.subsystem, "disconnect requested: mode \(connectionMode)")
+        SystemStateDump.capture("before disconnect", log: log)
         beginConnectionOperation()
         Task { @MainActor [weak self] in
             do {
@@ -1112,17 +1124,41 @@ final class AppViewModel: ObservableObject {
                     self?.applyConnectionError(error)
                 }
             }
+            // Captured whether or not the disconnect reported success: routes and
+            // proxy settings left behind by a failed teardown are exactly what this
+            // dump exists to show.
+            SystemStateDump.capture("after disconnect", log: self?.log ?? .shared)
             self?.finishConnectionOperation(operationID)
         }
     }
 
     func handleAppTermination(completion: @escaping () -> Void) {
         isTerminating = true
+        log.info(Self.subsystem, "terminating")
         let provider = connectionProvider
         Task { @MainActor [weak self] in
             try? await provider.disconnect()
             self?.connectionStateTask?.cancel()
+            // Anything still queued would otherwise be lost exactly when the log
+            // matters most: a quit that follows something going wrong.
+            self?.log.flush()
             completion()
+        }
+    }
+
+    /// Every state change funnels through `applyConnectionState`, so logging here
+    /// records transitions the app did not initiate too — a tunnel that dropped on
+    /// its own is the case worth having in a file after the fact.
+    private func logConnectionState(_ state: ConnectionState, isInitialState: Bool) {
+        let prefix = isInitialState ? "initial connection state" : "connection state"
+        switch state {
+        case let .failed(failure):
+            log.error(Self.subsystem, "\(prefix): failed — \(failure.summary)")
+        case .connected:
+            log.info(Self.subsystem, "\(prefix): connected (mode \(connectionMode))")
+            SystemStateDump.capture("after connect", log: log)
+        default:
+            log.info(Self.subsystem, "\(prefix): \(state)")
         }
     }
 
@@ -1140,6 +1176,9 @@ final class AppViewModel: ObservableObject {
     private func applyConnectionState(_ state: ConnectionState) {
         let isInitialState = !hasObservedInitialConnectionState
         hasObservedInitialConnectionState = true
+        if state != connectionState || isInitialState {
+            logConnectionState(state, isInitialState: isInitialState)
+        }
         connectionState = state
 
         switch state {
