@@ -5,6 +5,8 @@ struct SplitTunnelingSettingsView: View {
     var onOpenGeodata: () -> Void = {}
     @State private var newRuleValue = ""
     @State private var newRuleAction: SplitTunnelRuleAction = .direct
+    /// `nil` means the session's default connection.
+    @State private var newRuleConnectionID: UUID?
     @State private var addRuleErrorMessage: String?
     @State private var testerValue = ""
     @State private var isShowingProfilesSheet = false
@@ -116,6 +118,15 @@ struct SplitTunnelingSettingsView: View {
                     }
                 }
                 .pickerStyle(.segmented)
+
+                if newRuleAction == .proxy, viewModel.savedConnections.count > 1 {
+                    connectionPicker(
+                        selection: Binding(
+                            get: { newRuleConnectionID },
+                            set: { newRuleConnectionID = $0 }
+                        )
+                    )
+                }
 
                 if let addRuleErrorMessage {
                     Text(addRuleErrorMessage)
@@ -265,6 +276,17 @@ struct SplitTunnelingSettingsView: View {
             .frame(width: 180)
             .opacity(rule.isEnabled ? 1 : 0.45)
 
+            if rule.action == .proxy, viewModel.savedConnections.count > 1 {
+                connectionPicker(
+                    selection: Binding(
+                        get: { rule.connectionID },
+                        set: { viewModel.setSplitTunnelRuleConnection(id: rule.id, connectionID: $0) }
+                    )
+                )
+                .frame(width: 150)
+                .opacity(rule.isEnabled ? 1 : 0.45)
+            }
+
             Button(role: .destructive) {
                 viewModel.removeSplitTunnelRule(id: rule.id)
             } label: {
@@ -272,6 +294,31 @@ struct SplitTunnelingSettingsView: View {
             }
             .buttonStyle(.borderless)
         }
+    }
+
+    /// Every saved connection can be picked here: choosing one is what puts it in
+    /// the session, so there is nothing to enable elsewhere first. The default
+    /// entry means "whatever connection is selected", which is how rules written
+    /// before this existed behave.
+    @ViewBuilder
+    private func connectionPicker(selection: Binding<UUID?>) -> some View {
+        Picker("Via", selection: selection) {
+            Text(viewModel.selectedConnection.map { "Selected connection — \($0.configuration.displayName)" } ?? "Selected connection")
+                .tag(UUID?.none)
+            ForEach(viewModel.savedConnections.filter { $0.id != viewModel.selectedConnectionID }) { connection in
+                Text(connection.configuration.displayName)
+                    .tag(Optional(connection.id))
+            }
+            // A rule can outlive the connection it named (a removed subscription
+            // entry, say). Keep an entry for it so the picker shows the rule's real
+            // state instead of an empty selection; the config falls back to the
+            // selected connection until it is repointed.
+            if let missingConnectionID = selection.wrappedValue,
+               !viewModel.savedConnections.contains(where: { $0.id == missingConnectionID }) {
+                Text("Unavailable connection").tag(Optional(missingConnectionID))
+            }
+        }
+        .labelsHidden()
     }
 
     private func kindLabel(_ kind: SplitTunnelRuleKind) -> String {
@@ -293,7 +340,7 @@ struct SplitTunnelingSettingsView: View {
             // Single entry: keep the exact typed/pasted value (including any
             // leading/trailing content the user may still be editing) rather
             // than the split-and-trimmed form used for bulk pasted lists.
-            let result = viewModel.addSplitTunnelRule(value: newRuleValue, action: newRuleAction)
+            let result = viewModel.addSplitTunnelRule(value: newRuleValue, action: newRuleAction, connectionID: newRuleConnectionID)
             switch result {
             case .success:
                 newRuleValue = ""
@@ -308,7 +355,7 @@ struct SplitTunnelingSettingsView: View {
         // entry, skipping invalid ones instead of rejecting the whole paste.
         var failures: [String] = []
         for candidate in candidates {
-            if case let .failure(error) = viewModel.addSplitTunnelRule(value: candidate, action: newRuleAction) {
+            if case let .failure(error) = viewModel.addSplitTunnelRule(value: candidate, action: newRuleAction, connectionID: newRuleConnectionID) {
                 failures.append("\(candidate) (\(error.errorDescription ?? "invalid"))")
             }
         }

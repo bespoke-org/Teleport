@@ -132,6 +132,7 @@ struct ConnectionsSettingsView: View {
                             Text(configuration.descriptiveSummary)
                                 .font(.caption)
                                 .foregroundStyle(configuration.securityWarningText == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
+                            splitTunnelUsageLabel(connection)
                         }
                     }
                 }
@@ -292,6 +293,7 @@ struct ConnectionsSettingsView: View {
                             Text(configuration.descriptiveSummary)
                                 .font(.caption)
                                 .foregroundStyle(configuration.securityWarningText == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
+                            splitTunnelUsageLabel(connection)
                         }
                     }
 
@@ -383,6 +385,19 @@ struct ConnectionsSettingsView: View {
         }
 
         return "waveform.path.ecg"
+    }
+
+    /// A connection that is not the selected one still joins the session when a
+    /// split-tunnel rule routes through it. This says so where the connection is,
+    /// rather than asking the user to opt in separately.
+    @ViewBuilder
+    private func splitTunnelUsageLabel(_ connection: SavedConnection) -> some View {
+        let ruleCount = viewModel.activeRuleCount(routingThrough: connection.id)
+        if connection.id != viewModel.selectedConnectionID, ruleCount > 0 {
+            Text(ruleCount == 1 ? "1 split-tunnel rule" : "\(ruleCount) split-tunnel rules")
+                .font(.caption)
+                .foregroundStyle(.tint)
+        }
     }
 
     /// A WireGuard peer is shared as its configuration file rather than a URL.
