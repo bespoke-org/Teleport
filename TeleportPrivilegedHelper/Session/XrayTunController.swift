@@ -7,17 +7,21 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
     private let managedProcess: ManagedXrayProcess
     private let shellRunner: HelperShellRunner
     private let scriptBuilder: XrayTunScriptBuilder
+    /// One per helper process: the controller is a value, the watch is not.
+    private let supervisor: XraySessionSupervisor
 
     static let subsystem = "helper"
 
     init(
         managedProcess: ManagedXrayProcess = ManagedXrayProcess(installedXrayPath: installedXrayPath),
         shellRunner: HelperShellRunner = HelperShellRunner(),
-        scriptBuilder: XrayTunScriptBuilder = XrayTunScriptBuilder(installedXrayPath: installedXrayPath)
+        scriptBuilder: XrayTunScriptBuilder = XrayTunScriptBuilder(installedXrayPath: installedXrayPath),
+        supervisor: XraySessionSupervisor = XraySessionSupervisor()
     ) {
         self.managedProcess = managedProcess
         self.shellRunner = shellRunner
         self.scriptBuilder = scriptBuilder
+        self.supervisor = supervisor
     }
 
     func status(request: StatusRequest) throws -> StatusResponse {
@@ -44,6 +48,9 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
         }
 
         let helperStateDirectoryPath = try preparedHelperStateDirectoryPath()
+        // The previous session's watch must not fire on the Xray this start is
+        // about to replace.
+        supervisor.cancel()
         // Set before the first capture, so the request that turns dumps on is itself
         // dumped rather than the setting only taking effect from the next session.
         SystemStateDump.setMarker(request.dumpsSystemState)
@@ -63,10 +70,7 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
         ))
         TeleportLog.shared.info(Self.subsystem, "start session \(LogFormat.id(sessionID)): tunnel is up")
         SystemStateDump.capture("helper: after tunnel start")
-        // TODO(gpt-5.6-sol): Supervision ends as soon as the startup shell reports
-        // readiness. Monitor the validated Xray process afterward and reconcile
-        // helper-owned state/routes on unexpected exit instead of waiting for a
-        // future explicit stop or start request.
+        superviseStartedXray(sessionID: sessionID, helperStateDirectoryPath: helperStateDirectoryPath, outboundInterface: outboundInterface)
         return StartSessionResponse(
             phase: .running,
             summary: nil,
@@ -80,6 +84,8 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
         let outboundInterface = try validatedOutboundInterface(request.outboundInterface)
         let helperStateDirectoryPath = try preparedHelperStateDirectoryPath()
         TeleportLog.shared.info(Self.subsystem, "stop session \(LogFormat.id(sessionID)): uplink \(outboundInterface.isEmpty ? "<none>" : outboundInterface), \(protectedHosts.count) protected hosts")
+        // Before the script: the exit it causes must not read as a crash.
+        supervisor.cancel()
         SystemStateDump.capture("helper: before tunnel stop")
         try managedProcess.terminateManagedXray(helperStateDirectoryPath: helperStateDirectoryPath)
         try managedProcess.terminateLegacyManagedXray(stateDirectoryPath: stateDirectoryPath)
@@ -95,6 +101,40 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
             summary: nil,
             details: nil
         )
+    }
+
+    /// The start script has returned and nothing else would look at Xray again.
+    /// If it exits before a stop is requested, the routes it owned are removed with
+    /// the same script a stop would run, so the machine routes directly instead of
+    /// into a TUN that no longer exists. The app learns of it through the status
+    /// it polls, which reads the pid file the script removes.
+    private func superviseStartedXray(sessionID: UUID, helperStateDirectoryPath: String, outboundInterface: String) {
+        guard let pid = managedProcess.validatedManagedXrayPID(helperStateDirectoryPath: helperStateDirectoryPath) else {
+            TeleportLog.shared.warn(Self.subsystem, "session \(LogFormat.id(sessionID)): no validated xray pid after start; not supervising")
+            return
+        }
+        let managedProcess = managedProcess
+        let shellRunner = shellRunner
+        let scriptBuilder = scriptBuilder
+        supervisor.watch(pid: pid) { exitedPID in
+            // A pid file that no longer names this process means a stop already
+            // ran its script; the exit is that stop's doing.
+            guard managedProcess.managedXrayPID(pidFilePath: helperStateDirectoryPath + "/xray-tun.pid", expectedOwner: 0) == exitedPID else { return }
+            TeleportLog.shared.error(Self.subsystem, "session \(LogFormat.id(sessionID)): xray (pid \(exitedPID)) exited on its own; removing its routes")
+            SystemStateDump.capture("helper: before teardown after xray exit")
+            do {
+                try shellRunner.run(scriptBuilder.makeStopScript(
+                    helperStateDirectoryPath: helperStateDirectoryPath,
+                    protectedHosts: nil,
+                    outboundInterface: outboundInterface
+                ))
+                TeleportLog.shared.info(Self.subsystem, "session \(LogFormat.id(sessionID)): teardown after xray exit finished")
+            } catch {
+                TeleportLog.shared.error(Self.subsystem, "session \(LogFormat.id(sessionID)): teardown after xray exit failed: \(LogFormat.error(error))")
+            }
+            SystemStateDump.capture("helper: after teardown after xray exit")
+        }
+        TeleportLog.shared.info(Self.subsystem, "session \(LogFormat.id(sessionID)): supervising xray pid \(pid)")
     }
 
     func readDiagnostics(request: ReadDiagnosticsRequest) throws -> DiagnosticsResponse {
