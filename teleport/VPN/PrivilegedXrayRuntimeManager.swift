@@ -279,31 +279,30 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
         return error.localizedDescription
     }
 
-    private func diagnosticDetails(from error: Error) async -> String {
+    /// The control log lives in the helper's root-only directory, so the only way
+    /// to read it is the helper's own bounded `readLog` command, which carries a
+    /// short timeout of its own. It is worth asking for when the helper ran its
+    /// script and that failed or never reported back — the log then says how far
+    /// it got — and not for a failure decided before any script ran, where there
+    /// is nothing in that log about it.
+    private func diagnosticDetails(from error: Error, maxLines: Int = 40) async -> String {
         let errorText = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-        var controlLog = tailControlLog()
-        if let clientError = error as? PrivilegedHelperClientError,
-           case .commandFailed = clientError,
-           let ipcControlLog = try? await helperClient.readLog(
-               logName: "xray-tun-control.log",
-               maxBytes: 256 * 1024
-           ).details {
-            controlLog = ipcControlLog
+        switch error as? PrivilegedHelperClientError {
+        case .commandFailed, .inProgress, .indeterminate:
+            break
+        default:
+            return errorText
         }
-        controlLog = controlLog.trimmingCharacters(in: .whitespacesAndNewlines)
-        return [errorText, controlLog].filter { !$0.isEmpty }.joined(separator: "\n")
-    }
 
-    private func tailControlLog(maxLines: Int = 40) -> String {
-        // TODO(gpt-5.6-sol): This direct read targets the helper's root-only 0700
-        // directory, so diagnostics are normally empty precisely when IPC fails.
-        // Fetch the bounded control-log tail through the authenticated `readLog`
-        // command, with a separate short diagnostic timeout.
-        guard let rawLog = try? String(contentsOf: paths.controlLogFileURL, encoding: .utf8) else { return "" }
-        return rawLog
+        let controlLog = ((try? await helperClient.readLog(
+            logName: "xray-tun-control.log",
+            maxBytes: 64 * 1024
+        ).details) ?? "")
             .split(separator: "\n")
             .suffix(maxLines)
             .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return [errorText, controlLog].filter { !$0.isEmpty }.joined(separator: "\n")
     }
 }
 
