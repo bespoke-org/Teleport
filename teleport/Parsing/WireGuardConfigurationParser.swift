@@ -81,7 +81,8 @@ nonisolated struct WireGuardConfigurationParser {
             allowedIPs: peer["allowedips"],
             mtu: interface["mtu"],
             reserved: peer["reserved"],
-            keepAlive: peer["persistentkeepalive"]
+            keepAlive: peer["persistentkeepalive"],
+            dnsServers: interface["dns"]
         )
     }
 
@@ -108,7 +109,8 @@ nonisolated struct WireGuardConfigurationParser {
             allowedIPs: query["allowedips"],
             mtu: query["mtu"],
             reserved: query["reserved"],
-            keepAlive: query["keepalive"] ?? query["persistentkeepalive"]
+            keepAlive: query["keepalive"] ?? query["persistentkeepalive"],
+            dnsServers: query["dns"]
         )
     }
 
@@ -124,7 +126,8 @@ nonisolated struct WireGuardConfigurationParser {
         allowedIPs: String?,
         mtu: String?,
         reserved: String?,
-        keepAlive: String?
+        keepAlive: String?,
+        dnsServers: String?
     ) throws -> ConnectionConfiguration {
         let parsedAddresses = Self.commaSeparatedValues(addresses)
         guard !parsedAddresses.isEmpty else {
@@ -161,7 +164,8 @@ nonisolated struct WireGuardConfigurationParser {
                 allowedIPs: parsedAllowedIPs.isEmpty ? WireGuardParameters.defaultAllowedIPs : parsedAllowedIPs,
                 mtu: Self.positiveInteger(mtu),
                 reserved: Self.parseReserved(reserved),
-                persistentKeepalive: Self.positiveInteger(keepAlive)
+                persistentKeepalive: Self.positiveInteger(keepAlive),
+                dnsServers: Self.commaSeparatedValues(dnsServers)
             )
         )
     }

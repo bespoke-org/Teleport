@@ -140,6 +140,35 @@ nonisolated struct WireGuardParameters: Codable, Equatable, Sendable {
     let mtu: Int?
     let reserved: [Int]?
     let persistentKeepalive: Int?
+    /// Resolvers the peer publishes (`DNS =`). They usually live inside the peer's
+    /// network, so they are only reachable through this connection's outbound and
+    /// are used for the names routed through it.
+    let dnsServers: [String]
+
+    private enum CodingKeys: String, CodingKey {
+        case secretKey
+        case peerPublicKey
+        case presharedKey
+        case addresses
+        case allowedIPs
+        case mtu
+        case reserved
+        case persistentKeepalive
+        case dnsServers
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        secretKey = try container.decode(String.self, forKey: .secretKey)
+        peerPublicKey = try container.decode(String.self, forKey: .peerPublicKey)
+        presharedKey = try container.decodeIfPresent(String.self, forKey: .presharedKey)
+        addresses = try container.decode([String].self, forKey: .addresses)
+        allowedIPs = try container.decodeIfPresent([String].self, forKey: .allowedIPs) ?? WireGuardParameters.defaultAllowedIPs
+        mtu = try container.decodeIfPresent(Int.self, forKey: .mtu)
+        reserved = try container.decodeIfPresent([Int].self, forKey: .reserved)
+        persistentKeepalive = try container.decodeIfPresent(Int.self, forKey: .persistentKeepalive)
+        dnsServers = try container.decodeIfPresent([String].self, forKey: .dnsServers) ?? []
+    }
 
     init(
         secretKey: String,
@@ -149,7 +178,8 @@ nonisolated struct WireGuardParameters: Codable, Equatable, Sendable {
         allowedIPs: [String] = WireGuardParameters.defaultAllowedIPs,
         mtu: Int? = nil,
         reserved: [Int]? = nil,
-        persistentKeepalive: Int? = nil
+        persistentKeepalive: Int? = nil,
+        dnsServers: [String] = []
     ) {
         self.secretKey = secretKey
         self.peerPublicKey = peerPublicKey
@@ -159,6 +189,7 @@ nonisolated struct WireGuardParameters: Codable, Equatable, Sendable {
         self.mtu = mtu
         self.reserved = reserved
         self.persistentKeepalive = persistentKeepalive
+        self.dnsServers = dnsServers
     }
 }
 

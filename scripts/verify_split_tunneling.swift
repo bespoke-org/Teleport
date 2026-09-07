@@ -29,6 +29,7 @@ struct VerifySplitTunneling {
         try testHelperRoutesIPv6AndDoesNotBypassDNS()
         try testHelperProtectsEveryProxyServerRoute()
         try testSeveralConnectionsBecomeTaggedOutbounds()
+        try testConnectionResolversAnswerForTheirOwnRoutedNames()
         try testGeneratedHelperScriptsHaveValidShellSyntax()
         testProxyAddressResolutionIncludesIPv4AndIPv6()
         testInterfaceInventoryReadsKernelFacts()
@@ -437,12 +438,82 @@ struct VerifySplitTunneling {
         try assertAcceptedByBundledXray(data)
     }
 
-    private static func sampleWireGuardConfigurationFile() -> String {
-        """
+    /// A peer's resolvers usually live inside its own network: they must be
+    /// queried through that peer's outbound and only for the names routed there,
+    /// otherwise an internal zone either leaks to a public resolver or cannot be
+    /// resolved at all.
+    private static func testConnectionResolversAnswerForTheirOwnRoutedNames() throws {
+        let parser = ConnectionLinkParser()
+        let privateConnectionID = UUID()
+        let outbounds = [
+            RoutedProxyOutbound(
+                connectionID: UUID(),
+                configuration: try parser.parse(sampleVLESSLink()),
+                serverAddress: "203.0.113.7"
+            ),
+            RoutedProxyOutbound(
+                connectionID: privateConnectionID,
+                configuration: try parser.parse(sampleWireGuardConfigurationFile(dnsServers: "10.72.0.53")),
+                serverAddress: "198.51.100.9"
+            )
+        ]
+        let data = try XrayConfigurationWriter(proxyEndpoint: .default).tunnelConfigData(
+            for: outbounds,
+            interfaceName: "utun9",
+            outboundInterface: "en0",
+            splitTunnelRules: [
+                SplitTunnelRule(value: "internal.example", kind: .domain, action: .proxy, connectionID: privateConnectionID),
+                SplitTunnelRule(value: "10.72.0.0/16", kind: .ip, action: .proxy, connectionID: privateConnectionID)
+            ],
+            defaultAction: .proxy,
+            dnsPolicy: TunnelDNSPolicy(localResolvers: ["192.0.2.53"], ipv6Enabled: false)
+        )
+        let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+
+        let servers = (payload?["dns"] as? [String: Any])?["servers"] as? [Any] ?? []
+        guard let firstServer = servers.first as? [String: Any] else {
+            fatalError("expected the peer's resolver to be consulted first")
+        }
+        precondition(firstServer["address"] as? String == "10.72.0.53")
+        // Only the names routed through that connection, and never as a fallback
+        // for anything else.
+        precondition(firstServer["domains"] as? [String] == ["domain:internal.example"])
+        precondition(firstServer["skipFallback"] as? Bool == true)
+
+        let rules = ((payload?["routing"] as? [String: Any])?["rules"] as? [[String: Any]]) ?? []
+        let resolverRule = rules.first {
+            ($0["inboundTag"] as? [String])?.contains("dns-internal") == true
+                && ($0["ip"] as? [String]) == ["10.72.0.53"]
+        }
+        precondition(resolverRule?["outboundTag"] as? String == "proxy-1",
+                     "expected queries to the peer's resolver to leave through that peer's outbound")
+        // The catch-all for other names still goes to the default connection.
+        let fallbackRule = rules.last { ($0["inboundTag"] as? [String])?.contains("dns-internal") == true }
+        precondition(fallbackRule?["outboundTag"] as? String == "proxy")
+
+        // A connection whose resolvers no rule needs adds nothing to the module.
+        let unusedData = try XrayConfigurationWriter(proxyEndpoint: .default).tunnelConfigData(
+            for: outbounds,
+            interfaceName: "utun9",
+            outboundInterface: "en0",
+            splitTunnelRules: [],
+            defaultAction: .proxy,
+            dnsPolicy: TunnelDNSPolicy(localResolvers: ["192.0.2.53"], ipv6Enabled: false)
+        )
+        let unusedPayload = try JSONSerialization.jsonObject(with: unusedData) as? [String: Any]
+        let unusedServers = (unusedPayload?["dns"] as? [String: Any])?["servers"] as? [Any] ?? []
+        precondition(!unusedServers.contains { ($0 as? [String: Any])?["address"] as? String == "10.72.0.53" })
+
+        try assertAcceptedByBundledXray(data)
+    }
+
+    private static func sampleWireGuardConfigurationFile(dnsServers: String? = nil) -> String {
+        let dnsLine = dnsServers.map { "DNS = \($0)\n" } ?? ""
+        return """
         [Interface]
         PrivateKey = cJl3zBqYlKrLmZ1r9gCVKzZ9lHhP5rQ0nX2sYy8vWmM=
         Address = 172.16.0.2/32
-
+        \(dnsLine)
         [Peer]
         PublicKey = bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=
         AllowedIPs = 0.0.0.0/0

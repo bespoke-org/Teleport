@@ -234,6 +234,9 @@ struct VerifyCore {
         precondition(parameters?.allowedIPs == ["0.0.0.0/0", "::/0"])
         precondition(parameters?.mtu == 1380)
         precondition(parameters?.persistentKeepalive == 25)
+        // The peer's resolvers are kept: they answer for the names routed through
+        // this connection.
+        precondition(parameters?.dnsServers == ["1.1.1.1"])
 
         // `AppViewModel` re-parses every stored `rawLink` on launch, so the raw
         // configuration text must survive a round trip unchanged.

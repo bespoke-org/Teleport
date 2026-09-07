@@ -20,6 +20,15 @@ nonisolated struct TunnelDNSPolicy: Sendable, Equatable {
     var ipv6Enabled: Bool = true
 }
 
+/// The resolvers one connection publishes, and the names they answer for. Both
+/// the DNS module and routing need this pairing: the servers are only reachable
+/// through that connection's outbound.
+private struct TunnelConnectionDNSRoute {
+    let tag: String
+    let servers: [String]
+    let domains: [String]
+}
+
 /// One proxy outbound of a session. A session dials one server per selected
 /// connection, and split-tunnel rules name the connection they leave through,
 /// so every connection needs a stable Xray tag and its own protected address.
@@ -101,10 +110,12 @@ nonisolated struct XrayConfigurationWriter {
         index == 0 ? "proxy" : "proxy-\(index)"
     }
 
-    /// Resolution for every proxied name goes through the default connection's
-    /// outbound, even for a rule that routes its traffic through another one. The
-    /// answer is the same either way unless a server returns split-horizon
-    /// results; giving each outbound its own resolver is a later change.
+    /// A connection that publishes its own resolvers (a WireGuard peer's `DNS =`)
+    /// resolves the names routed through it there. Everything else is resolved
+    /// through the default connection's outbound, even when a rule sends its
+    /// traffic elsewhere: the answer is the same unless a server returns
+    /// split-horizon results, and only a peer's own resolvers are known to be
+    /// authoritative for that.
     ///
     /// Writes atomically so Xray never observes a partially serialized config and
     /// restricts the credential-bearing file to the current user.
@@ -199,6 +210,19 @@ nonisolated struct XrayConfigurationWriter {
         let splitTunnelRoutingRules = enabledSplitTunnelRules.map {
             makeSplitTunnelRoutingRule(for: $0, tagsByConnectionID: tagsByConnectionID)
         }
+        // A WireGuard peer usually publishes resolvers that only exist inside its
+        // own network, so they are reachable through that connection's outbound and
+        // authoritative for the names routed there.
+        let connectionDNSRoutes: [TunnelConnectionDNSRoute] = outbounds.enumerated().compactMap { index, outbound in
+            let servers = Self.resolverAddresses(outbound.configuration.wireguard?.dnsServers ?? [])
+            guard !servers.isEmpty else { return nil }
+            let tag = Self.proxyTag(at: index)
+            let domains = enabledSplitTunnelRules
+                .filter { outboundTag(for: $0, tagsByConnectionID: tagsByConnectionID) == tag }
+                .flatMap { dnsDomains(for: $0) }
+            guard !domains.isEmpty else { return nil }
+            return TunnelConnectionDNSRoute(tag: tag, servers: servers, domains: domains)
+        }
         let localProxyRoutingRules: [[String: Any]] = [[
             "type": "field",
             "inboundTag": ["socks-in", "http-in"],
@@ -210,7 +234,14 @@ nonisolated struct XrayConfigurationWriter {
         // resolvers out the direct outbound and the remote resolver through the
         // proxy. Xray never touches the OS resolver, so no query can loop back
         // into the TUN. Without a policy (tests, legacy callers) DNS is left alone.
-        let dnsSection = dnsPolicy.map { makeDNSSection(policy: $0, rules: enabledSplitTunnelRules, defaultAction: defaultAction) }
+        let dnsSection = dnsPolicy.map {
+            makeDNSSection(
+                policy: $0,
+                rules: enabledSplitTunnelRules,
+                defaultAction: defaultAction,
+                connectionRoutes: connectionDNSRoutes
+            )
+        }
         let dnsOutbounds: [[String: Any]] = dnsSection == nil ? [] : [[
             "tag": "dns-out",
             "protocol": "dns",
@@ -231,6 +262,16 @@ nonisolated struct XrayConfigurationWriter {
                     "inboundTag": [Self.dnsQueryTag],
                     "ip": localResolverAddresses,
                     "outboundTag": "direct"
+                ])
+            }
+            // A peer's own resolvers are only reachable inside its tunnel, so the
+            // module's queries to them must leave through that connection.
+            for route in connectionDNSRoutes {
+                rules.append([
+                    "type": "field",
+                    "inboundTag": [Self.dnsQueryTag],
+                    "ip": route.servers,
+                    "outboundTag": route.tag
                 ])
             }
             rules.append([
@@ -380,7 +421,7 @@ nonisolated struct XrayConfigurationWriter {
     /// Server order matters to Xray: servers carrying `domains` are consulted first
     /// for matching names and, with `skipFallback`, never for anything else. The
     /// default-action resolver goes first so every unmatched name lands there.
-    private func makeDNSSection(policy: TunnelDNSPolicy, rules: [SplitTunnelRule], defaultAction: SplitTunnelRuleAction) -> [String: Any] {
+    private func makeDNSSection(policy: TunnelDNSPolicy, rules: [SplitTunnelRule], defaultAction: SplitTunnelRuleAction, connectionRoutes: [TunnelConnectionDNSRoute] = []) -> [String: Any] {
         let localResolverAddresses = Self.resolverAddresses(policy.localResolvers)
         let proxyDomains = rules.filter { $0.action == .proxy }.flatMap { dnsDomains(for: $0) }
         let directDomains = rules.filter { $0.action == .direct }.flatMap { dnsDomains(for: $0) }
@@ -397,6 +438,14 @@ nonisolated struct XrayConfigurationWriter {
         }
 
         var servers: [Any] = []
+        // A connection's own resolvers come first and answer only for the names
+        // routed through that connection, so an internal zone resolves inside the
+        // tunnel that serves it instead of leaking to a public resolver.
+        for route in connectionRoutes {
+            for server in route.servers {
+                servers.append(["address": server, "domains": route.domains, "skipFallback": true] as [String: Any])
+            }
+        }
         // Without any usable system resolver every name goes to the remote one;
         // that keeps resolution working instead of failing every direct domain.
         if defaultAction == .direct, !localResolverAddresses.isEmpty {

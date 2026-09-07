@@ -7,6 +7,7 @@ Teleport is a small macOS menu bar app for running a local Xray-based proxy with
 - menu bar-only app
 - bundled Xray runtime
 - support for `vless://`, `trojan://` and `wireguard://` links, and WireGuard `[Interface]` configuration files
+- several connections in one session: a split-tunnel rule chooses which connection its traffic leaves through, and a WireGuard peer's own `DNS` resolvers answer for the names routed to that peer
 - support for `http://` and `https://` subscription URLs that fetch and import multiple configs
 - saved connections with persistent selection across launches
 - lightweight server health checks with persisted sampled TCP latency and availability state
