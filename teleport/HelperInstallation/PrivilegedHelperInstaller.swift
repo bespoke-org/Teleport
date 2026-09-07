@@ -94,10 +94,17 @@ struct PrivilegedHelperInstaller: Sendable {
         }
     }
 
-    // TODO(gpt-5.6-sol): Local `codesign --verify` and a pinned Xray hash do not
-    // establish Developer ID distribution trust or notarization. The release
-    // pipeline must sign every executable appropriately, submit the app/DMG to
-    // Apple's notary service, staple the ticket, and verify the final artifact.
+    /// What this establishes, and what it does not. A local `codesign --verify`
+    /// against the team requirement and a pinned Xray hash prove that the helper
+    /// and runtime about to be installed as root are the ones this build shipped
+    /// with — the property the install transaction depends on. They do not prove
+    /// anything about distribution: that the app was signed with a Developer ID
+    /// certificate, passed Apple's notary service, and carries a stapled ticket.
+    /// Those are properties of the release artifact, not of this code, and are
+    /// listed as release checks in docs/xray-bundling-and-release.md. Until the
+    /// pipeline produces such an artifact, installation stays on `launchctl` from
+    /// an administrator shell, since `SMAppService` will not register a daemon
+    /// for an app that lacks them.
     private func verifyBundleArtifacts(helperURL: URL, runtimeURL: URL) throws {
         try artifactVerifier.verify(
             appBundleURL: bundle.bundleURL,

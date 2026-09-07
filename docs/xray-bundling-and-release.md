@@ -39,6 +39,19 @@ The current bundled runtime was copied from a local Homebrew-installed Xray dist
 - Release trust-boundary testing must use the production Developer ID requirement rather than assuming an Apple Development identity.
 - The current installer still requests administrator authorization and writes the LaunchDaemon/helper/runtime directly; it is intentionally transitional.
 
+### Signing and notarization: what the code checks, and what it cannot
+
+The installer verifies two things locally before anything is written as root: the helper and app satisfy the team code-signing requirement in `BundledArtifactPolicy`, and the bundled Xray matches the pinned SHA-256. Those checks establish that the files about to be installed are the ones this build shipped with. They establish nothing about distribution trust, which lives in the release artifact rather than in the code:
+
+- every executable in the bundle signed with a Developer ID Application certificate and the hardened runtime;
+- the app or DMG submitted to Apple's notary service, and the ticket stapled;
+- the final artifact verified with `spctl --assess --type execute` and `stapler validate`.
+
+Two consequences follow until the pipeline produces such an artifact:
+
+- installation must keep going through `launchctl` from an administrator shell, because `SMAppService` refuses to register a daemon for an app that is not notarized and Developer ID-signed; the matching unregister path is likewise deferred;
+- a build signed with an Apple Development identity passes the local checks and installs, so release trust-boundary testing has to use the production requirement, as the manual checks below say.
+
 ## Manual release checks
 
 Automated verification does not replace real macOS checks for:
