@@ -1,5 +1,5 @@
-import CryptoKit
 import Foundation
+import Security
 
 /// Installs the helper, Xray binary, and LaunchDaemon into root-owned locations.
 /// Geodata is delivered separately through the authenticated session request, so
@@ -7,12 +7,18 @@ import Foundation
 /// runs only when installed executable content differs or the helper is
 /// unavailable; ordinary VPN lifecycle commands use `PrivilegedHelperClient`.
 struct PrivilegedHelperInstaller: Sendable {
-    /// Written next to the installed helper by the admin transaction. The helper
-    /// binary hash is what detects a rebuilt helper whose protocol version did not
-    /// change; the version alone would keep a stale root daemon running.
+    /// Written next to the installed helper by the admin transaction. The helper's
+    /// code-directory hash is what detects a rebuilt helper whose protocol version
+    /// did not change; the version alone would keep a stale root daemon running.
+    ///
+    /// The code-directory hash rather than a hash of the file: the file carries the
+    /// signature's signing time, so every re-sign changed its hash and cost an
+    /// administrator prompt on the next connect even when the code was identical.
+    /// The code directory covers the code, identifier, entitlements and
+    /// requirements, and not the signing time.
     private struct InstallationManifest: Codable, Equatable {
         let helperVersion: String
-        let helperSHA256: String
+        let helperCDHash: String
         let xraySHA256: String
     }
 
@@ -60,19 +66,20 @@ struct PrivilegedHelperInstaller: Sendable {
         return response.version == PrivilegedHelperClient.expectedVersion
     }
 
-    /// The bundled helper is well under a megabyte, so hashing it in-process on
-    /// every connect is cheap and avoids spawning `shasum`.
+    /// Read from the signature in-process on every connect, which is cheap and
+    /// avoids spawning `codesign`.
     private func expectedInstallationManifest(helperURL: URL) throws -> InstallationManifest {
-        let helperData: Data
-        do {
-            helperData = try Data(contentsOf: helperURL)
-        } catch {
-            throw PrivilegedHelperInstallerError.bundledHelperMissing
+        var staticCode: SecStaticCode?
+        var signingInformation: CFDictionary?
+        guard SecStaticCodeCreateWithPath(helperURL as CFURL, [], &staticCode) == errSecSuccess,
+              let staticCode,
+              SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &signingInformation) == errSecSuccess,
+              let cdHash = (signingInformation as? [String: Any])?[kSecCodeInfoUnique as String] as? Data else {
+            throw PrivilegedHelperInstallerError.installFailed("Teleport could not read the privileged helper's code signature. Rebuild or reinstall Teleport.")
         }
-        let helperDigest = SHA256.hash(data: helperData).map { String(format: "%02x", $0) }.joined()
         return InstallationManifest(
             helperVersion: PrivilegedHelperClient.expectedVersion,
-            helperSHA256: helperDigest,
+            helperCDHash: cdHash.map { String(format: "%02x", $0) }.joined(),
             xraySHA256: artifactPolicy.xraySHA256
         )
     }
@@ -163,7 +170,7 @@ struct PrivilegedHelperInstaller: Sendable {
     /// register a daemon; see the note on `verifyBundleArtifacts`.
     private func installScript(appBundleURL: URL, helperURL: URL, runtimeURL: URL, manifest: InstallationManifest, plist: String) -> String {
         let q = PrivilegedShellRunner.shellQuote
-        let manifestJSON = "{\"helperVersion\":\"\(manifest.helperVersion)\",\"helperSHA256\":\"\(manifest.helperSHA256)\",\"xraySHA256\":\"\(manifest.xraySHA256)\"}"
+        let manifestJSON = "{\"helperVersion\":\"\(manifest.helperVersion)\",\"helperCDHash\":\"\(manifest.helperCDHash)\",\"xraySHA256\":\"\(manifest.xraySHA256)\"}"
         return """
         set -eu
         APP_BUNDLE=\(q(appBundleURL.path))
