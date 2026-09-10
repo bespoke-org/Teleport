@@ -397,6 +397,21 @@ nonisolated struct XrayConfigurationWriter {
                             "224.0.0.0/3"
                         ],
                         "outboundTag": "block"
+                    ],
+                    // QUIC keeps its SNI in an encrypted CRYPTO frame that sniffing
+                    // recovers only sometimes: a resumed 0-RTT flow carries no
+                    // ClientHello at all. A flow whose name was not recovered matches
+                    // no domain rule and lands on the catch-all, which under a
+                    // "direct" default sends the very traffic these rules exist to
+                    // route through the proxy out over the uplink instead. Blocked
+                    // rather than proxied, because applications answer a blocked
+                    // UDP/443 by retrying over TCP, where the name is always there
+                    // and every rule decides as written.
+                    [
+                        "type": "field",
+                        "network": "udp",
+                        "port": "443",
+                        "outboundTag": "block"
                     ]
                 ] + splitTunnelRoutingRules + [
                     // Catch-all for everything no rule matched. Its outbound is the

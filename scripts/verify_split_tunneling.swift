@@ -35,6 +35,7 @@ struct VerifySplitTunneling {
         testInterfaceInventoryReadsKernelFacts()
         try testExistingVPNDetectionCoversSplitDefaultsAndIPv6()
         try testTunnelSniffingIncludesQUIC()
+        try testQUICIsBlockedSoNamesStaySniffable()
         try testTunnelConfigExposesLocalSocksAndHTTPPorts()
         try testLegacySnapshotWithoutSplitTunnelFieldsDefaults()
         try testSnapshotRoundTripPreservesSplitTunnelProfiles()
@@ -930,6 +931,30 @@ struct VerifySplitTunneling {
         precondition(sniffing["routeOnly"] as? Bool == true, "expected sniffing to use routeOnly for split-tunnel routing")
         let overrides = sniffing["destOverride"] as? [String]
         precondition(overrides == ["http", "tls", "quic"], "expected sniffing to include HTTP, TLS, and QUIC")
+    }
+
+    /// The other half of the same problem: sniffing recovers a QUIC name only
+    /// sometimes, and the flows it misses fall through to the catch-all — direct,
+    /// in the profile this leak was found in. The block sits ahead of the split
+    /// rules so it holds whatever they say, and applications retry over TCP.
+    private static func testQUICIsBlockedSoNamesStaySniffable() throws {
+        let configuration = try ConnectionLinkParser().parse(sampleVLESSLink())
+        let writer = XrayConfigurationWriter(proxyEndpoint: .default)
+        let data = try writer.tunnelConfigData(
+            for: configuration, interfaceName: "utun9", outboundInterface: "en0",
+            splitTunnelRules: [SplitTunnelRule(value: "geosite:anthropic", kind: .geosite, action: .proxy)],
+            defaultAction: .direct
+        )
+        let routingRules = try routingRulesArray(from: data)
+        guard let blockIndex = routingRules.firstIndex(where: {
+            $0["network"] as? String == "udp" && $0["port"] as? String == "443"
+        }) else {
+            preconditionFailure("expected UDP/443 to be blocked")
+        }
+        precondition(routingRules[blockIndex]["outboundTag"] as? String == "block")
+        let splitIndex = routingRules.firstIndex { $0["domain"] != nil }
+        precondition(splitIndex == nil || blockIndex < splitIndex!, "the QUIC block must precede the split rules")
+        precondition(blockIndex < routingRules.count - 1, "the QUIC block must precede the catch-all")
     }
 
     private static func privilegedHelperSource() throws -> String {
