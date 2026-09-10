@@ -5,10 +5,12 @@ import Foundation
     func startSession(_ request: Data, withReply reply: @escaping (Data?, NSError?) -> Void)
     func stopSession(_ request: Data, withReply reply: @escaping (Data?, NSError?) -> Void)
     func readDiagnostics(_ request: Data, withReply reply: @escaping (Data?, NSError?) -> Void)
+    func engageLeakGuard(_ request: Data, withReply reply: @escaping (Data?, NSError?) -> Void)
+    func releaseLeakGuard(_ request: Data, withReply reply: @escaping (Data?, NSError?) -> Void)
 }
 
 nonisolated enum VPNHelperProtocol {
-    static let revision: UInt = 9
+    static let revision: UInt = 10
     static let machServiceName = "dev.x.teleport.helper"
     static let maximumRequestBytes = 1_048_576
     static let maximumConfigurationBytes = 524_288
@@ -18,4 +20,7 @@ nonisolated enum VPNHelperProtocol {
     /// every other payload field so a client cannot make the helper install an
     /// unbounded number of routes.
     static let maximumProtectedHosts = 8
+    /// The client renews the leak-guard lease well inside this; the helper clamps
+    /// anything longer so a client cannot ask for a guard it never has to renew.
+    static let maximumLeakGuardLeaseSeconds: Double = 180
 }

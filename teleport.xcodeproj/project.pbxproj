@@ -21,6 +21,8 @@
 		C2F100202F98000000CCB832 /* TeleportLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2F1001E2F98000000CCB832 /* TeleportLog.swift */; };
 		C2F100222F98000000CCB832 /* SystemStateDump.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2F100212F98000000CCB832 /* SystemStateDump.swift */; };
 		C2F100232F98000000CCB832 /* SystemStateDump.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2F100212F98000000CCB832 /* SystemStateDump.swift */; };
+		C2F100312F98000000CCB832 /* LeakGuardRuleset.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2F100302F98000000CCB832 /* LeakGuardRuleset.swift */; };
+		C2F100322F98000000CCB832 /* LeakGuardRuleset.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2F100302F98000000CCB832 /* LeakGuardRuleset.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -43,6 +45,7 @@
 		C2F100182F98000000CCB832 /* VPNHelperProtocolError.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VPNHelperProtocolError.swift; sourceTree = "<group>"; };
 		C2F1001E2F98000000CCB832 /* TeleportLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TeleportLog.swift; sourceTree = "<group>"; };
 		C2F100212F98000000CCB832 /* SystemStateDump.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemStateDump.swift; sourceTree = "<group>"; };
+		C2F100302F98000000CCB832 /* LeakGuardRuleset.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LeakGuardRuleset.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -101,6 +104,7 @@
 				C2F1000F2F98000000CCB832 /* PrivilegedHelperConstants.swift */,
 				C2F1001E2F98000000CCB832 /* TeleportLog.swift */,
 				C2F100212F98000000CCB832 /* SystemStateDump.swift */,
+				C2F100302F98000000CCB832 /* LeakGuardRuleset.swift */,
 				C2F1001B2F98000000CCB832 /* NetworkInterfaceInventory.swift */,
 				C2F100152F98000000CCB832 /* VPNHelperMessages.swift */,
 				C2F100182F98000000CCB832 /* VPNHelperProtocolError.swift */,
@@ -258,6 +262,7 @@
 				C2F100112F98000000CCB832 /* PrivilegedHelperConstants.swift in Sources */,
 				C2F1001F2F98000000CCB832 /* TeleportLog.swift in Sources */,
 				C2F100222F98000000CCB832 /* SystemStateDump.swift in Sources */,
+				C2F100312F98000000CCB832 /* LeakGuardRuleset.swift in Sources */,
 				C2F1001D2F98000000CCB832 /* NetworkInterfaceInventory.swift in Sources */,
 				C2F100172F98000000CCB832 /* VPNHelperMessages.swift in Sources */,
 				C2F1001A2F98000000CCB832 /* VPNHelperProtocolError.swift in Sources */,
@@ -272,6 +277,7 @@
 				C2F100102F98000000CCB832 /* PrivilegedHelperConstants.swift in Sources */,
 				C2F100202F98000000CCB832 /* TeleportLog.swift in Sources */,
 				C2F100232F98000000CCB832 /* SystemStateDump.swift in Sources */,
+				C2F100322F98000000CCB832 /* LeakGuardRuleset.swift in Sources */,
 				C2F1001C2F98000000CCB832 /* NetworkInterfaceInventory.swift in Sources */,
 				C2F100162F98000000CCB832 /* VPNHelperMessages.swift in Sources */,
 				C2F100192F98000000CCB832 /* VPNHelperProtocolError.swift in Sources */,

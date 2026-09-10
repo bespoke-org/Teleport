@@ -818,6 +818,10 @@ struct AppSnapshot: Codable, Equatable {
     var splitTunnelProfiles: [SplitTunnelProfile]
     var selectedSplitTunnelProfileID: UUID?
     var isSplitTunnelEnabled: Bool
+    /// Whether VPN mode refuses to let traffic reach the physical uplink while a
+    /// session is meant to be carrying it. On by default: the windows it covers
+    /// open without the user doing anything.
+    var isLeakGuardEnabled: Bool
     var geodataSettings: GeodataSourceSettings
 
     init(
@@ -832,6 +836,7 @@ struct AppSnapshot: Codable, Equatable {
         splitTunnelProfiles: [SplitTunnelProfile] = [SplitTunnelProfile(name: "Default")],
         selectedSplitTunnelProfileID: UUID? = nil,
         isSplitTunnelEnabled: Bool = false,
+        isLeakGuardEnabled: Bool = true,
         geodataSettings: GeodataSourceSettings = GeodataSourceSettings()
     ) {
         self.savedConnections = savedConnections
@@ -845,6 +850,7 @@ struct AppSnapshot: Codable, Equatable {
         self.splitTunnelProfiles = splitTunnelProfiles
         self.selectedSplitTunnelProfileID = selectedSplitTunnelProfileID ?? splitTunnelProfiles.first?.id
         self.isSplitTunnelEnabled = isSplitTunnelEnabled
+        self.isLeakGuardEnabled = isLeakGuardEnabled
         self.geodataSettings = geodataSettings
     }
 
@@ -860,6 +866,7 @@ struct AppSnapshot: Codable, Equatable {
         case splitTunnelProfiles
         case selectedSplitTunnelProfileID
         case isSplitTunnelEnabled
+        case isLeakGuardEnabled
         case geodataSettings
     }
 
@@ -889,6 +896,8 @@ struct AppSnapshot: Codable, Equatable {
         }
 
         isSplitTunnelEnabled = try container.decodeIfPresent(Bool.self, forKey: .isSplitTunnelEnabled) ?? false
+        // A snapshot written before the guard existed gets it on, like a fresh one.
+        isLeakGuardEnabled = try container.decodeIfPresent(Bool.self, forKey: .isLeakGuardEnabled) ?? true
         geodataSettings = try container.decodeIfPresent(GeodataSourceSettings.self, forKey: .geodataSettings) ?? GeodataSourceSettings()
     }
 }

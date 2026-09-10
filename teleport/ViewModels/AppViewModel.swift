@@ -50,6 +50,7 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var subscriptionConnectionSort: SubscriptionConnectionSort
     @Published private(set) var showsLatencyInMenuBarPicker: Bool
     @Published private(set) var animatesMenuBarIcon: Bool
+    @Published private(set) var isLeakGuardEnabled: Bool
     @Published private(set) var splitTunnelProfiles: [SplitTunnelProfile]
     @Published private(set) var selectedSplitTunnelProfileID: UUID?
     @Published private(set) var isSplitTunnelEnabled: Bool
@@ -77,6 +78,20 @@ final class AppViewModel: ObservableObject {
     private let systemProxyService: SystemProxyService
     private var networkPathObserver: NetworkPathObserver?
     private var systemWakeObserver: SystemWakeObserver?
+    /// Held across teardowns and rebuilds, which is where the leak it guards
+    /// against happens. Owned here rather than by a provider for that reason.
+    private let leakGuard: LeakGuardService
+    /// When the machine last went to sleep, so a session built after that instant
+    /// is known to be newer than the sleep and needs no rebuild.
+    private var lastSleepAt: Date?
+    /// Set between `willSleep` and `didWake`. A dark wake — Wi-Fi coming back for a
+    /// maintenance window — posts neither notification, so the machine can be awake
+    /// enough to rebuild a session while this is still true.
+    private var isAsleep = false
+    /// When the running session was established, compared against `lastSleepAt`.
+    /// Left `nil` for a session built while the machine was asleep: such a session
+    /// has the rest of the sleep still ahead of it, so the wake has to rebuild it.
+    private var sessionEstablishedAt: Date?
     /// The uplink the running session was built on, recorded when it connects.
     private var sessionUplink: SystemUplinkInventory.Uplink?
     /// Set when a session was torn down because the uplink vanished, so the next
@@ -120,10 +135,12 @@ final class AppViewModel: ObservableObject {
     private var subscriptionSourcesByID: [UUID: SubscriptionSource] = [:]
 
     convenience init() {
+        let leakGuard = LeakGuardService()
         self.init(
             parser: ConnectionLinkParser(),
             store: ConfigurationStore(),
-            connectionProviderFactory: ConnectionProviderFactory(),
+            connectionProviderFactory: ConnectionProviderFactory(leakGuard: leakGuard),
+            leakGuard: leakGuard,
             subscriptionClient: SubscriptionClient(),
             healthProbeService: ConnectionHealthProbeService()
         )
@@ -133,6 +150,7 @@ final class AppViewModel: ObservableObject {
         parser: ConnectionLinkParser,
         store: ConfigurationStore,
         connectionProviderFactory: ConnectionProviderFactory,
+        leakGuard: LeakGuardService = LeakGuardService(),
         subscriptionClient: SubscriptionClient,
         healthProbeService: ConnectionHealthProbeService,
         systemProxyService: SystemProxyService = SystemProxyService(),
@@ -141,6 +159,7 @@ final class AppViewModel: ObservableObject {
         self.parser = parser
         self.store = store
         self.connectionProviderFactory = connectionProviderFactory
+        self.leakGuard = leakGuard
         self.subscriptionClient = subscriptionClient
         self.healthProbeService = healthProbeService
         self.systemProxyService = systemProxyService
@@ -172,6 +191,7 @@ final class AppViewModel: ObservableObject {
         splitTunnelProfiles = snapshot.splitTunnelProfiles
         selectedSplitTunnelProfileID = snapshot.selectedSplitTunnelProfileID
         isSplitTunnelEnabled = snapshot.isSplitTunnelEnabled
+        isLeakGuardEnabled = snapshot.isLeakGuardEnabled
         geodataSettings = snapshot.geodataSettings
         startsAtLogin = loginItemService.isEnabled
         connectionProvider = connectionProviderFactory.makeProvider(for: snapshot.connectionMode)
@@ -201,6 +221,7 @@ final class AppViewModel: ObservableObject {
         observeConnectionState()
         observeNetworkPath()
         observeSystemWake()
+        syncLeakGuardSetting()
         startAutoRefreshTimer()
         updateMenuBarAnimation()
         scheduleInitialHealthRefresh()
@@ -705,6 +726,15 @@ final class AppViewModel: ObservableObject {
         schedulePersist()
     }
 
+    func setLeakGuardEnabled(_ isEnabled: Bool) {
+        guard isEnabled != isLeakGuardEnabled else { return }
+        isLeakGuardEnabled = isEnabled
+        schedulePersist()
+        log.info(Self.subsystem, "leak guard turned \(isEnabled ? "on" : "off")")
+        let leakGuard = leakGuard
+        Task { await leakGuard.setEnabled(isEnabled) }
+    }
+
     func setProxyEndpoint(httpPort: Int? = nil, socksPort: Int? = nil) {
         let nextHTTPPort = httpPort ?? proxyEndpoint.httpPort
         let nextSOCKSPort = socksPort ?? proxyEndpoint.socksPort
@@ -1125,7 +1155,18 @@ final class AppViewModel: ObservableObject {
         startConnection(using: selectedConfiguration)
     }
 
+    /// A disconnect the user asked for. The guard comes off with it: someone who
+    /// disconnects on purpose is asking to be back on the network, not filtered.
     func disconnect() {
+        releaseLeakGuard()
+        tearDownSession()
+    }
+
+    /// The same teardown without touching the guard, for the paths that tear a
+    /// session down in order to build another one. Releasing and re-arming around
+    /// those would open the window the guard exists to close — and, since both are
+    /// asynchronous, could land in either order.
+    private func tearDownSession() {
         guard !isTerminating else { return }
         awaitsUplinkToReconnect = false
         let provider = connectionProvider
@@ -1154,10 +1195,14 @@ final class AppViewModel: ObservableObject {
         isTerminating = true
         log.info(Self.subsystem, "terminating")
         let provider = connectionProvider
+        let leakGuard = leakGuard
         networkPathObserver?.stop()
         systemWakeObserver?.stop()
         Task { @MainActor [weak self] in
             try? await provider.disconnect()
+            // After the teardown, not before: the guard covers the moment the
+            // tunnel's routes come out from under the machine.
+            await leakGuard.disarm()
             self?.connectionStateTask?.cancel()
             // Anything still queued would otherwise be lost exactly when the log
             // matters most: a quit that follows something going wrong.
@@ -1193,11 +1238,18 @@ final class AppViewModel: ObservableObject {
     /// leaves the machine routing into a tunnel whose own transport can no longer
     /// get out — reachable only by tearing the session down.
     private func observeNetworkPath() {
-        let observer = NetworkPathObserver { [weak self] in
-            Task { @MainActor [weak self] in
-                self?.reconcileSessionWithUplink()
+        let observer = NetworkPathObserver(
+            onChange: { [weak self] in
+                Task { @MainActor [weak self] in
+                    self?.reconnectAsSoonAsAnUplinkAppears()
+                }
+            },
+            onSettledChange: { [weak self] in
+                Task { @MainActor [weak self] in
+                    self?.reconcileSessionWithUplink()
+                }
             }
-        }
+        )
         networkPathObserver = observer
         observer.start()
     }
@@ -1208,20 +1260,74 @@ final class AppViewModel: ObservableObject {
     /// would keep it running; wake itself is the trigger. System Proxy mode is
     /// left alone, as nothing pins it to the machine's sleep state.
     private func observeSystemWake() {
-        let observer = SystemWakeObserver { [weak self] in
-            Task { @MainActor [weak self] in
-                self?.rebuildSessionAfterWake()
+        let observer = SystemWakeObserver(
+            onSleep: { [weak self] in
+                Task { @MainActor [weak self] in
+                    self?.lastSleepAt = Date()
+                    self?.isAsleep = true
+                }
+            },
+            onWake: { [weak self] in
+                Task { @MainActor [weak self] in
+                    self?.isAsleep = false
+                    self?.rebuildSessionAfterWake()
+                }
             }
-        }
+        )
         systemWakeObserver = observer
         observer.start()
     }
 
     private func rebuildSessionAfterWake() {
         guard !isTerminating, connectionMode == .vpn, hasEstablishedConnection, !isOperationPending else { return }
+        // A session built after the machine went to sleep did not live through the
+        // sleep and does not need rebuilding. The path observer routinely gets
+        // there first — a wake onto a different network is a path change, and its
+        // notification arrives before this one — and rebuilding again would tear
+        // down a working tunnel seconds old, for a second window of direct routing.
+        if let lastSleepAt, let sessionEstablishedAt, sessionEstablishedAt > lastSleepAt {
+            log.info(Self.subsystem, "machine woke from sleep; session is newer than the sleep, keeping it")
+            return
+        }
         log.warn(Self.subsystem, "machine woke from sleep; rebuilding the session over \(SystemUplinkInventory.current()?.summary ?? "<no uplink>")")
         sessionUplink = nil
         rebuildSessionForNewUplink()
+    }
+
+    /// The guard's own copy of the setting: it runs off the main actor and cannot
+    /// read the published one.
+    private func syncLeakGuardSetting() {
+        let leakGuard = leakGuard
+        let isEnabled = isLeakGuardEnabled
+        Task { await leakGuard.setEnabled(isEnabled) }
+    }
+
+    private func armLeakGuardStandby() {
+        guard isLeakGuardEnabled, connectionMode == .vpn else { return }
+        let leakGuard = leakGuard
+        Task { await leakGuard.armStandby() }
+    }
+
+    private func releaseLeakGuard() {
+        let leakGuard = leakGuard
+        Task { await leakGuard.disarm() }
+    }
+
+    /// The uncoalesced half of the path observer, and the only thing it is used
+    /// for: a session that is waiting to be rebuilt is rebuilt the moment there is
+    /// an uplink to rebuild it on.
+    ///
+    /// Nothing is running, so there is no session for an intermediate path state to
+    /// damage, and the quiet period would only extend the window in which the
+    /// machine routes directly. A router address is still required: an interface
+    /// that has come up without one cannot carry a tunnel yet, and the settled
+    /// callback will come back to it.
+    private func reconnectAsSoonAsAnUplinkAppears() {
+        guard !isTerminating, awaitsUplinkToReconnect, !isOperationPending else { return }
+        guard let currentUplink = SystemUplinkInventory.current(), currentUplink.routerAddress != nil else { return }
+        awaitsUplinkToReconnect = false
+        log.info(Self.subsystem, "uplink is back (\(currentUplink.summary)); reconnecting without waiting for the path to settle")
+        reconnectToSelectedConnection()
     }
 
     private func reconcileSessionWithUplink() {
@@ -1254,10 +1360,14 @@ final class AppViewModel: ObservableObject {
         case .keepRunning:
             return
         case .tearDownAndWaitForUplink:
-            log.warn(Self.subsystem, "uplink \(sessionUplink?.summary ?? "<unknown>") is gone; tearing down the session so the machine routes directly")
+            log.warn(Self.subsystem, "uplink \(sessionUplink?.summary ?? "<unknown>") is gone; tearing down the session, guard \(isLeakGuardEnabled ? "armed" : "off")")
             sessionUplink = nil
-            disconnect()
-            // After, not before: disconnect() clears the flag so that a user who
+            // Armed before the teardown, and kept across it: this is the longest
+            // window of the two — it lasts until an uplink comes back, which on a
+            // commute is the commute.
+            armLeakGuardStandby()
+            tearDownSession()
+            // After, not before: the teardown clears the flag so that a user who
             // disconnects on purpose is never reconnected behind their back.
             awaitsUplinkToReconnect = true
         case .reconnect:
@@ -1272,6 +1382,9 @@ final class AppViewModel: ObservableObject {
     /// would install the second set on top of the first.
     private func rebuildSessionForNewUplink() {
         guard !isTerminating else { return }
+        // Armed before the teardown so no packet leaves between the tunnel's routes
+        // being removed and the next tunnel's being installed.
+        armLeakGuardStandby()
         let provider = connectionProvider
         let operationID = UUID()
         beginConnectionOperation()
@@ -1333,6 +1446,11 @@ final class AppViewModel: ObservableObject {
             lastErrorDetails = failure.details
             inFlightConnectionRequest = nil
         case .connected:
+            // A dark wake brings the uplink back for a maintenance window, and the
+            // path observer rebuilds the session on it. That session is not newer
+            // than the sleep — the sleep has not ended — so it is recorded as having
+            // no establishment time at all, and the wake that follows rebuilds it.
+            sessionEstablishedAt = isAsleep ? nil : Date()
             if let inFlightConnectionRequest {
                 appliedSplitTunnelRules = inFlightConnectionRequest.request.splitTunnelPolicy.rules
                 appliedSplitTunnelDefaultAction = inFlightConnectionRequest.request.splitTunnelPolicy.defaultAction
@@ -1347,6 +1465,7 @@ final class AppViewModel: ObservableObject {
             }
             applyDeferredSplitTunnelRulesLiveIfNeeded()
         case .idle:
+            sessionEstablishedAt = nil
             inFlightConnectionRequest = nil
             appliedSplitTunnelRules = nil
             appliedSplitTunnelDefaultAction = nil
@@ -1429,7 +1548,8 @@ final class AppViewModel: ObservableObject {
             splitTunnelPolicy: SplitTunnelPolicy(
                 rules: activeSplitTunnelRules,
                 defaultAction: activeSplitTunnelDefaultAction
-            )
+            ),
+            usesLeakGuard: isLeakGuardEnabled
         )
     }
 
@@ -1878,6 +1998,7 @@ final class AppViewModel: ObservableObject {
             splitTunnelProfiles: splitTunnelProfiles,
             selectedSplitTunnelProfileID: selectedSplitTunnelProfileID,
             isSplitTunnelEnabled: isSplitTunnelEnabled,
+            isLeakGuardEnabled: isLeakGuardEnabled,
             geodataSettings: geodataSettings
         )
     }

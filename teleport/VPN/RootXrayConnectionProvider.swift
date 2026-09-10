@@ -8,13 +8,14 @@ struct RootXrayConnectionProvider: ConnectionProvider, Sendable {
         self.coordinator = coordinator
     }
 
-    init() {
+    init(leakGuard: LeakGuardService) {
         coordinator = BackendConnectionProvider(
             mode: .vpn,
             backend: XrayTunConnectionBackend(
                 runtimeManager: PrivilegedXrayRuntimeManager(),
                 routeInspector: XrayTunRouteInspector(),
-                systemProxyService: SystemProxyService()
+                systemProxyService: SystemProxyService(),
+                leakGuard: leakGuard
             )
         )
     }

@@ -60,6 +60,14 @@ private final class FakeProxy: NSObject, VPNHelperXPCProtocol {
         invoke(.readDiagnostics, request: request, reply: reply)
     }
 
+    func engageLeakGuard(_ request: Data, withReply reply: @escaping (Data?, NSError?) -> Void) {
+        invoke(.engageLeakGuard, request: request, reply: reply)
+    }
+
+    func releaseLeakGuard(_ request: Data, withReply reply: @escaping (Data?, NSError?) -> Void) {
+        invoke(.releaseLeakGuard, request: request, reply: reply)
+    }
+
     private func invoke(
         _ command: VPNHelperCommand,
         request: Data,

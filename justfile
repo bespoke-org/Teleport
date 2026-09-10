@@ -148,7 +148,7 @@ package-open: package
 
 # Run all verification scripts after an Xcode build, so the privileged helper target
 # and app copy/sign phases are checked alongside the lightweight Swift scripts.
-verify: build-debug verify-core verify-subscription-support verify-connection-health verify-connection-provider verify-split-tunneling verify-geodata verify-persistence verify-uplink-reconciliation verify-xpc-protocol verify-helper-request-ledger verify-helper-command-dispatch verify-helper-xpc-endpoint verify-xpc-transport verify-privileged-helper-client verify-mach-service-installation
+verify: build-debug verify-core verify-subscription-support verify-connection-health verify-connection-provider verify-split-tunneling verify-geodata verify-persistence verify-uplink-reconciliation verify-leak-guard verify-xpc-protocol verify-helper-request-ledger verify-helper-command-dispatch verify-helper-xpc-endpoint verify-xpc-transport verify-privileged-helper-client verify-mach-service-installation
 
 # Run core parser/config verification
 verify-core:
@@ -189,6 +189,11 @@ verify-persistence:
 verify-uplink-reconciliation:
     swiftc {{verify_sources}} scripts/verify_uplink_reconciliation.swift -o /tmp/teleport-verify-uplink-reconciliation
     /tmp/teleport-verify-uplink-reconciliation
+
+# Check the pf ruleset that keeps traffic off the uplink between sessions
+verify-leak-guard:
+    swiftc Shared/LeakGuardRuleset.swift scripts/verify_leak_guard.swift -o /tmp/teleport-verify-leak-guard
+    /tmp/teleport-verify-leak-guard
 
 # Verify the shared privileged-helper XPC protocol and payload bounds
 verify-xpc-protocol:

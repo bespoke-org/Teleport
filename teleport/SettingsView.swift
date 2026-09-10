@@ -172,6 +172,16 @@ private struct GeneralSettingsView: View {
                     Text("Launch at login")
                     Text("Start Teleport automatically when you sign in.")
                 }
+
+                Toggle(
+                    isOn: Binding(
+                        get: { viewModel.isLeakGuardEnabled },
+                        set: { viewModel.setLeakGuardEnabled($0) }
+                    )
+                ) {
+                    Text("Block traffic outside the tunnel")
+                    Text("In VPN mode, keep traffic off the network while Teleport is rebuilding a session — after waking, or after changing Wi-Fi. Local networks and DNS still work. Turn this off to sign in to a hotel or airport Wi-Fi page.")
+                }
             }
         }
         .formStyle(.grouped)

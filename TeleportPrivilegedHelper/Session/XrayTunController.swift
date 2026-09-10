@@ -9,6 +9,8 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
     private let scriptBuilder: XrayTunScriptBuilder
     /// One per helper process: the controller is a value, the watch is not.
     private let supervisor: XraySessionSupervisor
+    /// Likewise: the guard owns a pf anchor and a lease timer, not a value.
+    private let leakGuard: LeakGuardController
 
     static let subsystem = "helper"
 
@@ -16,12 +18,20 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
         managedProcess: ManagedXrayProcess = ManagedXrayProcess(installedXrayPath: installedXrayPath),
         shellRunner: HelperShellRunner = HelperShellRunner(),
         scriptBuilder: XrayTunScriptBuilder = XrayTunScriptBuilder(installedXrayPath: installedXrayPath),
-        supervisor: XraySessionSupervisor = XraySessionSupervisor()
+        supervisor: XraySessionSupervisor = XraySessionSupervisor(),
+        leakGuard: LeakGuardController = LeakGuardController(helperStateDirectoryPath: helperStateDirectoryPath)
     ) {
         self.managedProcess = managedProcess
         self.shellRunner = shellRunner
         self.scriptBuilder = scriptBuilder
         self.supervisor = supervisor
+        self.leakGuard = leakGuard
+    }
+
+    /// Called once before the listener accepts anything. See
+    /// `LeakGuardController.releaseStaleGuard`.
+    func releaseStaleLeakGuard() {
+        leakGuard.releaseStaleGuard()
     }
 
     func status(request: StatusRequest) throws -> StatusResponse {
@@ -101,6 +111,39 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
             summary: nil,
             details: nil
         )
+    }
+
+    func engageLeakGuard(request: EngageLeakGuardRequest) throws -> LeakGuardResponse {
+        // pf resolves names at load time. A hostname here would make the helper
+        // perform a lookup on the client's behalf while writing root-owned
+        // firewall rules, so only addresses the helper can parse itself are used.
+        let protectedHosts = try validatedProtectedHosts(request.protectedHosts, required: false)
+            .filter { isNumericAddress($0) }
+        let stage: LeakGuardRuleset.Stage
+        if let tunnelInterfaceName = request.tunnelInterfaceName {
+            stage = .session(tunnelInterface: try validatedTunnelInterfaceName(tunnelInterfaceName))
+        } else {
+            stage = .standby
+        }
+        _ = try preparedHelperStateDirectoryPath()
+        try leakGuard.engage(
+            stage: stage,
+            protectedHosts: protectedHosts,
+            leaseSeconds: request.leaseSeconds
+        )
+        return LeakGuardResponse(isEngaged: true)
+    }
+
+    func releaseLeakGuard(request: ReleaseLeakGuardRequest) throws -> LeakGuardResponse {
+        leakGuard.release()
+        return LeakGuardResponse(isEngaged: false)
+    }
+
+    private func isNumericAddress(_ value: String) -> Bool {
+        var ipv4Address = in_addr()
+        if value.withCString({ inet_pton(AF_INET, $0, &ipv4Address) }) == 1 { return true }
+        var ipv6Address = in6_addr()
+        return value.withCString { inet_pton(AF_INET6, $0, &ipv6Address) } == 1
     }
 
     /// The start script has returned and nothing else would look at Xray again.

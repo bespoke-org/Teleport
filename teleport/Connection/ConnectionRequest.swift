@@ -16,17 +16,23 @@ struct ConnectionRequest: Sendable, Equatable {
     let additionalConnections: [RoutedConnection]
     let localProxy: ProxyEndpoint
     let splitTunnelPolicy: SplitTunnelPolicy
+    /// Whether this session refuses to start unless traffic can be kept off the
+    /// physical uplink. Ignored by System Proxy mode, which pins nothing to an
+    /// uplink and so has no window to guard.
+    let usesLeakGuard: Bool
 
     init(
         defaultConnection: RoutedConnection,
         additionalConnections: [RoutedConnection] = [],
         localProxy: ProxyEndpoint,
-        splitTunnelPolicy: SplitTunnelPolicy
+        splitTunnelPolicy: SplitTunnelPolicy,
+        usesLeakGuard: Bool = true
     ) {
         self.defaultConnection = defaultConnection
         self.additionalConnections = additionalConnections
         self.localProxy = localProxy
         self.splitTunnelPolicy = splitTunnelPolicy
+        self.usesLeakGuard = usesLeakGuard
     }
 
     /// The default connection first: outbound order decides which one keeps the

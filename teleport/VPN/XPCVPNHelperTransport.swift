@@ -235,6 +235,10 @@ nonisolated final class XPCVPNHelperTransport: VPNHelperTransport {
             proxy.stopSession(requestData, withReply: reply)
         case .readDiagnostics:
             proxy.readDiagnostics(requestData, withReply: reply)
+        case .engageLeakGuard:
+            proxy.engageLeakGuard(requestData, withReply: reply)
+        case .releaseLeakGuard:
+            proxy.releaseLeakGuard(requestData, withReply: reply)
         }
 
         return try await finish(
@@ -366,7 +370,11 @@ nonisolated final class XPCVPNHelperTransport: VPNHelperTransport {
             // A proxy/reply-channel error does not prove whether a mutating
             // message reached the helper, so the client must reconcile it.
             return .interrupted
-        case .status, .readDiagnostics:
+        case .status, .readDiagnostics, .engageLeakGuard, .releaseLeakGuard:
+            // A guard message that may or may not have arrived needs no
+            // reconciliation: engaging is idempotent, and the caller repeats it
+            // every renewal anyway. Releasing is retried, and a lease that nobody
+            // renews expires on its own.
             return .unavailable(message)
         }
     }
@@ -379,7 +387,9 @@ nonisolated final class XPCVPNHelperTransport: VPNHelperTransport {
             #selector(VPNHelperXPCProtocol.getStatus(_:withReply:)),
             #selector(VPNHelperXPCProtocol.startSession(_:withReply:)),
             #selector(VPNHelperXPCProtocol.stopSession(_:withReply:)),
-            #selector(VPNHelperXPCProtocol.readDiagnostics(_:withReply:))
+            #selector(VPNHelperXPCProtocol.readDiagnostics(_:withReply:)),
+            #selector(VPNHelperXPCProtocol.engageLeakGuard(_:withReply:)),
+            #selector(VPNHelperXPCProtocol.releaseLeakGuard(_:withReply:))
         ]
 
         for method in methods {

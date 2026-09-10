@@ -133,6 +133,52 @@ nonisolated struct PrivilegedHelperClient: Sendable {
         }
     }
 
+    /// Engages or renews the leak guard. Idempotent: the caller repeats it on a
+    /// timer, and each call resets the lease that would otherwise release it.
+    func engageLeakGuard(
+        tunnelInterfaceName: String?,
+        protectedHosts: [String],
+        leaseSeconds: TimeInterval
+    ) async throws {
+        do {
+            let response: VPNHelperResponseEnvelope<LeakGuardResponse> = try await exchange(
+                command: .engageLeakGuard,
+                requestID: UUID(),
+                sessionID: nil,
+                payload: EngageLeakGuardRequest(
+                    tunnelInterfaceName: tunnelInterfaceName,
+                    protectedHosts: protectedHosts,
+                    leaseSeconds: min(leaseSeconds, VPNHelperProtocol.maximumLeakGuardLeaseSeconds)
+                ),
+                timeout: 10,
+                responseSessionRule: .absent
+            )
+            guard response.payload?.isEngaged == true else {
+                throw PrivilegedHelperClientError.invalidResponse("The privileged helper did not engage the leak guard")
+            }
+        } catch {
+            throw mapClientError(error)
+        }
+    }
+
+    func releaseLeakGuard() async throws {
+        do {
+            let response: VPNHelperResponseEnvelope<LeakGuardResponse> = try await exchange(
+                command: .releaseLeakGuard,
+                requestID: UUID(),
+                sessionID: nil,
+                payload: ReleaseLeakGuardRequest(),
+                timeout: 10,
+                responseSessionRule: .absent
+            )
+            guard response.payload?.isEngaged == false else {
+                throw PrivilegedHelperClientError.invalidResponse("The privileged helper did not release the leak guard")
+            }
+        } catch {
+            throw mapClientError(error)
+        }
+    }
+
     func readLog(logName: String, maxBytes: Int) async throws -> PrivilegedHelperDiagnostics {
         let log: VPNHelperLog
         switch logName {

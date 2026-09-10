@@ -5,6 +5,8 @@ nonisolated enum VPNHelperCommand: String, Codable, Sendable {
     case startSession
     case stopSession
     case readDiagnostics
+    case engageLeakGuard
+    case releaseLeakGuard
 }
 
 nonisolated enum VPNHelperSessionPhase: String, Codable, Sendable {
@@ -93,6 +95,29 @@ nonisolated enum VPNHelperLog: String, Codable, Sendable {
     /// The helper's own event log, which unlike the others spans sessions and
     /// survives reboots.
     case helper
+}
+
+/// Asks the helper to keep traffic off the physical uplink until it is released
+/// or the lease runs out.
+///
+/// `tunnelInterfaceName` is present only once a session owns one: before that
+/// there is no tunnel for traffic to legitimately leave through, and the guard is
+/// correspondingly stricter.
+nonisolated struct EngageLeakGuardRequest: Codable, Sendable, Equatable {
+    let tunnelInterfaceName: String?
+    /// The numeric proxy-server addresses whose transport carries everything else
+    /// and so cannot itself be blocked.
+    let protectedHosts: [String]
+    /// How long the helper keeps the guard without hearing from this client again.
+    /// A client that stops renewing has stopped running, and the machine must not
+    /// stay off the network because of it.
+    let leaseSeconds: Double
+}
+
+nonisolated struct ReleaseLeakGuardRequest: Codable, Sendable, Equatable {}
+
+nonisolated struct LeakGuardResponse: Codable, Sendable, Equatable {
+    let isEngaged: Bool
 }
 
 nonisolated struct ReadDiagnosticsRequest: Codable, Sendable, Equatable {

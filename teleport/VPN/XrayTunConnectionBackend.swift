@@ -7,11 +7,18 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
     private let runtimeManager: PrivilegedXrayRuntimeManager
     private let routeInspector: XrayTunRouteInspector
     private let systemProxyService: SystemProxyService
+    private let leakGuard: LeakGuardService
 
-    init(runtimeManager: PrivilegedXrayRuntimeManager, routeInspector: XrayTunRouteInspector, systemProxyService: SystemProxyService) {
+    init(
+        runtimeManager: PrivilegedXrayRuntimeManager,
+        routeInspector: XrayTunRouteInspector,
+        systemProxyService: SystemProxyService,
+        leakGuard: LeakGuardService
+    ) {
         self.runtimeManager = runtimeManager
         self.routeInspector = routeInspector
         self.systemProxyService = systemProxyService
+        self.leakGuard = leakGuard
     }
 
     /// The reachable numeric address of one server and the physical interface
@@ -97,6 +104,16 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
         }
 
         do {
+            // Before the tunnel, not after: between here and the TUN existing there
+            // is nothing to route through, and this is the window the guard covers.
+            // The tunnel it is about to allow is named now because the interface is
+            // chosen here, so the guard never has to be widened afterwards.
+            if request.usesLeakGuard {
+                try await leakGuard.armForSession(
+                    tunnelInterface: session.tunnelInterfaceName,
+                    protectedHosts: session.protectedHosts
+                )
+            }
             try await runtimeManager.start(session: session)
             // The helper's `start` response already follows TUN and route readiness;
             // this final check only consults the app's cached PID and is not an

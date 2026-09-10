@@ -10,11 +10,12 @@ struct XPCProtocolVerification {
         try verifyRequestSessionValidation()
         try verifyConfigurationBounds()
         try verifyDiagnosticsBounds()
+        try verifyLeakGuardRoundTripAndBounds()
         print("verify_xpc_protocol: all checks passed")
     }
 
     private static func verifyExactRevisionAndStartRoundTrip() throws {
-        precondition(VPNHelperProtocol.revision == 9)
+        precondition(VPNHelperProtocol.revision == 10)
 
         let requestID = UUID()
         let sessionID = UUID()
@@ -34,6 +35,54 @@ struct XPCProtocolVerification {
         let encoded = try VPNHelperCodec.encodeRequest(request)
         let decoded: VPNHelperRequestEnvelope<StartSessionRequest> = try VPNHelperCodec.decodeRequest(encoded)
         precondition(decoded == request)
+    }
+
+    /// The guard spans the teardown and rebuild a session change consists of, so it
+    /// carries no session identifier, and its lease is bounded so a client cannot
+    /// ask for one it never has to renew.
+    private static func verifyLeakGuardRoundTripAndBounds() throws {
+        let request = VPNHelperRequestEnvelope(
+            revision: VPNHelperProtocol.revision,
+            requestID: UUID(),
+            sessionID: nil,
+            payload: EngageLeakGuardRequest(
+                tunnelInterfaceName: "utun9",
+                protectedHosts: ["203.0.113.7"],
+                leaseSeconds: 180
+            )
+        )
+        let encoded = try VPNHelperCodec.encodeRequest(request)
+        let decoded: VPNHelperRequestEnvelope<EngageLeakGuardRequest> = try VPNHelperCodec.decodeRequest(encoded)
+        precondition(decoded == request)
+
+        // A standby guard has no tunnel yet, which is the state it exists for.
+        let standby = VPNHelperRequestEnvelope(
+            revision: VPNHelperProtocol.revision,
+            requestID: UUID(),
+            sessionID: nil,
+            payload: EngageLeakGuardRequest(tunnelInterfaceName: nil, protectedHosts: [], leaseSeconds: 60)
+        )
+        precondition((try? VPNHelperCodec.encodeRequest(standby)) != nil, "a standby guard request must encode")
+
+        let sessionScoped = VPNHelperRequestEnvelope(
+            revision: VPNHelperProtocol.revision,
+            requestID: UUID(),
+            sessionID: UUID(),
+            payload: EngageLeakGuardRequest(tunnelInterfaceName: "utun9", protectedHosts: [], leaseSeconds: 60)
+        )
+        precondition((try? VPNHelperCodec.encodeRequest(sessionScoped)) == nil, "a guard request must not carry a session identifier")
+
+        let unbounded = VPNHelperRequestEnvelope(
+            revision: VPNHelperProtocol.revision,
+            requestID: UUID(),
+            sessionID: nil,
+            payload: EngageLeakGuardRequest(
+                tunnelInterfaceName: nil,
+                protectedHosts: [],
+                leaseSeconds: VPNHelperProtocol.maximumLeakGuardLeaseSeconds + 1
+            )
+        )
+        precondition((try? VPNHelperCodec.encodeRequest(unbounded)) == nil, "a lease beyond the protocol limit must be rejected")
     }
 
     private static func verifyAllResponseRoundTrips() throws {

@@ -11,6 +11,8 @@ private struct PresentableFailingExecutor: HelperCommandExecuting, Sendable {
     func start(request: StartSessionRequest, sessionID: UUID) throws -> StartSessionResponse { throw PresentableFailure(clientSummary: summary) }
     func stop(request: StopSessionRequest, sessionID: UUID) throws -> StopSessionResponse { throw PresentableFailure(clientSummary: summary) }
     func readDiagnostics(request: ReadDiagnosticsRequest) throws -> DiagnosticsResponse { throw PresentableFailure(clientSummary: summary) }
+    func engageLeakGuard(request: EngageLeakGuardRequest) throws -> LeakGuardResponse { throw PresentableFailure(clientSummary: summary) }
+    func releaseLeakGuard(request: ReleaseLeakGuardRequest) throws -> LeakGuardResponse { throw PresentableFailure(clientSummary: summary) }
 }
 
 private struct SecretFailure: LocalizedError, Sendable {
@@ -34,6 +36,14 @@ private struct SecretFailingExecutor: HelperCommandExecuting, Sendable {
     }
 
     func readDiagnostics(request: ReadDiagnosticsRequest) throws -> DiagnosticsResponse {
+        throw SecretFailure(secret: secret)
+    }
+
+    func engageLeakGuard(request: EngageLeakGuardRequest) throws -> LeakGuardResponse {
+        throw SecretFailure(secret: secret)
+    }
+
+    func releaseLeakGuard(request: ReleaseLeakGuardRequest) throws -> LeakGuardResponse {
         throw SecretFailure(secret: secret)
     }
 }
@@ -105,6 +115,16 @@ private final class RecordingExecutor: HelperCommandExecuting, @unchecked Sendab
     func readDiagnostics(request: ReadDiagnosticsRequest) throws -> DiagnosticsResponse {
         record(.readDiagnostics)
         return DiagnosticsResponse(log: request.log, text: "log", metadata: "metadata", wasTruncated: false)
+    }
+
+    func engageLeakGuard(request: EngageLeakGuardRequest) throws -> LeakGuardResponse {
+        record(.engageLeakGuard)
+        return LeakGuardResponse(isEngaged: true)
+    }
+
+    func releaseLeakGuard(request: ReleaseLeakGuardRequest) throws -> LeakGuardResponse {
+        record(.releaseLeakGuard)
+        return LeakGuardResponse(isEngaged: false)
     }
 
     private func record(_ command: VPNHelperCommand) {
@@ -513,6 +533,8 @@ private enum VerifyHelperCommandDispatch {
             try assertFailure(data, as: StopSessionResponse.self, code: .malformedPayload)
         case .readDiagnostics:
             try assertFailure(data, as: DiagnosticsResponse.self, code: .malformedPayload)
+        case .engageLeakGuard, .releaseLeakGuard:
+            try assertFailure(data, as: LeakGuardResponse.self, code: .malformedPayload)
         }
     }
 

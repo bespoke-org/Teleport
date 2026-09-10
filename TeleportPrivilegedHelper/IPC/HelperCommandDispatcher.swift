@@ -163,6 +163,30 @@ actor HelperCommandDispatcher {
                 ) { [executor] in
                     try executor.stop(request: request.payload, sessionID: sessionID)
                 }
+            case .engageLeakGuard:
+                let request: VPNHelperRequestEnvelope<EngageLeakGuardRequest> = try VPNHelperCodec.decodeRequest(requestData)
+                return try await execute(
+                    command: command,
+                    requestID: request.requestID,
+                    responseSessionID: nil,
+                    usesObservedSessionID: false,
+                    successfulSessionID: nil,
+                    fingerprint: fingerprint
+                ) { [executor] in
+                    try executor.engageLeakGuard(request: request.payload)
+                }
+            case .releaseLeakGuard:
+                let request: VPNHelperRequestEnvelope<ReleaseLeakGuardRequest> = try VPNHelperCodec.decodeRequest(requestData)
+                return try await execute(
+                    command: command,
+                    requestID: request.requestID,
+                    responseSessionID: nil,
+                    usesObservedSessionID: false,
+                    successfulSessionID: nil,
+                    fingerprint: fingerprint
+                ) { [executor] in
+                    try executor.releaseLeakGuard(request: request.payload)
+                }
             case .readDiagnostics:
                 let request: VPNHelperRequestEnvelope<ReadDiagnosticsRequest> = try VPNHelperCodec.decodeRequest(requestData)
                 return try await execute(
@@ -326,6 +350,8 @@ actor HelperCommandDispatcher {
             return Self.encodeFailure(requestID: requestID, sessionID: sessionID, payloadType: StopSessionResponse.self, failure: failure)
         case .readDiagnostics:
             return Self.encodeFailure(requestID: requestID, sessionID: sessionID, payloadType: DiagnosticsResponse.self, failure: failure)
+        case .engageLeakGuard, .releaseLeakGuard:
+            return Self.encodeFailure(requestID: requestID, sessionID: sessionID, payloadType: LeakGuardResponse.self, failure: failure)
         }
     }
 
@@ -397,6 +423,10 @@ actor HelperCommandDispatcher {
             allowedPayloadKeys = ["stateDirectoryPath", "protectedHosts", "outboundInterface"]
         case .readDiagnostics:
             allowedPayloadKeys = ["log", "maximumBytes"]
+        case .engageLeakGuard:
+            allowedPayloadKeys = ["tunnelInterfaceName", "protectedHosts", "leaseSeconds"]
+        case .releaseLeakGuard:
+            allowedPayloadKeys = []
         }
 
         guard Set(payload.keys).isSubset(of: allowedPayloadKeys) else {

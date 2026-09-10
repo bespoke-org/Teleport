@@ -79,6 +79,14 @@ private final class LostStopReplyProxy: NSObject, VPNHelperXPCProtocol, @uncheck
         lock.withLock { proxyErrorHandler = handler }
     }
 
+    func engageLeakGuard(_ request: Data, withReply reply: @escaping (Data?, NSError?) -> Void) {
+        reply(nil, NSError(domain: "test", code: 1))
+    }
+
+    func releaseLeakGuard(_ request: Data, withReply reply: @escaping (Data?, NSError?) -> Void) {
+        reply(nil, NSError(domain: "test", code: 1))
+    }
+
     func getStatus(_ request: Data, withReply reply: @escaping (Data?, NSError?) -> Void) {
         lock.withLock { statusCalls += 1 }
         do {
@@ -212,6 +220,24 @@ private enum VerifyPrivilegedHelperClient {
                     sessionID: sessionID,
                     payload: StopSessionResponse(phase: .idle, summary: nil, details: nil)
                 )
+            case .engageLeakGuard:
+                let request: VPNHelperRequestEnvelope<EngageLeakGuardRequest> = try VPNHelperCodec.decodeRequest(data)
+                // The guard spans the teardown and rebuild a session change consists
+                // of, so it is deliberately not scoped to one session.
+                precondition(request.sessionID == nil)
+                return try response(
+                    requestID: request.requestID,
+                    sessionID: nil,
+                    payload: LeakGuardResponse(isEngaged: true)
+                )
+            case .releaseLeakGuard:
+                let request: VPNHelperRequestEnvelope<ReleaseLeakGuardRequest> = try VPNHelperCodec.decodeRequest(data)
+                precondition(request.sessionID == nil)
+                return try response(
+                    requestID: request.requestID,
+                    sessionID: nil,
+                    payload: LeakGuardResponse(isEngaged: false)
+                )
             }
         }
         let client = PrivilegedHelperClient(transport: transport)
@@ -227,9 +253,15 @@ private enum VerifyPrivilegedHelperClient {
         let processIdentifier = try await client.start(session: launch, paths: paths, sessionID: sessionID)
         precondition(processIdentifier == nil)
         try await client.stop(paths: paths, protectedHosts: launch.protectedHosts, outboundInterface: launch.outboundInterface, sessionID: sessionID)
+        try await client.engageLeakGuard(
+            tunnelInterfaceName: launch.tunnelInterfaceName,
+            protectedHosts: launch.protectedHosts,
+            leaseSeconds: LeakGuardService.leaseSeconds
+        )
+        try await client.releaseLeakGuard()
 
-        precondition(transport.calls.map(\.0) == [.status, .readDiagnostics, .readDiagnostics, .startSession, .stopSession])
-        precondition(transport.calls.map(\.2) == [3, 5, 5, 20, 15])
+        precondition(transport.calls.map(\.0) == [.status, .readDiagnostics, .readDiagnostics, .startSession, .stopSession, .engageLeakGuard, .releaseLeakGuard])
+        precondition(transport.calls.map(\.2) == [3, 5, 5, 20, 15, 10, 10])
         let requestIDs = try transport.calls.map { command, data, _ -> UUID in
             switch command {
             case .status:
@@ -243,6 +275,12 @@ private enum VerifyPrivilegedHelperClient {
                 return request.requestID
             case .stopSession:
                 let request: VPNHelperRequestEnvelope<StopSessionRequest> = try VPNHelperCodec.decodeRequest(data)
+                return request.requestID
+            case .engageLeakGuard:
+                let request: VPNHelperRequestEnvelope<EngageLeakGuardRequest> = try VPNHelperCodec.decodeRequest(data)
+                return request.requestID
+            case .releaseLeakGuard:
+                let request: VPNHelperRequestEnvelope<ReleaseLeakGuardRequest> = try VPNHelperCodec.decodeRequest(data)
                 return request.requestID
             }
         }

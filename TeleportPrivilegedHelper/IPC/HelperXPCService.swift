@@ -32,6 +32,14 @@ nonisolated final class HelperXPCService: NSObject, VPNHelperXPCProtocol {
         dispatch(.readDiagnostics, request: request, reply: reply)
     }
 
+    func engageLeakGuard(_ request: Data, withReply reply: @escaping (Data?, NSError?) -> Void) {
+        dispatch(.engageLeakGuard, request: request, reply: reply)
+    }
+
+    func releaseLeakGuard(_ request: Data, withReply reply: @escaping (Data?, NSError?) -> Void) {
+        dispatch(.releaseLeakGuard, request: request, reply: reply)
+    }
+
     private func dispatch(
         _ command: VPNHelperCommand,
         request: Data,

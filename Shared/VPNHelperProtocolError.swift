@@ -96,6 +96,37 @@ extension StopSessionRequest: VPNHelperPayloadValidating {
     }
 }
 
+extension EngageLeakGuardRequest: VPNHelperPayloadValidating {
+    // The guard is not tied to one session: it is held across the teardown and
+    // rebuild that a session change consists of, which is the window it exists for.
+    fileprivate static let sessionRequirement: VPNHelperSessionRequirement = .absent
+
+    fileprivate func validate() throws {
+        if let tunnelInterfaceName {
+            try validateNonEmpty(tunnelInterfaceName, field: "tunnelInterfaceName")
+        }
+        guard protectedHosts.count <= VPNHelperProtocol.maximumProtectedHosts else {
+            throw protocolFailure(.payloadTooLarge, "The leak guard exceeds the protected host limit")
+        }
+        for protectedHost in protectedHosts {
+            try validateNonEmpty(protectedHost, field: "protectedHosts")
+        }
+        guard leaseSeconds > 0, leaseSeconds <= VPNHelperProtocol.maximumLeakGuardLeaseSeconds else {
+            throw protocolFailure(.malformedPayload, "The leak-guard lease is outside the permitted range")
+        }
+    }
+}
+
+extension ReleaseLeakGuardRequest: VPNHelperPayloadValidating {
+    fileprivate static let sessionRequirement: VPNHelperSessionRequirement = .absent
+    fileprivate func validate() throws {}
+}
+
+extension LeakGuardResponse: VPNHelperPayloadValidating {
+    fileprivate static let sessionRequirement: VPNHelperSessionRequirement = .absent
+    fileprivate func validate() throws {}
+}
+
 extension ReadDiagnosticsRequest: VPNHelperPayloadValidating {
     fileprivate static let sessionRequirement: VPNHelperSessionRequirement = .absent
 
