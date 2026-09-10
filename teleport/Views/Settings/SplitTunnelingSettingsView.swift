@@ -12,12 +12,14 @@ struct SplitTunnelingSettingsView: View {
     @State private var isShowingProfilesSheet = false
 
     var body: some View {
-        // A grouped Form is the idiomatic container for a NavigationSplitView
-        // detail pane (see the General/Geodata tabs). A raw VStack wrapping a
-        // greedy List reports an unbounded ideal width that makes the balanced
-        // split view collapse the sidebar, so everything here lives in Form
-        // sections instead — including the reorderable rules list.
-        Form {
+        // One scroll view for the whole pane. A List mixed with non-scrolling
+        // siblings in a VStack reported an unbounded ideal width that collapsed
+        // the split view's sidebar, and a grouped Form fixed that — but a Form on
+        // macOS does not honor `.onMove`, so the rules could not be reordered.
+        // A List holding every section keeps the single scroll view and gets
+        // drag-to-reorder back; the Connections tab lives in the same pane the
+        // same way.
+        List {
             Section {
                 Toggle(
                     isOn: Binding(
@@ -45,10 +47,8 @@ struct SplitTunnelingSettingsView: View {
             rulesSection
             testerSection
         }
-        .formStyle(.grouped)
-        .padding(.top, -20)
-        .padding(.leading, -8)
-        .padding(.trailing, -6)
+        .listStyle(.inset)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .navigationTitle("Split Tunneling")
         .sheet(isPresented: $isShowingProfilesSheet) {
             SplitTunnelProfilesSheet(viewModel: viewModel)
