@@ -31,9 +31,11 @@ build configuration="Debug":
 build-debug:
     just build Debug
 
-# Build Release
+# Build Release and install it into /Applications
 build-release:
     just build Release
+    rm -rf "/Applications/{{app_name}}.app"
+    ditto "{{derived_data}}/Build/Products/Release/{{app_name}}.app" "/Applications/{{app_name}}.app"
 
 # Print the built .app path. Usage: just app-path [Debug|Release]
 app-path configuration="Release":
