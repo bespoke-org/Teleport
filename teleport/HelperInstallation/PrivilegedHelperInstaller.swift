@@ -6,7 +6,7 @@ import Security
 /// updating routing data does not require another administrator approval. This path
 /// runs only when installed executable content differs or the helper is
 /// unavailable; ordinary VPN lifecycle commands use `PrivilegedHelperClient`.
-struct PrivilegedHelperInstaller: Sendable {
+nonisolated struct PrivilegedHelperInstaller: Sendable {
     /// Written next to the installed helper by the admin transaction. The helper's
     /// code-directory hash is what detects a rebuilt helper whose protocol version
     /// did not change; the version alone would keep a stale root daemon running.
@@ -39,6 +39,10 @@ struct PrivilegedHelperInstaller: Sendable {
         self.artifactVerifier = artifactVerifier ?? BundledArtifactVerifier(policy: artifactPolicy)
     }
 
+    /// `@concurrent` keeps the signature checks, the administrator prompt and the
+    /// install off the caller's actor, which is the main one: run there, they froze
+    /// the UI for as long as the prompt stayed open.
+    @concurrent
     func ensureInstalled(runtimeURL: URL) async throws {
         guard let helperURL = bundledHelperURL() else {
             throw PrivilegedHelperInstallerError.bundledHelperMissing
@@ -49,7 +53,7 @@ struct PrivilegedHelperInstaller: Sendable {
             return
         }
         try verifyBundleArtifacts(helperURL: helperURL, runtimeURL: runtimeURL)
-        try install(helperURL: helperURL, runtimeURL: runtimeURL, manifest: manifest)
+        try await install(helperURL: helperURL, runtimeURL: runtimeURL, manifest: manifest)
         try await waitUntilRunning()
     }
 
@@ -91,11 +95,11 @@ struct PrivilegedHelperInstaller: Sendable {
         return try? JSONDecoder().decode(InstallationManifest.self, from: data)
     }
 
-    private func install(helperURL: URL, runtimeURL: URL, manifest: InstallationManifest) throws {
+    private func install(helperURL: URL, runtimeURL: URL, manifest: InstallationManifest) async throws {
         let plist = Self.launchDaemonPlist()
         let script = installScript(appBundleURL: bundle.bundleURL, helperURL: helperURL, runtimeURL: runtimeURL, manifest: manifest, plist: plist)
         do {
-            try shellRunner.runAdministratorShellScript(script, prompt: administratorPrompt)
+            try await shellRunner.runAdministratorShellScript(script, prompt: administratorPrompt)
         } catch {
             throw PrivilegedHelperInstallerError.installFailed((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
         }

@@ -1,6 +1,6 @@
 import Foundation
 
-struct BundledArtifactVerifier: Sendable {
+nonisolated struct BundledArtifactVerifier: Sendable {
     let policy: BundledArtifactPolicy
 
     init(policy: BundledArtifactPolicy = .current) {
