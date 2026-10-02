@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import SystemConfiguration
 
 nonisolated final class SystemProxyService: @unchecked Sendable {
     private let processRunner: (Process) throws -> Void
@@ -48,15 +49,28 @@ nonisolated final class SystemProxyService: @unchecked Sendable {
     /// retaining a snapshot that can be restored after the tunnel stops.
     func suspendProxyForVPN() throws {
         log.info(Self.subsystem, "suspending system proxies for VPN routing")
-        if !hasSavedProxySnapshot() {
+        let hadSnapshot = hasSavedProxySnapshot()
+        if !hadSnapshot {
             try persistCurrentProxyStateIfNeeded(endpoint: lastEnabledEndpoint ?? .default)
         }
 
         do {
+            // A snapshot taken just now is the live state, so only the proxies it
+            // records as enabled need switching off; each networksetup call is a
+            // process spawn. An older snapshot says nothing about what the services
+            // carry now, so then every proxy is switched off.
+            let snapshot = hadSnapshot ? nil : try loadSavedProxySnapshot()
             for service in try activeNetworkServices() {
-                try runNetworkSetup(arguments: ["-setwebproxystate", service, "off"])
-                try runNetworkSetup(arguments: ["-setsecurewebproxystate", service, "off"])
-                try runNetworkSetup(arguments: ["-setsocksfirewallproxystate", service, "off"])
+                let recorded = snapshot?.services.first { $0.serviceName == service }
+                if recorded?.webProxy.enabled ?? true {
+                    try runNetworkSetup(arguments: ["-setwebproxystate", service, "off"])
+                }
+                if recorded?.secureWebProxy.enabled ?? true {
+                    try runNetworkSetup(arguments: ["-setsecurewebproxystate", service, "off"])
+                }
+                if recorded?.socksProxy.enabled ?? true {
+                    try runNetworkSetup(arguments: ["-setsocksfirewallproxystate", service, "off"])
+                }
             }
             lastEnabledEndpoint = nil
         } catch {
@@ -88,6 +102,7 @@ nonisolated final class SystemProxyService: @unchecked Sendable {
         guard let snapshot = try loadSavedProxySnapshot() else { return }
 
         let activeServices = Set(try activeNetworkServices())
+        let configurations = try readProxyConfigurations()
         var unrestored: [NetworkServiceProxySnapshot] = []
 
         for serviceSnapshot in snapshot.services {
@@ -101,9 +116,9 @@ nonisolated final class SystemProxyService: @unchecked Sendable {
                 unrestored.append(serviceSnapshot)
                 continue
             }
-            try restoreWebProxy(serviceSnapshot.webProxy, service: serviceSnapshot.serviceName)
-            try restoreSecureWebProxy(serviceSnapshot.secureWebProxy, service: serviceSnapshot.serviceName)
-            try restoreSOCKSProxy(serviceSnapshot.socksProxy, service: serviceSnapshot.serviceName)
+            try restoreWebProxy(serviceSnapshot.webProxy, service: serviceSnapshot.serviceName, in: configurations)
+            try restoreSecureWebProxy(serviceSnapshot.secureWebProxy, service: serviceSnapshot.serviceName, in: configurations)
+            try restoreSOCKSProxy(serviceSnapshot.socksProxy, service: serviceSnapshot.serviceName, in: configurations)
         }
 
         let restoredCount = snapshot.services.count - unrestored.count
@@ -133,12 +148,13 @@ nonisolated final class SystemProxyService: @unchecked Sendable {
         guard !hasSavedProxySnapshot() else { return }
 
         let services = try activeNetworkServices()
-        let snapshots = try services.map { service in
+        let configurations = try readProxyConfigurations()
+        let snapshots = services.map { service in
             NetworkServiceProxySnapshot(
                 serviceName: service,
-                webProxy: try readWebProxy(service: service),
-                secureWebProxy: try readSecureWebProxy(service: service),
-                socksProxy: try readSOCKSProxy(service: service)
+                webProxy: readWebProxy(service: service, in: configurations),
+                secureWebProxy: readSecureWebProxy(service: service, in: configurations),
+                socksProxy: readSOCKSProxy(service: service, in: configurations)
             )
         }
 
@@ -185,21 +201,37 @@ nonisolated final class SystemProxyService: @unchecked Sendable {
             .filter { !$0.hasPrefix("*") }
     }
 
-    private func readWebProxy(service: String) throws -> NetworkProxySettings {
-        try readProxySettings(arguments: ["-getwebproxy", service])
+    /// The proxy settings of every network service by name, read in-process from
+    /// the same preferences networksetup reads. One read replaces three
+    /// networksetup spawns per service.
+    private func readProxyConfigurations() throws -> [String: [String: Any]] {
+        guard let preferences = SCPreferencesCreate(nil, "dev.x.teleport" as CFString, nil),
+              let networkSet = SCNetworkSetCopyCurrent(preferences),
+              let services = SCNetworkSetCopyServices(networkSet) as? [SCNetworkService] else {
+            throw ProxyError.preferencesUnavailable
+        }
+        var configurations: [String: [String: Any]] = [:]
+        for service in services {
+            guard let name = SCNetworkServiceGetName(service) as String?,
+                  let proxies = SCNetworkServiceCopyProtocol(service, kSCNetworkProtocolTypeProxies),
+                  let configuration = SCNetworkProtocolGetConfiguration(proxies) as? [String: Any] else {
+                continue
+            }
+            configurations[name] = configuration
+        }
+        return configurations
     }
 
-    private func readSecureWebProxy(service: String) throws -> NetworkProxySettings {
-        try readProxySettings(arguments: ["-getsecurewebproxy", service])
+    private func readWebProxy(service: String, in configurations: [String: [String: Any]]) -> NetworkProxySettings {
+        NetworkProxySettings(configuration: configurations[service], keyPrefix: "HTTP")
     }
 
-    private func readSOCKSProxy(service: String) throws -> NetworkProxySettings {
-        try readProxySettings(arguments: ["-getsocksfirewallproxy", service])
+    private func readSecureWebProxy(service: String, in configurations: [String: [String: Any]]) -> NetworkProxySettings {
+        NetworkProxySettings(configuration: configurations[service], keyPrefix: "HTTPS")
     }
 
-    private func readProxySettings(arguments: [String]) throws -> NetworkProxySettings {
-        let result = try runNetworkSetup(arguments: arguments)
-        return NetworkProxySettings(networkSetupOutput: result.standardOutput)
+    private func readSOCKSProxy(service: String, in configurations: [String: [String: Any]]) -> NetworkProxySettings {
+        NetworkProxySettings(configuration: configurations[service], keyPrefix: "SOCKS")
     }
 
     private func setWebProxy(enabled: Bool, host: String?, port: Int?) throws {
@@ -223,19 +255,22 @@ nonisolated final class SystemProxyService: @unchecked Sendable {
         }
     }
 
-    private func restoreWebProxy(_ settings: NetworkProxySettings, service: String) throws {
-        try restoreProxySettings(settings, service: service, setCommand: "-setwebproxy", stateCommand: "-setwebproxystate")
+    private func restoreWebProxy(_ settings: NetworkProxySettings, service: String, in configurations: [String: [String: Any]]) throws {
+        try restoreProxySettings(settings, current: readWebProxy(service: service, in: configurations), service: service, setCommand: "-setwebproxy", stateCommand: "-setwebproxystate")
     }
 
-    private func restoreSecureWebProxy(_ settings: NetworkProxySettings, service: String) throws {
-        try restoreProxySettings(settings, service: service, setCommand: "-setsecurewebproxy", stateCommand: "-setsecurewebproxystate")
+    private func restoreSecureWebProxy(_ settings: NetworkProxySettings, service: String, in configurations: [String: [String: Any]]) throws {
+        try restoreProxySettings(settings, current: readSecureWebProxy(service: service, in: configurations), service: service, setCommand: "-setsecurewebproxy", stateCommand: "-setsecurewebproxystate")
     }
 
-    private func restoreSOCKSProxy(_ settings: NetworkProxySettings, service: String) throws {
-        try restoreProxySettings(settings, service: service, setCommand: "-setsocksfirewallproxy", stateCommand: "-setsocksfirewallproxystate")
+    private func restoreSOCKSProxy(_ settings: NetworkProxySettings, service: String, in configurations: [String: [String: Any]]) throws {
+        try restoreProxySettings(settings, current: readSOCKSProxy(service: service, in: configurations), service: service, setCommand: "-setsocksfirewallproxy", stateCommand: "-setsocksfirewallproxystate")
     }
 
-    private func restoreProxySettings(_ settings: NetworkProxySettings, service: String, setCommand: String, stateCommand: String) throws {
+    /// One read is cheaper than the two or three writes a restore takes, and in VPN
+    /// mode most proxies were never touched, so they already match the snapshot.
+    private func restoreProxySettings(_ settings: NetworkProxySettings, current: NetworkProxySettings, service: String, setCommand: String, stateCommand: String) throws {
+        guard current != settings else { return }
         let setArguments = [setCommand, service, settings.server ?? "", String(settings.port ?? 0)]
         let stateArguments = [stateCommand, service, settings.enabled ? "on" : "off"]
 
@@ -250,18 +285,19 @@ nonisolated final class SystemProxyService: @unchecked Sendable {
     }
 
     private func disableProxyIfMatching(endpoint: ProxyEndpoint) throws {
+        let configurations = try readProxyConfigurations()
         for service in try activeNetworkServices() {
-            let webProxy = try readWebProxy(service: service)
+            let webProxy = readWebProxy(service: service, in: configurations)
             if webProxy.matches(host: endpoint.host, port: endpoint.httpPort) {
                 try clearProxy(service: service, setCommand: "-setwebproxy", stateCommand: "-setwebproxystate")
             }
 
-            let secureWebProxy = try readSecureWebProxy(service: service)
+            let secureWebProxy = readSecureWebProxy(service: service, in: configurations)
             if secureWebProxy.matches(host: endpoint.host, port: endpoint.httpPort) {
                 try clearProxy(service: service, setCommand: "-setsecurewebproxy", stateCommand: "-setsecurewebproxystate")
             }
 
-            let socksProxy = try readSOCKSProxy(service: service)
+            let socksProxy = readSOCKSProxy(service: service, in: configurations)
             if socksProxy.matches(host: endpoint.host, port: endpoint.socksPort) {
                 try clearProxy(service: service, setCommand: "-setsocksfirewallproxy", stateCommand: "-setsocksfirewallproxystate")
             }
@@ -352,52 +388,25 @@ nonisolated final class SystemProxyService: @unchecked Sendable {
             self.authenticated = authenticated
         }
 
-        init(networkSetupOutput: String) {
-            var enabled = false
-            var server: String?
-            var port: Int?
-            var authenticated = false
-
-            for line in networkSetupOutput.split(separator: "\n") {
-                let parts = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
-                guard parts.count == 2 else { continue }
-
-                let key = parts[0].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                let value = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
-
-                switch key {
-                case "enabled":
-                    enabled = Self.parseBoolean(value)
-                case "server":
-                    server = value.isEmpty ? nil : value
-                case "port":
-                    port = Int(value)
-                case "authenticated proxy enabled":
-                    authenticated = Self.parseBoolean(value)
-                default:
-                    continue
-                }
-            }
-
-            self.enabled = enabled
-            self.server = server
-            self.port = port
-            self.authenticated = authenticated
+        /// `keyPrefix` is "HTTP", "HTTPS" or "SOCKS", as in the `kSCPropNetProxies…`
+        /// keys. A proxy with a user name is treated as authenticated: the password
+        /// lives in the keychain, where a snapshot cannot carry it.
+        init(configuration: [String: Any]?, keyPrefix: String) {
+            let configuration = configuration ?? [:]
+            let server = configuration["\(keyPrefix)Proxy"] as? String
+            let user = configuration["\(keyPrefix)User"] as? String
+            self.init(
+                enabled: (configuration["\(keyPrefix)Enable"] as? Int ?? 0) != 0,
+                server: server?.isEmpty == false ? server : nil,
+                port: configuration["\(keyPrefix)Port"] as? Int ?? 0,
+                authenticated: user?.isEmpty == false
+            )
         }
 
         func matches(host: String, port expectedPort: Int) -> Bool {
             enabled
                 && server?.caseInsensitiveCompare(host) == .orderedSame
                 && port == expectedPort
-        }
-
-        private static func parseBoolean(_ value: String) -> Bool {
-            switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-            case "yes", "true", "1", "on":
-                return true
-            default:
-                return false
-            }
         }
     }
 
@@ -408,6 +417,7 @@ nonisolated final class SystemProxyService: @unchecked Sendable {
 
     enum ProxyError: LocalizedError {
         case authenticatedProxyCannotBePreserved
+        case preferencesUnavailable
         case commandFailed(arguments: [String], standardError: String)
         case commandTimedOut(arguments: [String])
 
@@ -415,6 +425,8 @@ nonisolated final class SystemProxyService: @unchecked Sendable {
             switch self {
             case .authenticatedProxyCannotBePreserved:
                 return "Existing authenticated system proxy settings cannot be safely preserved because macOS does not expose the saved proxy password. Disable those proxies before connecting."
+            case .preferencesUnavailable:
+                return "Failed to read the system proxy settings."
             case let .commandFailed(arguments, standardError):
                 let command = arguments.joined(separator: " ")
                 if standardError.isEmpty {
