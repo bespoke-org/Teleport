@@ -111,12 +111,16 @@ struct XrayTunScriptBuilder: Sendable {
 
         tun_interface=""
         readiness_attempt=0
-        while [ -z "$tun_interface" ] && [ "$readiness_attempt" -lt 20 ]; do
-            sleep 0.5
+        while [ -z "$tun_interface" ] && [ "$readiness_attempt" -lt 100 ]; do
+            sleep 0.1
             readiness_attempt=$((readiness_attempt + 1))
 
-            protect_host_routes
-            protect_dns_routes
+            # Every half second, as before the poll got faster: re-protecting spawns
+            # several route commands per server and would dominate a 0.1 s poll.
+            if [ $((readiness_attempt % 5)) -eq 0 ]; then
+                protect_host_routes
+                protect_dns_routes
+            fi
 
             if ! kill -0 "$pid" >/dev/null 2>&1; then
                 printf '%s pid %s exited during readiness wait\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$pid" >> "$CONTROL_LOG_FILE"
@@ -307,8 +311,10 @@ struct XrayTunScriptBuilder: Sendable {
         // The client's list and the helper's own file are both used: a stop that
         // follows a helper restart has only the file, and one that follows a
         // partial start may have hosts the file never received.
+        // A host already in the file is deleted by `cleanup_host_routes` below;
+        // deleting it here too doubled the route commands of every stop.
         for protectedHost in (protectedHosts ?? []) where !protectedHost.isEmpty {
-            commands.append("delete_host_route \(q(protectedHost))")
+            commands.append("grep -qxF \(q(protectedHost)) \(q(protectedHostFile)) 2>/dev/null || delete_host_route \(q(protectedHost))")
         }
         commands.append("cleanup_host_routes")
         commands.append("cleanup_dns_routes")

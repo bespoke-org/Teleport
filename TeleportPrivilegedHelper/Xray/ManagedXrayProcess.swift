@@ -37,8 +37,8 @@ struct ManagedXrayProcess: Sendable {
 
     private func terminateInstalledXray(pid: pid_t) throws {
         try signalInstalledXray(pid: pid, signal: SIGTERM)
-        for _ in 0 ..< 10 {
-            usleep(200_000)
+        for _ in 0 ..< 40 {
+            usleep(50_000)
             if !isInstalledXrayProcess(pid: pid) {
                 return
             }
