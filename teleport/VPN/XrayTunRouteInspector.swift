@@ -126,17 +126,27 @@ nonisolated struct XrayTunRouteInspector: Sendable {
         })
     }
 
-    private static func commandOutput(executable: String, arguments: [String]) -> String? {
+    private static func commandOutput(executable: String, arguments: [String], timeout: TimeInterval = 5) -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
         let outputPipe = Pipe()
         process.standardOutput = outputPipe
-        process.standardError = Pipe()
+        process.standardError = FileHandle.nullDevice
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
         do {
             try process.run()
-            process.waitUntilExit()
         } catch {
+            return nil
+        }
+        // `dscacheutil` waits about a minute on a resolver that does not answer,
+        // and every connection operation — disconnect and quit included — queues
+        // behind the connect that is waiting here.
+        guard exited.wait(timeout: .now() + timeout) == .success else {
+            process.terminate()
+            // Reap the child; otherwise it stays a zombie for the life of this process.
+            process.waitUntilExit()
             return nil
         }
         guard process.terminationStatus == 0 else { return nil }
