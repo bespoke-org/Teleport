@@ -149,10 +149,11 @@ nonisolated final class BackendConnectionProvider: ConnectionProvider, @unchecke
             stateStore.update(.preparing)
             stateStore.update(.connecting)
 
-            // A backend may say it is waiting on the user; it may not declare the
-            // session connected or failed, which only this operation does below.
+            // A backend may say it is waiting on the user, and that it is back to
+            // connecting; it may not declare the session connected or failed, which
+            // only this operation does below.
             let reportPhase: @Sendable (ConnectionState) -> Void = { phase in
-                guard phase == .awaitingUserApproval else { return }
+                guard phase == .awaitingUserApproval || phase == .connecting else { return }
                 stateStore.update(phase)
             }
             do {

@@ -113,6 +113,16 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
             cancellation.cancel()
         }
 
+        // Still before the commit point: an installed helper is not session state
+        // and needs no undoing, and the administrator prompt it may put up is a
+        // wait the user can cancel out of. After the route checks, so a network
+        // that cannot reach the server does not ask for a password first.
+        try Task.checkCancellation()
+        try await runtimeManager.prepareHelper {
+            reportPhase(.awaitingUserApproval)
+        }
+        reportPhase(.connecting)
+
         // The commit point. Past this line the operation runs to the end whatever
         // happens to its task: proxies, guard, and tunnel must be either all up or
         // all put back, and the catch below does the putting back.
@@ -132,9 +142,7 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
                     protectedHosts: session.protectedHosts
                 )
             }
-            try await runtimeManager.start(session: session) {
-                reportPhase(.awaitingUserApproval)
-            }
+            try await runtimeManager.start(session: session)
             // The helper's `start` response already follows TUN and route readiness;
             // this final check only consults the app's cached PID and is not an
             // authoritative helper health check.

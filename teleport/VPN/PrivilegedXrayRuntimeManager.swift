@@ -43,9 +43,19 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
         runtimeURLProvider()
     }
 
-    /// `onInstallingHelper` fires if the start has to install or update the
-    /// privileged helper first, which puts an administrator prompt on screen.
-    func start(session: XrayTunLaunchSession, onInstallingHelper: @escaping @Sendable () -> Void = {}) async throws {
+    /// Installs or updates the privileged helper if the bundled one is not what
+    /// is installed and running. Separate from `start` so a connect can do it
+    /// before it changes anything on the machine: the administrator prompt this
+    /// may put up is then a wait the user can still cancel out of with Disconnect.
+    /// `onInstallingHelper` fires only when an install is actually about to happen.
+    func prepareHelper(onInstallingHelper: @escaping @Sendable () -> Void) async throws {
+        guard let runtimeURL = runtimeURL() else {
+            throw XrayRuntimeManager.RuntimeError.binaryNotFound
+        }
+        try await ensureHelperInstalled(runtimeURL, onInstallingHelper)
+    }
+
+    func start(session: XrayTunLaunchSession) async throws {
         try fileManager.createDirectory(at: paths.stateDirectoryURL, withIntermediateDirectories: true)
 
         guard let runtimeURL = runtimeURL() else {
@@ -55,7 +65,9 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
         let sessionID = UUID()
         do {
             let assetDirectoryURL = try assetDirectoryURLProvider()
-            try await ensureHelperInstalled(runtimeURL, onInstallingHelper)
+            // Normally a no-op after prepareHelper; still here for a start that
+            // did not go through it.
+            try await ensureHelperInstalled(runtimeURL, {})
             _ = try await XrayTunStartCorrelation.perform(
                 persist: { pid in
                     try self.persistSessionState(for: session, sessionID: sessionID, pid: pid)

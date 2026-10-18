@@ -8,7 +8,8 @@ nonisolated protocol ConnectionBackend: AnyObject, Sendable {
     func hasActiveRuntimeSession() async -> Bool
     func restorePreviousState() async throws
     /// `reportPhase` lets a start say what it is waiting on. The provider decides
-    /// which states it accepts from a backend; today only `.awaitingUserApproval`.
+    /// which states it accepts from a backend; today `.awaitingUserApproval` and
+    /// `.connecting` to return from it.
     func start(_ request: ConnectionRequest, reportPhase: @escaping @Sendable (ConnectionState) -> Void) async throws
     func reconnect(_ request: ConnectionRequest, reportPhase: @escaping @Sendable (ConnectionState) -> Void) async throws
     func stop() async throws
