@@ -7,6 +7,9 @@ helper_name := "dev.x.teleport.PrivilegedHelper"
 derived_data := "build/DerivedData"
 dist_dir := "build/dist"
 destination := "platform=macOS,arch=arm64"
+# Extra swiftc flags for the verify binaries; `coverage` sets the profiling ones.
+verify_flags := ""
+coverage_dir := "build/coverage"
 verify_sources := "teleport/TeleportModels.swift teleport/App/*.swift teleport/Connection/*.swift teleport/Parsing/*.swift teleport/Persistence/*.swift teleport/Subscriptions/*.swift teleport/XrayCore/*.swift teleport/SystemProxy/*.swift teleport/VPN/*.swift teleport/HelperInstallation/*.swift teleport/Geodata/*.swift teleport/Health/*.swift teleport/ViewModels/*.swift Shared/*.swift"
 
 # List available recipes
@@ -154,83 +157,90 @@ verify: build-debug verify-core verify-subscription-support verify-connection-he
 
 # Run core parser/config verification
 verify-core:
-    swiftc {{verify_sources}} scripts/verify_core.swift -o /tmp/teleport-verify-core
+    swiftc {{verify_flags}} {{verify_sources}} scripts/verify_core.swift -o /tmp/teleport-verify-core
     /tmp/teleport-verify-core
 
 # Run subscription import verification
 verify-subscription-support:
-    swiftc {{verify_sources}} scripts/verify_subscription_support.swift -o /tmp/teleport-verify-subscription-support
+    swiftc {{verify_flags}} {{verify_sources}} scripts/verify_subscription_support.swift -o /tmp/teleport-verify-subscription-support
     /tmp/teleport-verify-subscription-support
 
 # Run connection health metadata verification
 verify-connection-health:
-    swiftc {{verify_sources}} scripts/verify_connection_health.swift -o /tmp/teleport-verify-connection-health
+    swiftc {{verify_flags}} {{verify_sources}} scripts/verify_connection_health.swift -o /tmp/teleport-verify-connection-health
     /tmp/teleport-verify-connection-health
 
 # Run connection provider state and presentation verification
 verify-connection-provider:
-    swiftc {{verify_sources}} scripts/verify_connection_provider.swift -o /tmp/teleport-verify-connection-provider
+    swiftc {{verify_flags}} {{verify_sources}} scripts/verify_connection_provider.swift -o /tmp/teleport-verify-connection-provider
     /tmp/teleport-verify-connection-provider
 
 # Run split-tunnel rule classification/matching/routing verification
 verify-split-tunneling:
-    swiftc {{verify_sources}} TeleportPrivilegedHelper/Support/HelperPlatform.swift TeleportPrivilegedHelper/Routing/XrayTunScriptBuilder.swift scripts/verify_split_tunneling.swift -o /tmp/teleport-verify-split-tunneling
+    swiftc {{verify_flags}} {{verify_sources}} TeleportPrivilegedHelper/Support/HelperPlatform.swift TeleportPrivilegedHelper/Routing/XrayTunScriptBuilder.swift scripts/verify_split_tunneling.swift -o /tmp/teleport-verify-split-tunneling
     /tmp/teleport-verify-split-tunneling
 
 # Run geodata settings/model verification
 verify-geodata:
-    swiftc {{verify_sources}} scripts/verify_geodata.swift -o /tmp/teleport-verify-geodata
+    swiftc {{verify_flags}} {{verify_sources}} scripts/verify_geodata.swift -o /tmp/teleport-verify-geodata
     /tmp/teleport-verify-geodata
 
 # Run ConfigurationStore Keychain-failure-handling verification
 verify-persistence:
-    swiftc {{verify_sources}} scripts/verify_persistence.swift -o /tmp/teleport-verify-persistence
+    swiftc {{verify_flags}} {{verify_sources}} scripts/verify_persistence.swift -o /tmp/teleport-verify-persistence
     /tmp/teleport-verify-persistence
 
 # Check how a running session reacts to the uplink underneath it changing
 verify-uplink-reconciliation:
-    swiftc {{verify_sources}} scripts/verify_uplink_reconciliation.swift -o /tmp/teleport-verify-uplink-reconciliation
+    swiftc {{verify_flags}} {{verify_sources}} scripts/verify_uplink_reconciliation.swift -o /tmp/teleport-verify-uplink-reconciliation
     /tmp/teleport-verify-uplink-reconciliation
 
 # Check the pf ruleset that keeps traffic off the uplink between sessions
 verify-leak-guard:
-    swiftc Shared/LeakGuardRuleset.swift scripts/verify_leak_guard.swift -o /tmp/teleport-verify-leak-guard
+    swiftc {{verify_flags}} Shared/LeakGuardRuleset.swift Shared/VPNHelperXPCProtocol.swift teleport/VPN/ProbeHostExemptions.swift scripts/verify_leak_guard.swift -o /tmp/teleport-verify-leak-guard
     /tmp/teleport-verify-leak-guard
 
 # Verify the shared privileged-helper XPC protocol and payload bounds
 verify-xpc-protocol:
-    swiftc Shared/*.swift scripts/verify_xpc_protocol.swift -o /tmp/teleport-verify-xpc-protocol
+    swiftc {{verify_flags}} Shared/*.swift scripts/verify_xpc_protocol.swift -o /tmp/teleport-verify-xpc-protocol
     /tmp/teleport-verify-xpc-protocol
 
 # Verify bounded same-daemon privileged-helper request deduplication
 verify-helper-request-ledger:
-    swiftc Shared/*.swift TeleportPrivilegedHelper/IPC/HelperRequestLedger.swift scripts/verify_helper_request_ledger.swift -o /tmp/teleport-verify-helper-request-ledger
+    swiftc {{verify_flags}} Shared/*.swift TeleportPrivilegedHelper/IPC/HelperRequestLedger.swift scripts/verify_helper_request_ledger.swift -o /tmp/teleport-verify-helper-request-ledger
     /tmp/teleport-verify-helper-request-ledger
 
 # Verify typed privileged-helper command dispatch and request deduplication
 verify-helper-command-dispatch:
-    swiftc Shared/*.swift TeleportPrivilegedHelper/IPC/HelperRequestLedger.swift TeleportPrivilegedHelper/IPC/HelperCommandExecuting.swift TeleportPrivilegedHelper/IPC/HelperCommandDispatcher.swift scripts/verify_helper_command_dispatch.swift -o /tmp/teleport-verify-helper-command-dispatch
+    swiftc {{verify_flags}} Shared/*.swift TeleportPrivilegedHelper/IPC/HelperRequestLedger.swift TeleportPrivilegedHelper/IPC/HelperCommandExecuting.swift TeleportPrivilegedHelper/IPC/HelperCommandDispatcher.swift scripts/verify_helper_command_dispatch.swift -o /tmp/teleport-verify-helper-command-dispatch
     /tmp/teleport-verify-helper-command-dispatch
 
 # Verify the authenticated privileged-helper XPC endpoint composition
 verify-helper-xpc-endpoint:
-    swiftc Shared/*.swift TeleportPrivilegedHelper/IPC/HelperRequestLedger.swift TeleportPrivilegedHelper/IPC/HelperCommandExecuting.swift TeleportPrivilegedHelper/IPC/HelperCommandDispatcher.swift TeleportPrivilegedHelper/IPC/HelperXPCService.swift scripts/verify_helper_xpc_endpoint.swift -o /tmp/teleport-verify-helper-xpc-endpoint
+    swiftc {{verify_flags}} Shared/*.swift TeleportPrivilegedHelper/IPC/HelperRequestLedger.swift TeleportPrivilegedHelper/IPC/HelperCommandExecuting.swift TeleportPrivilegedHelper/IPC/HelperCommandDispatcher.swift TeleportPrivilegedHelper/IPC/HelperXPCService.swift scripts/verify_helper_xpc_endpoint.swift -o /tmp/teleport-verify-helper-xpc-endpoint
     /tmp/teleport-verify-helper-xpc-endpoint
 
 # Verify app-side XPC connection ownership and transport races
 verify-xpc-transport:
-    swiftc Shared/*.swift teleport/VPN/VPNHelperTransport.swift teleport/VPN/XPCVPNHelperTransport.swift scripts/verify_xpc_transport.swift -o /tmp/teleport-verify-xpc-transport
+    swiftc {{verify_flags}} Shared/*.swift teleport/VPN/VPNHelperTransport.swift teleport/VPN/XPCVPNHelperTransport.swift scripts/verify_xpc_transport.swift -o /tmp/teleport-verify-xpc-transport
     /tmp/teleport-verify-xpc-transport
 
 # Verify the typed privileged-helper client and bounded reconciliation
 verify-privileged-helper-client:
-    swiftc {{verify_sources}} scripts/verify_privileged_helper_client.swift -o /tmp/teleport-verify-privileged-helper-client
+    swiftc {{verify_flags}} {{verify_sources}} scripts/verify_privileged_helper_client.swift -o /tmp/teleport-verify-privileged-helper-client
     /tmp/teleport-verify-privileged-helper-client
 
 # Verify the LaunchDaemon Mach service and explicit legacy reset tooling
 verify-mach-service-installation:
-    swiftc {{verify_sources}} scripts/verify_mach_service_installation.swift -o /tmp/teleport-verify-mach-service-installation
+    swiftc {{verify_flags}} {{verify_sources}} scripts/verify_mach_service_installation.swift -o /tmp/teleport-verify-mach-service-installation
     /tmp/teleport-verify-mach-service-installation
+
+# Line coverage of the verify scripts over the sources they compile (views and most helper sources are not among them)
+coverage:
+    rm -rf "{{coverage_dir}}" && mkdir -p "{{coverage_dir}}"
+    LLVM_PROFILE_FILE="{{coverage_dir}}/%m.profraw" just verify_flags="-profile-generate -profile-coverage-mapping" verify-core verify-subscription-support verify-connection-health verify-connection-provider verify-split-tunneling verify-geodata verify-persistence verify-uplink-reconciliation verify-leak-guard verify-xpc-protocol verify-helper-request-ledger verify-helper-command-dispatch verify-helper-xpc-endpoint verify-xpc-transport verify-privileged-helper-client verify-mach-service-installation
+    xcrun llvm-profdata merge -sparse "{{coverage_dir}}"/*.profraw -o "{{coverage_dir}}/merged.profdata"
+    xcrun llvm-cov report $(for binary in /tmp/teleport-verify-*; do printf -- '-object %s ' "$binary"; done) -instr-profile "{{coverage_dir}}/merged.profdata" -ignore-filename-regex='scripts/' | tee "{{coverage_dir}}/report.txt"
 
 # Explicitly remove the legacy helper installation before development cutover
 reset-legacy-privileged-helper:
