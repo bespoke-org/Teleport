@@ -185,11 +185,12 @@ final class ConnectionHealthProbeService: @unchecked Sendable {
         }
 
         let startTime = DispatchTime.now().uptimeNanoseconds
-        let deadline = Date().addingTimeInterval(TimeInterval(tunnelProbeTimeoutSeconds))
+        let clock = SuspendingClock()
+        let deadline = clock.now + .seconds(tunnelProbeTimeoutSeconds)
         let triggerTask = Task { await Self.sendHandshakeTrigger(to: target, through: endpoint) }
         defer { triggerTask.cancel() }
 
-        while Date() < deadline {
+        while clock.now < deadline {
             let output = runtimeManager.capturedErrorOutput() ?? ""
             if Self.containsWireGuardHandshakeResponse(output) {
                 let elapsed = DispatchTime.now().uptimeNanoseconds - startTime

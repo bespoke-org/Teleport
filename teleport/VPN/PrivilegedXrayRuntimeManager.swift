@@ -73,8 +73,9 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
     }
 
     func waitUntilRunning(timeout: TimeInterval = 3) async -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
+        let clock = SuspendingClock()
+        let deadline = clock.now + .seconds(timeout)
+        while clock.now < deadline {
             if await isRunning() {
                 return true
             }

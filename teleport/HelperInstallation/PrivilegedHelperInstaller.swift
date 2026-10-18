@@ -134,9 +134,10 @@ nonisolated struct PrivilegedHelperInstaller: Sendable {
     }
 
     private func waitUntilRunning() async throws {
-        let deadline = Date().addingTimeInterval(5)
+        let clock = SuspendingClock()
+        let deadline = clock.now + .seconds(5)
         var lastError: Error?
-        while Date() < deadline {
+        while clock.now < deadline {
             do {
                 let response = try await PrivilegedHelperClient().status()
                 if response.success, response.version == PrivilegedHelperClient.expectedVersion {

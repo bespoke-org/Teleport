@@ -123,8 +123,8 @@ struct AboutSettingsView: View {
                 return .failure("Unavailable")
             }
 
-            let deadline = Date().addingTimeInterval(2)
-            while process.isRunning && Date() < deadline {
+            let deadline = ProcessInfo.processInfo.systemUptime + 2
+            while process.isRunning && ProcessInfo.processInfo.systemUptime < deadline {
                 Thread.sleep(forTimeInterval: 0.05)
             }
 

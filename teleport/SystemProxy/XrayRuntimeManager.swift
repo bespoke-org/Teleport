@@ -100,9 +100,10 @@ nonisolated final class XrayRuntimeManager: @unchecked Sendable {
     }
 
     func waitUntilLocalProxyReady(endpoint: ProxyEndpoint, timeout: TimeInterval = 3) async -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
+        let clock = SuspendingClock()
+        let deadline = clock.now + .seconds(timeout)
 
-        while Date() < deadline {
+        while clock.now < deadline {
             guard process?.isRunning == true else { return false }
 
             if await Self.canOpenTCPConnection(host: endpoint.host, port: endpoint.httpPort, timeout: 0.2),
@@ -128,8 +129,8 @@ nonisolated final class XrayRuntimeManager: @unchecked Sendable {
             errorBufferLock.unlock()
             process.terminate()
 
-            let deadline = Date().addingTimeInterval(1)
-            while process.isRunning && Date() < deadline {
+            let deadline = ProcessInfo.processInfo.systemUptime + 1
+            while process.isRunning && ProcessInfo.processInfo.systemUptime < deadline {
                 RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
             }
 
