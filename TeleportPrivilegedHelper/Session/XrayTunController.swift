@@ -77,7 +77,7 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
             tunnelInterfaceName: tunnelInterfaceName,
             outboundInterface: outboundInterface,
             installsIPv6Routes: NetworkInterfaceInventory.hasGlobalIPv6Address(outboundInterface)
-        ))
+        ), label: "tunnel start script")
         TeleportLog.shared.info(Self.subsystem, "start session \(LogFormat.id(sessionID)): tunnel is up")
         SystemStateDump.capture("helper: after tunnel start")
         superviseStartedXray(sessionID: sessionID, helperStateDirectoryPath: helperStateDirectoryPath, outboundInterface: outboundInterface)
@@ -103,7 +103,7 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
             helperStateDirectoryPath: helperStateDirectoryPath,
             protectedHosts: protectedHosts.isEmpty ? nil : protectedHosts,
             outboundInterface: outboundInterface
-        ))
+        ), label: "tunnel stop script")
         TeleportLog.shared.info(Self.subsystem, "stop session \(LogFormat.id(sessionID)): teardown finished")
         SystemStateDump.capture("helper: after tunnel stop")
         return StopSessionResponse(
@@ -170,7 +170,7 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
                     helperStateDirectoryPath: helperStateDirectoryPath,
                     protectedHosts: nil,
                     outboundInterface: outboundInterface
-                ))
+                ), label: "tunnel stop script")
                 TeleportLog.shared.info(Self.subsystem, "session \(LogFormat.id(sessionID)): teardown after xray exit finished")
             } catch {
                 TeleportLog.shared.error(Self.subsystem, "session \(LogFormat.id(sessionID)): teardown after xray exit failed: \(LogFormat.error(error))")

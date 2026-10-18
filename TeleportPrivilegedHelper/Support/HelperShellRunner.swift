@@ -1,7 +1,8 @@
 import Foundation
 
 struct HelperShellRunner: Sendable {
-    func run(_ script: String) throws {
+    /// `label` names the script in the error the client sees and in helper.log.
+    func run(_ script: String, label: String = "shell command") throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = ["-c", script]
@@ -28,9 +29,13 @@ struct HelperShellRunner: Sendable {
         stopDraining(errorPipe, into: stderr)
 
         guard process.terminationStatus == 0 else {
-            // Captured output can contain root logs or configuration details. Keep it
-            // inside the helper process and expose logs only through bounded diagnostics.
-            throw HelperError("Privileged helper shell command failed")
+            // Captured output can contain root logs or configuration details. It
+            // goes to helper.log, which the app reads through bounded diagnostics,
+            // and not into the error that crosses to the client.
+            let status = process.terminationStatus
+            let stderrTail = stderr.text().trimmingCharacters(in: .whitespacesAndNewlines)
+            TeleportLog.shared.error("helper", "\(label) exited with status \(status)\(stderrTail.isEmpty ? "" : ": \(stderrTail.suffix(2000))")")
+            throw HelperError("The privileged helper's \(label) exited with status \(status). helper.log in Settings has its output.")
         }
     }
 
