@@ -1193,7 +1193,15 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    func handleAppTermination(completion: @escaping () -> Void) {
+    /// How long a quit waits for the session's teardown. Long enough for a
+    /// helper stop and a proxy restore that each time out once; short enough that
+    /// a teardown stuck behind something is not a reason to force-quit the app.
+    static let terminationTeardownLimit: Duration = .seconds(20)
+
+    func handleAppTermination(
+        teardownLimit: Duration = AppViewModel.terminationTeardownLimit,
+        completion: @escaping () -> Void
+    ) {
         isTerminating = true
         log.info(Self.subsystem, "terminating")
         let provider = connectionProvider
@@ -1201,10 +1209,16 @@ final class AppViewModel: ObservableObject {
         networkPathObserver?.stop()
         systemWakeObserver?.stop()
         Task { @MainActor [weak self] in
-            try? await provider.disconnect()
-            // After the teardown, not before: the guard covers the moment the
-            // tunnel's routes come out from under the machine.
-            await leakGuard.disarm()
+            let tornDown = await Self.awaitTeardown({ try? await provider.disconnect() }, limit: teardownLimit)
+            if tornDown {
+                // After the teardown, not before: the guard covers the moment the
+                // tunnel's routes come out from under the machine.
+                await leakGuard.disarm()
+            } else {
+                // The guard stays with the helper, whose lease flushes it; the
+                // proxy snapshot is restored on the next launch.
+                self?.log.warn(Self.subsystem, "teardown did not finish within \(teardownLimit); quitting with the session's cleanup left to the helper's lease and the next launch")
+            }
             self?.connectionStateTask?.cancel()
             // Anything still queued would otherwise be lost exactly when the log
             // matters most: a quit that follows something going wrong.
@@ -1258,6 +1272,23 @@ final class AppViewModel: ObservableObject {
 
     /// A routed session does not survive sleep in practice: after wake its Xray
     /// reaches the server but no tunneled stream receives a byte, and only a
+    /// True once the teardown returns, false once the limit passes, whichever is
+    /// first. Not a task group: that would wait for the stuck teardown as well,
+    /// since cancelling it does not abort the operation queued behind it.
+    private static func awaitTeardown(_ teardown: @escaping @Sendable () async -> Void, limit: Duration) async -> Bool {
+        await withCheckedContinuation { continuation in
+            let outcome = TeardownOutcome(continuation)
+            Task {
+                await teardown()
+                outcome.resolve(true)
+            }
+            Task {
+                try? await Task.sleep(for: limit, clock: .suspending)
+                outcome.resolve(false)
+            }
+        }
+    }
+
     /// rebuild recovers it. The uplink is usually unchanged, so the path observer
     /// would keep it running; wake itself is the trigger. System Proxy mode is
     /// left alone, as nothing pins it to the machine's sleep state.
@@ -2036,4 +2067,22 @@ extension AppViewModel {
         formatter.unitsStyle = .short
         return formatter
     }()
+}
+
+/// Resumes a continuation on the first of two outcomes and drops the second.
+nonisolated private final class TeardownOutcome: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Bool, Never>?
+
+    init(_ continuation: CheckedContinuation<Bool, Never>) {
+        self.continuation = continuation
+    }
+
+    func resolve(_ tornDown: Bool) {
+        lock.lock()
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(returning: tornDown)
+    }
 }

@@ -12,6 +12,7 @@ struct VerifyConnectionProvider {
         try await testDisconnectCancelsUncommittedConnect()
         try await testDisconnectWaitsForStartupRestoration()
         try await testTerminationCompletesOnlyAfterProviderDisconnect()
+        try await testTerminationGivesUpOnAStuckTeardown()
         try await testLostRuntimeFailsTheSessionAndRestoresSettings()
         testFactorySelectsProviderByMode()
         try await testStoredNameSurvivesLoading()
@@ -346,13 +347,36 @@ struct VerifyConnectionProvider {
     private static func testTerminationCompletesOnlyAfterProviderDisconnect() async throws {
         let root = try makeIsolatedRoot("termination")
         defer { try? FileManager.default.removeItem(at: root) }
+        let (viewModel, backend, store) = try await makeTerminationFixture(root: root)
+        defer { store.deleteKeychainItemForTesting() }
+
+        await backend.stopGate.enableBlocking()
+        let completed = Flag()
+        viewModel.handleAppTermination { completed.set() }
+        await backend.stopGate.waitUntilEntered()
+        precondition(!completed.isSet, "termination completed before the provider disconnected")
+
+        await backend.stopGate.open()
+        for _ in 0 ..< 400 where !completed.isSet {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        precondition(completed.isSet, "termination never completed after disconnect")
+        precondition(
+            backend.recordedCalls() == ["start", "stop"],
+            "unexpected termination calls: \(backend.recordedCalls())"
+        )
+    }
+
+    /// A connected view model over an isolated store, for the termination checks.
+    private static func makeTerminationFixture(
+        root: URL
+    ) async throws -> (AppViewModel, RecordingConnectionBackend, ConfigurationStore) {
         let store = ConfigurationStore(
             fileManager: TempFileManager(root: root),
             keychainService: "dev.x.teleport.verify-connection-provider",
             keychainAccount: "app-snapshot",
             log: TeleportLog(directoryURL: root, fileName: "verify.log")
         )
-        defer { store.deleteKeychainItemForTesting() }
         // Pre-seeding the isolated item stops AppViewModel's init from seeding the
         // bundled subscriptions and immediately fetching them over the network.
         try store.save(
@@ -386,22 +410,25 @@ struct VerifyConnectionProvider {
         )
         await awaitInitialState(coordinator)
         try await coordinator.connect(try makeRequest())
+        return (viewModel, backend, store)
+    }
 
+    /// A teardown that never returns must not keep the app from quitting: the
+    /// helper's lease and the next launch finish the cleanup.
+    private static func testTerminationGivesUpOnAStuckTeardown() async throws {
+        let root = try makeIsolatedRoot("termination-limit")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (viewModel, backend, store) = try await makeTerminationFixture(root: root)
+        defer { store.deleteKeychainItemForTesting() }
         await backend.stopGate.enableBlocking()
         let completed = Flag()
-        viewModel.handleAppTermination { completed.set() }
+        viewModel.handleAppTermination(teardownLimit: .milliseconds(200)) { completed.set() }
         await backend.stopGate.waitUntilEntered()
-        precondition(!completed.isSet, "termination completed before the provider disconnected")
-
-        await backend.stopGate.open()
         for _ in 0 ..< 400 where !completed.isSet {
             try? await Task.sleep(nanoseconds: 5_000_000)
         }
-        precondition(completed.isSet, "termination never completed after disconnect")
-        precondition(
-            backend.recordedCalls() == ["start", "stop"],
-            "unexpected termination calls: \(backend.recordedCalls())"
-        )
+        precondition(completed.isSet, "termination waited on a teardown that never finished")
+        await backend.stopGate.open()
     }
 
     /// The provider resolves its starting state as the first queued operation, so a
