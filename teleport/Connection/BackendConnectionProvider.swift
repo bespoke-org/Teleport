@@ -104,6 +104,7 @@ nonisolated final class BackendConnectionProvider: ConnectionProvider, @unchecke
                     continue
                 }
                 missedChecks += 1
+                TeleportLog.shared.warn("app", "runtime check \(missedChecks) of 2 found no running session")
                 guard missedChecks >= 2 else { continue }
                 self?.handleRuntimeLoss()
                 return

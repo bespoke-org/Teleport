@@ -96,7 +96,9 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
             if status.version == PrivilegedHelperClient.expectedVersion && status.phase == .running {
                 return true
             }
-            TeleportLog.shared.warn(Self.subsystem, "helper reports the runtime is not running: phase \(status.phase.rawValue), helper version \(status.version ?? "<unknown>")")
+            // Info, not a warning: at launch, idle is the expected answer. The
+            // supervision in the provider says when a miss mattered.
+            TeleportLog.shared.info(Self.subsystem, "helper reports the runtime is not running: phase \(status.phase.rawValue), helper version \(status.version ?? "<unknown>")")
             return false
         } catch {
             guard let pid = readSessionState()?.pid ?? readPID() else {
