@@ -323,15 +323,18 @@ nonisolated final class SystemProxyService: @unchecked Sendable {
 
         try processRunner(process)
 
-        let deadline = Date().addingTimeInterval(commandTimeout)
-        while process.isRunning && Date() < deadline {
+        // System uptime stops while the machine sleeps; wall-clock time does not.
+        // A networksetup spawned just before sleep would otherwise be found past
+        // its deadline at wake and killed mid-write, leaving the restore half done.
+        let deadline = ProcessInfo.processInfo.systemUptime + commandTimeout
+        while process.isRunning && ProcessInfo.processInfo.systemUptime < deadline {
             Thread.sleep(forTimeInterval: 0.02)
         }
 
         if process.isRunning {
             process.terminate()
-            let terminationDeadline = Date().addingTimeInterval(0.5)
-            while process.isRunning && Date() < terminationDeadline {
+            let terminationDeadline = ProcessInfo.processInfo.systemUptime + 0.5
+            while process.isRunning && ProcessInfo.processInfo.systemUptime < terminationDeadline {
                 Thread.sleep(forTimeInterval: 0.02)
             }
             if process.isRunning {

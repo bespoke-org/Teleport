@@ -224,10 +224,13 @@ nonisolated struct PrivilegedHelperClient: Sendable {
         successfulPhase: VPNHelperSessionPhase
     ) async throws {
         transport.invalidate()
-        let deadline = Date().addingTimeInterval(60)
+        // A clock that stops with the machine: a sleep in the middle of this loop
+        // must not count against the helper.
+        let clock = SuspendingClock()
+        let deadline = clock.now + .seconds(60)
         var lastErrorSummary = "The privileged helper result is indeterminate"
 
-        while Date() < deadline {
+        while clock.now < deadline {
             do {
                 let status = try await status()
                 guard status.sessionID == sessionID else {
