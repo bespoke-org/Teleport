@@ -1509,7 +1509,10 @@ final class AppViewModel: ObservableObject {
                 self?.finishConnectionOperation(operationID, discardPendingRequest: false)
                 self?.applyDeferredSplitTunnelRulesLiveIfNeeded()
             } catch {
-                if await provider.currentState().isTerminalFailure == false {
+                // A connect cancelled by a disconnect or quit is what the user asked
+                // for, not a failure to report.
+                if !(error is CancellationError),
+                   await provider.currentState().isTerminalFailure == false {
                     self?.applyConnectionError(error)
                 }
                 self?.finishConnectionOperation(operationID, discardPendingRequest: true)

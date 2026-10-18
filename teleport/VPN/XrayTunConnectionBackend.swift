@@ -46,61 +46,79 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
     func restorePreviousState() throws {}
 
     func start(_ request: ConnectionRequest) async throws {
-        // Route inspection and `networksetup` are blocking process calls; only the
-        // helper handshake below is genuinely asynchronous.
-        let session = try await BlockingWork.run { [self] () -> XrayTunLaunchSession in
-            if let existingVPNInterface = routeInspector.existingVPNDefaultRouteInterface() {
-                throw XrayTunConnectionError.existingVPNDetected(existingVPNInterface)
-            }
-
-            // Every connection in the session is pinned to the same reachable
-            // numeric endpoint that receives its protected physical route. This
-            // avoids a second DNS answer selecting a different address after the
-            // TUN defaults have been installed. The uplink comes from the default
-            // connection's route, as it did when a session had only one server.
-            let (defaultAddress, outboundInterface) = try self.protectedRoute(for: request.defaultConnection.configuration)
-            var outbounds = [RoutedProxyOutbound(
-                connectionID: request.defaultConnection.id,
-                configuration: request.defaultConnection.configuration,
-                serverAddress: defaultAddress
-            )]
-            var protectedHosts = [defaultAddress]
-            // An additional connection that cannot be routed fails the whole start:
-            // its rules would otherwise fall back to the default outbound without
-            // the user being told their traffic went somewhere else.
-            for connection in request.additionalConnections {
-                let (address, _) = try self.protectedRoute(for: connection.configuration)
-                outbounds.append(RoutedProxyOutbound(
-                    connectionID: connection.id,
-                    configuration: connection.configuration,
-                    serverAddress: address
-                ))
-                if !protectedHosts.contains(address) {
-                    protectedHosts.append(address)
+        // The pre-flight below reads routes and resolves names but changes nothing
+        // on the machine, so a disconnect or quit that arrives meanwhile may cancel
+        // it. The blocking work runs on a dispatch queue where task cancellation is
+        // invisible, hence the flag it polls between steps.
+        let cancellation = CancellationFlag()
+        let session = try await withTaskCancellationHandler {
+            try await BlockingWork.run { [self] () -> XrayTunLaunchSession in
+                try cancellation.check()
+                if let existingVPNInterface = routeInspector.existingVPNDefaultRouteInterface() {
+                    throw XrayTunConnectionError.existingVPNDetected(existingVPNInterface)
                 }
-            }
+                try cancellation.check()
 
-            let directSendThrough = routeInspector.ipv4Address(for: outboundInterface)
-            let tunnelInterfaceName = routeInspector.nextAvailableTunnelInterfaceName()
-            let configData = try XrayConfigurationWriter(proxyEndpoint: request.localProxy).tunnelConfigData(
-                for: outbounds,
-                interfaceName: tunnelInterfaceName,
-                outboundInterface: outboundInterface,
-                directSendThrough: directSendThrough,
-                splitTunnelRules: request.splitTunnelPolicy.rules,
-                defaultAction: request.splitTunnelPolicy.defaultAction,
-                dnsPolicy: TunnelDNSPolicy(
-                    localResolvers: SystemResolverInventory.nameservers(),
-                    ipv6Enabled: routeInspector.hasGlobalIPv6(on: outboundInterface)
+                // Every connection in the session is pinned to the same reachable
+                // numeric endpoint that receives its protected physical route. This
+                // avoids a second DNS answer selecting a different address after the
+                // TUN defaults have been installed. The uplink comes from the default
+                // connection's route, as it did when a session had only one server.
+                let (defaultAddress, outboundInterface) = try self.protectedRoute(for: request.defaultConnection.configuration)
+                try cancellation.check()
+                var outbounds = [RoutedProxyOutbound(
+                    connectionID: request.defaultConnection.id,
+                    configuration: request.defaultConnection.configuration,
+                    serverAddress: defaultAddress
+                )]
+                var protectedHosts = [defaultAddress]
+                // An additional connection that cannot be routed fails the whole start:
+                // its rules would otherwise fall back to the default outbound without
+                // the user being told their traffic went somewhere else.
+                for connection in request.additionalConnections {
+                    let (address, _) = try self.protectedRoute(for: connection.configuration)
+                    try cancellation.check()
+                    outbounds.append(RoutedProxyOutbound(
+                        connectionID: connection.id,
+                        configuration: connection.configuration,
+                        serverAddress: address
+                    ))
+                    if !protectedHosts.contains(address) {
+                        protectedHosts.append(address)
+                    }
+                }
+
+                let directSendThrough = routeInspector.ipv4Address(for: outboundInterface)
+                let tunnelInterfaceName = routeInspector.nextAvailableTunnelInterfaceName()
+                let configData = try XrayConfigurationWriter(proxyEndpoint: request.localProxy).tunnelConfigData(
+                    for: outbounds,
+                    interfaceName: tunnelInterfaceName,
+                    outboundInterface: outboundInterface,
+                    directSendThrough: directSendThrough,
+                    splitTunnelRules: request.splitTunnelPolicy.rules,
+                    defaultAction: request.splitTunnelPolicy.defaultAction,
+                    dnsPolicy: TunnelDNSPolicy(
+                        localResolvers: SystemResolverInventory.nameservers(),
+                        ipv6Enabled: routeInspector.hasGlobalIPv6(on: outboundInterface)
+                    )
                 )
-            )
+                return XrayTunLaunchSession(
+                    configData: configData,
+                    protectedHosts: protectedHosts,
+                    tunnelInterfaceName: tunnelInterfaceName,
+                    outboundInterface: outboundInterface
+                )
+            }
+        } onCancel: {
+            cancellation.cancel()
+        }
+
+        // The commit point. Past this line the operation runs to the end whatever
+        // happens to its task: proxies, guard, and tunnel must be either all up or
+        // all put back, and the catch below does the putting back.
+        try Task.checkCancellation()
+        try await BlockingWork.run { [systemProxyService] in
             try systemProxyService.suspendProxyForVPN()
-            return XrayTunLaunchSession(
-                configData: configData,
-                protectedHosts: protectedHosts,
-                tunnelInterfaceName: tunnelInterfaceName,
-                outboundInterface: outboundInterface
-            )
         }
 
         do {
@@ -133,7 +151,16 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
 
     func reconnect(_ request: ConnectionRequest) async throws {
         try await runtimeManager.stop()
-        try await start(request)
+        do {
+            try await start(request)
+        } catch is CancellationError {
+            // The old tunnel is already gone and its proxy snapshot still held, so
+            // a cancelled pre-flight here has something to put back after all.
+            try? await BlockingWork.run { [systemProxyService] in
+                try systemProxyService.restoreSavedProxyState()
+            }
+            throw CancellationError()
+        }
     }
 
     func stop() async throws {
@@ -141,6 +168,21 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
         try await BlockingWork.run { [systemProxyService] in
             try systemProxyService.restoreSavedProxyState()
         }
+    }
+}
+
+/// Carries task cancellation into blocking work that runs outside the task.
+nonisolated private final class CancellationFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isCancelled = false
+
+    func cancel() {
+        lock.lock(); isCancelled = true; lock.unlock()
+    }
+
+    func check() throws {
+        lock.lock(); defer { lock.unlock() }
+        if isCancelled { throw CancellationError() }
     }
 }
 

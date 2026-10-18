@@ -9,6 +9,7 @@ struct VerifyConnectionProvider {
         try await testProviderPublishesStartAndStopFailures()
         try await testProviderSerializesConcurrentConnects()
         try await testDisconnectRunsAfterActiveConnect()
+        try await testDisconnectCancelsUncommittedConnect()
         try await testDisconnectWaitsForStartupRestoration()
         try await testTerminationCompletesOnlyAfterProviderDisconnect()
         try await testLostRuntimeFailsTheSessionAndRestoresSettings()
@@ -288,6 +289,37 @@ struct VerifyConnectionProvider {
         )
     }
 
+    /// A connect still in its pre-flight has changed nothing, so a disconnect
+    /// cancels it instead of waiting behind it; the connect ends idle, not failed,
+    /// and the queued disconnect finds nothing to stop.
+    private static func testDisconnectCancelsUncommittedConnect() async throws {
+        let backend = RecordingConnectionBackend()
+        backend.startObservesCancellation = true
+        let provider = BackendConnectionProvider(mode: .systemProxy, backend: backend)
+        await awaitInitialState(provider)
+
+        let connectTask = Task { try await provider.connect(try makeRequest()) }
+        for _ in 0 ..< 400 where backend.recordedCalls().isEmpty {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        precondition(backend.recordedCalls() == ["start"], "connect did not start")
+
+        try await provider.disconnect()
+        do {
+            try await connectTask.value
+            preconditionFailure("cancelled connect returned without an error")
+        } catch is CancellationError {
+        } catch {
+            preconditionFailure("cancelled connect threw \(error) instead of CancellationError")
+        }
+        let finalState = await provider.currentState()
+        precondition(finalState == .idle, "cancelled connect did not end idle: \(finalState)")
+        precondition(
+            backend.recordedCalls() == ["start"],
+            "disconnect stopped a backend that never started: \(backend.recordedCalls())"
+        )
+    }
+
     private static func testDisconnectWaitsForStartupRestoration() async throws {
         let backend = RecordingConnectionBackend()
         backend.hasRestorableStateValue = true
@@ -525,6 +557,8 @@ struct VerifyConnectionProvider {
         var stopError: Error?
         var hasRestorableStateValue = false
         var hasActiveRuntimeSessionValue = false
+        /// Stands in for a pre-flight that polls for cancellation.
+        var startObservesCancellation = false
         let startGate = Gate()
         let restoreGate = Gate()
         let stopGate = Gate()
@@ -549,6 +583,12 @@ struct VerifyConnectionProvider {
 
         func start(_ request: ConnectionRequest) async throws {
             record("start")
+            if startObservesCancellation {
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 2_000_000)
+                }
+                throw CancellationError()
+            }
             await startGate.enter()
             if let startError { throw startError }
         }

@@ -13,6 +13,11 @@ nonisolated final class BackendConnectionProvider: ConnectionProvider, @unchecke
     private let supervisionInterval: TimeInterval
     private let supervisionLock = NSLock()
     private var supervisionTask: Task<Void, Never>?
+    /// The connect currently queued or running, so a disconnect can cancel it.
+    /// Cancellation only reaches the backend's pre-flight; once a connect has
+    /// started changing the machine it ignores the cancellation and finishes.
+    private let connectLock = NSLock()
+    private var connectTask: Task<Void, Error>?
 
     /// `supervisionInterval` is how often a connected session is checked against
     /// the backend's runtime. Overridable so a check can drive it quickly.
@@ -56,6 +61,24 @@ nonisolated final class BackendConnectionProvider: ConnectionProvider, @unchecke
 
     func currentState() async -> ConnectionState {
         stateStore.current()
+    }
+
+    private func setConnectTask(_ task: Task<Void, Error>) {
+        connectLock.lock()
+        connectTask = task
+        connectLock.unlock()
+    }
+
+    private func clearConnectTask(_ task: Task<Void, Error>) {
+        connectLock.lock()
+        if connectTask == task { connectTask = nil }
+        connectLock.unlock()
+    }
+
+    private func cancelConnectTask() {
+        connectLock.lock()
+        connectTask?.cancel()
+        connectLock.unlock()
     }
 
     // MARK: - Supervision
@@ -111,7 +134,7 @@ nonisolated final class BackendConnectionProvider: ConnectionProvider, @unchecke
 
     func connect(_ request: ConnectionRequest) async throws {
         stopSupervising()
-        try await operationQueue.enqueue { [weak self, backend, stateStore, mode] in
+        let task = await operationQueue.register { [weak self, backend, stateStore, mode] in
             let previousState = stateStore.current()
             stateStore.update(.preparing)
             stateStore.update(.connecting)
@@ -126,15 +149,25 @@ nonisolated final class BackendConnectionProvider: ConnectionProvider, @unchecke
                     .connected(ConnectionSession(id: UUID(), mode: mode, connectedAt: Date()))
                 )
                 self?.superviseRuntime()
+            } catch is CancellationError {
+                // The backend put back whatever it had touched, so there is nothing
+                // to report as failed; the disconnect queued behind this sees idle
+                // and returns.
+                stateStore.update(.idle)
+                throw CancellationError()
             } catch {
                 stateStore.update(.failed(ConnectionFailure(error: error)))
                 throw error
             }
         }
+        setConnectTask(task)
+        defer { clearConnectTask(task) }
+        try await task.value
     }
 
     func disconnect() async throws {
         stopSupervising()
+        cancelConnectTask()
         try await operationQueue.enqueue { [backend, stateStore] in
             if case .idle = stateStore.current() {
                 return
@@ -176,12 +209,19 @@ private actor ConnectionOperationQueue {
     func enqueue<T: Sendable>(
         _ operation: @escaping @Sendable () async throws -> T
     ) async throws -> T {
+        try await register(operation).value
+    }
+
+    /// The registered task itself, for a caller that needs to cancel it later.
+    func register<T: Sendable>(
+        _ operation: @escaping @Sendable () async throws -> T
+    ) async -> Task<T, Error> {
         let previous = tail
         let work = Task<T, Error> {
             await previous.value
             return try await operation()
         }
         tail = Task { _ = try? await work.value }
-        return try await work.value
+        return work
     }
 }
