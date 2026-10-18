@@ -43,7 +43,10 @@ nonisolated struct PrivilegedHelperInstaller: Sendable {
     /// install off the caller's actor, which is the main one: run there, they froze
     /// the UI for as long as the prompt stayed open.
     @concurrent
-    func ensureInstalled(runtimeURL: URL) async throws {
+    /// `beforeInstalling` runs only when an install is actually about to happen,
+    /// before the administrator prompt, so the caller can tell the user what the
+    /// wait is for.
+    func ensureInstalled(runtimeURL: URL, beforeInstalling: @Sendable () -> Void = {}) async throws {
         guard let helperURL = bundledHelperURL() else {
             throw PrivilegedHelperInstallerError.bundledHelperMissing
         }
@@ -52,6 +55,7 @@ nonisolated struct PrivilegedHelperInstaller: Sendable {
         if await isInstalledAndRunning(expecting: manifest) {
             return
         }
+        beforeInstalling()
         try verifyBundleArtifacts(helperURL: helperURL, runtimeURL: runtimeURL)
         try await install(helperURL: helperURL, runtimeURL: runtimeURL, manifest: manifest)
         try await waitUntilRunning()

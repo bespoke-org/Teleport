@@ -631,7 +631,7 @@ struct VerifyConnectionProvider {
             await restoreGate.enter()
         }
 
-        func start(_ request: ConnectionRequest) async throws {
+        func start(_ request: ConnectionRequest, reportPhase: @escaping @Sendable (ConnectionState) -> Void) async throws {
             record("start")
             if startObservesCancellation {
                 while !Task.isCancelled {
@@ -643,7 +643,7 @@ struct VerifyConnectionProvider {
             if let startError { throw startError }
         }
 
-        func reconnect(_ request: ConnectionRequest) async throws {
+        func reconnect(_ request: ConnectionRequest, reportPhase: @escaping @Sendable (ConnectionState) -> Void) async throws {
             record("reconnect")
             if let startError { throw startError }
         }

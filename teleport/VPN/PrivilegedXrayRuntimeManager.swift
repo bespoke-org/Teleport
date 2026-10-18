@@ -12,7 +12,7 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
     private let helperClient: PrivilegedHelperClient
     private let runtimeURLProvider: () -> URL?
     private let assetDirectoryURLProvider: () throws -> URL
-    private let ensureHelperInstalled: (URL) async throws -> Void
+    private let ensureHelperInstalled: (URL, @escaping @Sendable () -> Void) async throws -> Void
 
     init(
         bundle: Bundle = .main,
@@ -22,7 +22,7 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
         paths: XrayTunRuntimePaths? = nil,
         runtimeURLProvider: (() -> URL?)? = nil,
         assetDirectoryURLProvider: (() throws -> URL)? = nil,
-        ensureHelperInstalled: ((URL) async throws -> Void)? = nil
+        ensureHelperInstalled: ((URL, @escaping @Sendable () -> Void) async throws -> Void)? = nil
     ) {
         let installer = helperInstaller ?? PrivilegedHelperInstaller(bundle: bundle)
         self.fileManager = fileManager
@@ -34,8 +34,8 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
         self.assetDirectoryURLProvider = assetDirectoryURLProvider ?? {
             try GeodataUpdateService(fileManager: fileManager).resolvedAssetDirectoryURL(bundle: bundle)
         }
-        self.ensureHelperInstalled = ensureHelperInstalled ?? { runtimeURL in
-            try await installer.ensureInstalled(runtimeURL: runtimeURL)
+        self.ensureHelperInstalled = ensureHelperInstalled ?? { runtimeURL, beforeInstalling in
+            try await installer.ensureInstalled(runtimeURL: runtimeURL, beforeInstalling: beforeInstalling)
         }
     }
 
@@ -43,7 +43,9 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
         runtimeURLProvider()
     }
 
-    func start(session: XrayTunLaunchSession) async throws {
+    /// `onInstallingHelper` fires if the start has to install or update the
+    /// privileged helper first, which puts an administrator prompt on screen.
+    func start(session: XrayTunLaunchSession, onInstallingHelper: @escaping @Sendable () -> Void = {}) async throws {
         try fileManager.createDirectory(at: paths.stateDirectoryURL, withIntermediateDirectories: true)
 
         guard let runtimeURL = runtimeURL() else {
@@ -53,7 +55,7 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
         let sessionID = UUID()
         do {
             let assetDirectoryURL = try assetDirectoryURLProvider()
-            try await ensureHelperInstalled(runtimeURL)
+            try await ensureHelperInstalled(runtimeURL, onInstallingHelper)
             _ = try await XrayTunStartCorrelation.perform(
                 persist: { pid in
                     try self.persistSessionState(for: session, sessionID: sessionID, pid: pid)
@@ -149,7 +151,7 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
                     guard let runtimeURL = runtimeURL() else {
                         throw XrayRuntimeManager.RuntimeError.binaryNotFound
                     }
-                    try await ensureHelperInstalled(runtimeURL)
+                    try await ensureHelperInstalled(runtimeURL, {})
                     try await stopSession(
                         sessionID: resolvedSessionID ?? UUID(),
                         protectedHosts: protectedHosts,
@@ -168,7 +170,7 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
 
     func cleanupIfHelperAvailable(protectedHosts fallbackProtectedHosts: [String] = []) async throws {
         if let runtimeURL = runtimeURL() {
-            try? await ensureHelperInstalled(runtimeURL)
+            try? await ensureHelperInstalled(runtimeURL, {})
         }
         guard let response = try? await helperClient.status(), response.success else {
             return

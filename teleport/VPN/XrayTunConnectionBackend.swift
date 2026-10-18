@@ -45,7 +45,7 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
 
     func restorePreviousState() throws {}
 
-    func start(_ request: ConnectionRequest) async throws {
+    func start(_ request: ConnectionRequest, reportPhase: @escaping @Sendable (ConnectionState) -> Void) async throws {
         // The pre-flight below reads routes and resolves names but changes nothing
         // on the machine, so a disconnect or quit that arrives meanwhile may cancel
         // it. The blocking work runs on a dispatch queue where task cancellation is
@@ -132,7 +132,9 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
                     protectedHosts: session.protectedHosts
                 )
             }
-            try await runtimeManager.start(session: session)
+            try await runtimeManager.start(session: session) {
+                reportPhase(.awaitingUserApproval)
+            }
             // The helper's `start` response already follows TUN and route readiness;
             // this final check only consults the app's cached PID and is not an
             // authoritative helper health check.
@@ -149,10 +151,10 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
         }
     }
 
-    func reconnect(_ request: ConnectionRequest) async throws {
+    func reconnect(_ request: ConnectionRequest, reportPhase: @escaping @Sendable (ConnectionState) -> Void) async throws {
         try await runtimeManager.stop()
         do {
-            try await start(request)
+            try await start(request, reportPhase: reportPhase)
         } catch is CancellationError {
             // The old tunnel is already gone and its proxy snapshot still held, so
             // a cancelled pre-flight here has something to put back after all.

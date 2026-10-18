@@ -32,7 +32,7 @@ final class SystemProxyConnectionBackend: ConnectionBackend, @unchecked Sendable
         }
     }
 
-    func start(_ request: ConnectionRequest) async throws {
+    func start(_ request: ConnectionRequest, reportPhase: @escaping @Sendable (ConnectionState) -> Void) async throws {
         do {
             try await vpnRuntimeManager?.cleanupIfHelperAvailable(protectedHosts: [request.configuration.host])
             try await startRuntime(request)
@@ -45,7 +45,7 @@ final class SystemProxyConnectionBackend: ConnectionBackend, @unchecked Sendable
         }
     }
 
-    func reconnect(_ request: ConnectionRequest) async throws {
+    func reconnect(_ request: ConnectionRequest, reportPhase: @escaping @Sendable (ConnectionState) -> Void) async throws {
         do {
             try await BlockingWork.run { [self] in
                 try proxyService.disableProxy()

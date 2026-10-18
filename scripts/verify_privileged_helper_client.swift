@@ -552,7 +552,7 @@ private enum VerifyPrivilegedHelperClient {
             paths: paths,
             runtimeURLProvider: { URL(fileURLWithPath: "/tmp/test-xray") },
             assetDirectoryURLProvider: { URL(fileURLWithPath: "/tmp/test-assets", isDirectory: true) },
-            ensureHelperInstalled: { _ in }
+            ensureHelperInstalled: { _, _ in }
         )
 
         do {
@@ -597,7 +597,7 @@ private enum VerifyPrivilegedHelperClient {
             helperClient: PrivilegedHelperClient(transport: transport),
             paths: paths,
             runtimeURLProvider: { URL(fileURLWithPath: "/tmp/test-xray") },
-            ensureHelperInstalled: { _ in probe.recordInstall() }
+            ensureHelperInstalled: { _, _ in probe.recordInstall() }
         )
 
         try await manager.stop()

@@ -350,7 +350,15 @@ final class AppViewModel: ObservableObject {
         case .unconfigured:
             return savedConnections.isEmpty ? "Add a connection or subscription in Settings to get started" : "Select a connection to get started"
         case .ready, .stopped:
+    /// The connect is waiting on the administrator prompt for the helper install.
+    var isInstallingHelper: Bool {
+        connectionState == .awaitingUserApproval
+    }
+
             return proxyPhase == .enabled ? "Connected" : "Disconnected"
+        if isInstallingHelper {
+            return "Installing Teleport's helper. Enter your administrator password in the dialog."
+        }
         case .starting:
             return proxyPhase == .enabling ? "Connecting…" : "Starting connection…"
         case .running:
@@ -1305,6 +1313,8 @@ final class AppViewModel: ObservableObject {
                     self?.isAsleep = false
                     self?.rebuildSessionAfterWake()
                 }
+        case .awaitingUserApproval:
+            log.info(Self.subsystem, "\(prefix): awaiting administrator approval for the helper install")
             }
         )
         systemWakeObserver = observer

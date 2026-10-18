@@ -41,6 +41,10 @@ struct MenuBarView: View {
             return "Connected"
         }
 
+        if viewModel.isInstallingHelper {
+            return "Installing helper"
+        }
+
         switch viewModel.connectionPhase {
         case .starting:
             return "Connecting"
