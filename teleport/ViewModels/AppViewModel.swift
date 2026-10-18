@@ -116,6 +116,8 @@ final class AppViewModel: ObservableObject {
     )
     private var autoRefreshTimerCancellable: AnyCancellable?
     private var connectionStateTask: Task<Void, Never>?
+    private var deferredProxyRestoreTask: Task<Void, Never>?
+    private var deferredProxyRestoreFailedAt: SuspendingClock.Instant?
     private var pendingOperationCount = 0
     private var hasObservedInitialConnectionState = false
     private var isTerminating = false
@@ -1406,12 +1408,18 @@ final class AppViewModel: ObservableObject {
     private func restoreDeferredProxyStateIfNeeded() {
         let service = systemProxyService
         let log = log
-        Task.detached(priority: .utility) {
-            do {
-                try service.restoreDeferredProxyStateIfNeeded()
-            } catch {
-                log.error(AppViewModel.subsystem, "could not restore deferred proxy state: \(LogFormat.error(error))")
-            }
+        deferredProxyRestoreTask = Task { @MainActor [weak self] in
+            let failed = await Task.detached(priority: .utility) { () -> Bool in
+                do {
+                    try service.restoreDeferredProxyStateIfNeeded()
+                    return false
+                } catch {
+                    log.error(AppViewModel.subsystem, "could not restore deferred proxy state: \(LogFormat.error(error))")
+                    return true
+                }
+            }.value
+            self?.deferredProxyRestoreFailedAt = failed ? SuspendingClock().now : nil
+            self?.deferredProxyRestoreTask = nil
         }
     }
 
@@ -1479,7 +1487,18 @@ final class AppViewModel: ObservableObject {
     private var hasEstablishedConnection: Bool {
         if case .connected = connectionState { return true }
         return false
+    /// One restore at a time, and after a failure none for a while. Path changes
+    /// arrive in bursts, and each restore that times out takes 5 s per networksetup
+    /// call; the log once held 60 such failures in 50 minutes, with two restores
+    /// overlapping and each deleting a snapshot the other had already read.
+    private static let deferredProxyRestoreRetryInterval: Duration = .seconds(30)
+
     }
+        guard deferredProxyRestoreTask == nil else { return }
+        if let failedAt = deferredProxyRestoreFailedAt,
+           SuspendingClock().now - failedAt < Self.deferredProxyRestoreRetryInterval {
+            return
+        }
 
     private func reconnectToSelectedConnection() {
         guard let selectedConfiguration else {
