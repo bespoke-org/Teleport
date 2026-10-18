@@ -182,9 +182,7 @@ struct VerifyConnectionProvider {
         // One missed check is not a lost runtime: the check runs over XPC and the
         // first one after a wake can miss its deadline with Xray alive.
         backend.setRuntimeActive(false)
-        for _ in 0 ..< 400 where backend.inactiveRuntimeChecks() < 1 {
-            try await Task.sleep(nanoseconds: 2_000_000)
-        }
+        await waitUntil("the supervisor checks the runtime") { backend.inactiveRuntimeChecks() >= 1 }
         backend.setRuntimeActive(true)
         precondition(backend.inactiveRuntimeChecks() == 1, "the runtime was checked \(backend.inactiveRuntimeChecks()) times while inactive")
         try await Task.sleep(nanoseconds: 200_000_000)
@@ -198,11 +196,7 @@ struct VerifyConnectionProvider {
         precondition(stateLabels(states) == ["connected", "failed"], "expected a lost runtime to fail the session, got \(stateLabels(states))")
 
         // The teardown that restores proxy settings or routes follows the failure.
-        let deadline = Date().addingTimeInterval(2)
-        while backend.recordedCalls() != ["start", "stop"] && Date() < deadline {
-            try await Task.sleep(nanoseconds: 20_000_000)
-        }
-        precondition(backend.recordedCalls() == ["start", "stop"], "expected the backend teardown to run after a lost runtime")
+        await waitUntil("the backend teardown runs after a lost runtime") { backend.recordedCalls() == ["start", "stop"] }
 
         // Only once: the supervisor stops with the session it was watching.
         try await Task.sleep(nanoseconds: 200_000_000)
@@ -313,9 +307,7 @@ struct VerifyConnectionProvider {
         await awaitInitialState(provider)
 
         let connectTask = Task { try await provider.connect(try makeRequest()) }
-        for _ in 0 ..< 400 where backend.recordedCalls().isEmpty {
-            try? await Task.sleep(nanoseconds: 5_000_000)
-        }
+        await waitUntil("the connect reaches the backend") { !backend.recordedCalls().isEmpty }
         precondition(backend.recordedCalls() == ["start"], "connect did not start")
 
         try await provider.disconnect()
@@ -370,10 +362,7 @@ struct VerifyConnectionProvider {
         precondition(!completed.isSet, "termination completed before the provider disconnected")
 
         await backend.stopGate.open()
-        for _ in 0 ..< 400 where !completed.isSet {
-            try? await Task.sleep(nanoseconds: 5_000_000)
-        }
-        precondition(completed.isSet, "termination never completed after disconnect")
+        await waitUntil("termination completes after disconnect") { completed.isSet }
         precondition(
             backend.recordedCalls() == ["start", "stop"],
             "unexpected termination calls: \(backend.recordedCalls())"
@@ -437,21 +426,33 @@ struct VerifyConnectionProvider {
         let completed = Flag()
         viewModel.handleAppTermination(teardownLimit: .milliseconds(200)) { completed.set() }
         await backend.stopGate.waitUntilEntered()
-        for _ in 0 ..< 400 where !completed.isSet {
-            try? await Task.sleep(nanoseconds: 5_000_000)
-        }
-        precondition(completed.isSet, "termination waited on a teardown that never finished")
+        await waitUntil("termination gives up on the stuck teardown") { completed.isSet }
         await backend.stopGate.open()
+    }
+
+    /// Polls `condition` until it holds, and fails the run if it does not within
+    /// `timeout`. The code under test signals nothing a check could await, so the
+    /// checks poll; this keeps the polling and its limit in one place.
+    private static func waitUntil(
+        _ expectation: String,
+        timeout: Duration = .seconds(2),
+        _ condition: @Sendable () async -> Bool
+    ) async {
+        let clock = ContinuousClock()
+        let deadline = clock.now + timeout
+        while clock.now < deadline {
+            if await condition() { return }
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+        preconditionFailure("timed out waiting until \(expectation)")
     }
 
     /// The provider resolves its starting state as the first queued operation, so a
     /// test that subscribes to the stream must let that finish before asserting.
     private static func awaitInitialState(_ provider: BackendConnectionProvider) async {
-        for _ in 0 ..< 400 {
-            if await provider.currentState() != .preparing { return }
-            try? await Task.sleep(nanoseconds: 5_000_000)
+        await waitUntil("the provider resolves its initial state") {
+            await provider.currentState() != .preparing
         }
-        preconditionFailure("provider did not resolve its initial state")
     }
 
     private static func makeRequest() throws -> ConnectionRequest {
