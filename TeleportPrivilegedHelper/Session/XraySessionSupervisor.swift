@@ -63,6 +63,14 @@ final class XraySessionSupervisor: @unchecked Sendable {
         return true
     }
 
+    /// The pid still under watch, which is a process whose exit event has not
+    /// arrived. Nil once it exited, a stop was requested, or nothing was started.
+    var watchedProcessID: pid_t? {
+        lock.lock()
+        defer { lock.unlock() }
+        return watchedPID
+    }
+
     /// Stops watching. Called before a requested stop runs its script, so the exit
     /// that script causes is not mistaken for a crash.
     func cancel() {

@@ -35,9 +35,12 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
     }
 
     func status(request: StatusRequest) throws -> StatusResponse {
-        let isRunning = managedProcess.isManagedXrayRunning(
-            helperStateDirectoryPath: helperStateDirectoryPath
-        )
+        // The exit watch is the authority on a process this helper started: its
+        // event has not come, so the process is there, whatever a momentary
+        // proc_pidpath or pid-file reading says. The file check still answers for
+        // a session left by an earlier helper process, which nothing watches.
+        let isRunning = supervisor.watchedProcessID != nil
+            || managedProcess.isManagedXrayRunning(helperStateDirectoryPath: helperStateDirectoryPath)
         return StatusResponse(
             helperVersion: helperVersion,
             phase: isRunning ? .running : .idle,

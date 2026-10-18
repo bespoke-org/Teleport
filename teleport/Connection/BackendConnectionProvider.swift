@@ -92,10 +92,19 @@ nonisolated final class BackendConnectionProvider: ConnectionProvider, @unchecke
     private func superviseRuntime() {
         stopSupervising()
         let task = Task { [weak self, backend, supervisionInterval] in
+            // One negative answer is not a lost runtime: the check runs over XPC
+            // with a short deadline and the first one after a wake can miss it.
+            // Two in a row, an interval apart, are.
+            var missedChecks = 0
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: UInt64(supervisionInterval * 1_000_000_000))
                 guard !Task.isCancelled else { return }
-                guard await !backend.hasActiveRuntimeSession() else { continue }
+                if await backend.hasActiveRuntimeSession() {
+                    missedChecks = 0
+                    continue
+                }
+                missedChecks += 1
+                guard missedChecks >= 2 else { continue }
                 self?.handleRuntimeLoss()
                 return
             }

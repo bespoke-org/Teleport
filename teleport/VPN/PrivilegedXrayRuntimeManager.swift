@@ -6,6 +6,7 @@ import Foundation
 /// process boundary. `@unchecked Sendable` places synchronization responsibility
 /// on this implementation rather than on the compiler.
 final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
+    nonisolated static let subsystem = "vpn"
     private let fileManager: FileManager
     private let paths: XrayTunRuntimePaths
     private let helperClient: PrivilegedHelperClient
@@ -85,14 +86,27 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
     }
 
     func isRunning() async -> Bool {
-        if let status = try? await helperClient.status() {
-            return status.version == PrivilegedHelperClient.expectedVersion && status.phase == .running
+        // Four sessions were torn down as "Xray stopped unexpectedly" while the
+        // helper's exit watch had seen nothing, and neither side had logged why
+        // this answered no. Every negative answer now says what it rests on.
+        do {
+            let status = try await helperClient.status()
+            if status.version == PrivilegedHelperClient.expectedVersion && status.phase == .running {
+                return true
+            }
+            TeleportLog.shared.warn(Self.subsystem, "helper reports the runtime is not running: phase \(status.phase.rawValue), helper version \(status.version ?? "<unknown>")")
+            return false
+        } catch {
+            guard let pid = readSessionState()?.pid ?? readPID() else {
+                TeleportLog.shared.warn(Self.subsystem, "helper status failed (\(LogFormat.error(error))) and no session pid is on record")
+                return false
+            }
+            if kill(pid, 0) == 0 || errno == EPERM {
+                return true
+            }
+            TeleportLog.shared.warn(Self.subsystem, "helper status failed (\(LogFormat.error(error))) and pid \(pid) is gone: \(String(cString: strerror(errno)))")
+            return false
         }
-        guard let pid = readSessionState()?.pid ?? readPID() else { return false }
-        if kill(pid, 0) == 0 {
-            return true
-        }
-        return errno == EPERM
     }
 
     func stop() async throws {

@@ -179,6 +179,19 @@ struct VerifyConnectionProvider {
         precondition(stateLabels([stillConnectedState]) == ["connected"])
         precondition(backend.recordedCalls() == ["start"])
 
+        // One missed check is not a lost runtime: the check runs over XPC and the
+        // first one after a wake can miss its deadline with Xray alive.
+        backend.setRuntimeActive(false)
+        for _ in 0 ..< 400 where backend.inactiveRuntimeChecks() < 1 {
+            try await Task.sleep(nanoseconds: 2_000_000)
+        }
+        backend.setRuntimeActive(true)
+        precondition(backend.inactiveRuntimeChecks() == 1, "the runtime was checked \(backend.inactiveRuntimeChecks()) times while inactive")
+        try await Task.sleep(nanoseconds: 200_000_000)
+        let afterOneMissState = await provider.currentState()
+        precondition(stateLabels([afterOneMissState]) == ["connected"], "one missed check failed the session")
+        precondition(backend.recordedCalls() == ["start"])
+
         let failureReader = collectStates(from: provider.stateUpdates(), count: 2)
         backend.setRuntimeActive(false)
         let states = await failureReader.value
@@ -584,6 +597,7 @@ struct VerifyConnectionProvider {
         var stopError: Error?
         var hasRestorableStateValue = false
         var hasActiveRuntimeSessionValue = false
+        private var inactiveChecks = 0
         /// Stands in for a pre-flight that polls for cancellation.
         var startObservesCancellation = false
         let startGate = Gate()
@@ -594,7 +608,15 @@ struct VerifyConnectionProvider {
         func hasActiveRuntimeSession() -> Bool {
             lock.lock()
             defer { lock.unlock() }
+            if !hasActiveRuntimeSessionValue { inactiveChecks += 1 }
             return hasActiveRuntimeSessionValue
+        }
+
+        /// How many checks have found the runtime inactive.
+        func inactiveRuntimeChecks() -> Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return inactiveChecks
         }
 
         func setRuntimeActive(_ active: Bool) {
