@@ -5,6 +5,8 @@ struct VerifyCore {
     static func main() throws {
         try testValidVLESSParsingAndConfigGeneration()
         try testPunycodeHostParsingPreservesASCIIHost()
+        try testDisplayHostnameDecodesCyrillicLabels()
+        try testCyrillicHostIsDisplayedButNotStored()
         try testPercentEncodedHostIsDecoded()
         try testValidVLESSAdditionalTransports()
         try testValidTrojanParsingAndConfigGeneration()
@@ -70,6 +72,54 @@ struct VerifyCore {
 
         precondition(configuration.host == "xn--e1afmkfd.test")
         precondition(!configuration.host.contains("пример"))
+    }
+
+    private static func testDisplayHostnameDecodesCyrillicLabels() throws {
+        precondition(DisplayHostname.unicode("xn--d1acufc.xn--p1ai") == "домен.рф")
+        precondition(DisplayHostname.unicode("XN--D1ACUFC.XN--P1AI") == "домен.рф")
+        precondition(DisplayHostname.unicode("xn--d1acufc.xn--p1ai.") == "домен.рф.")
+        precondition(DisplayHostname.unicode("api.xn--d1acufc.com") == "api.домен.com")
+        precondition(DisplayHostname.unicode("xn--e1afmkfd.test") == "пример.test")
+
+        for unchanged in ["example.com", "", "192.0.2.1", "2001:db8::1", "домен.рф"] {
+            precondition(DisplayHostname.unicode(unchanged) == unchanged, "\(unchanged) must display as it is")
+        }
+
+        // Labels that are not valid Punycode, or decode to plain ASCII, stay as written.
+        for invalid in ["xn--", "xn--abc$.com", "xn--99999999999999999999.com", "xn--abc-.com", "xn--123-.com", "xn--d1acufc-.com"] {
+            precondition(DisplayHostname.unicode(invalid) == invalid, "\(invalid) must display as it is")
+        }
+
+        // Only Cyrillic is decoded, and never mixed with Latin letters: `xn--pple-43d`
+        // is a Cyrillic "а" followed by Latin "pple", which reads as "apple".
+        precondition(DisplayHostname.unicode("xn--pple-43d.com") == "xn--pple-43d.com")
+        precondition(DisplayHostname.unicode("xn--mnchen-3ya.de") == "xn--mnchen-3ya.de")
+        precondition(DisplayHostname.unicode("xn--fiqs8s.xn--p1ai") == "xn--fiqs8s.рф")
+    }
+
+    /// The readable host is only shown: the link, the stored host, the shared link
+    /// and the Xray config keep the ASCII form.
+    private static func testCyrillicHostIsDisplayedButNotStored() throws {
+        let link = "vless://123e4567-e89b-12d3-a456-426614174000@xn--d1acufc.xn--p1ai:443?security=tls&type=tcp"
+        let configuration = try ConnectionLinkParser().parse(link)
+        let connection = SavedConnection(id: UUID(), configuration: configuration, savedAt: Date())
+
+        precondition(connection.displayName == "домен.рф:443")
+        precondition(configuration.displayName == "xn--d1acufc.xn--p1ai:443")
+        precondition(configuration.host == "xn--d1acufc.xn--p1ai")
+        precondition(connection.shareableLink == link)
+
+        let content = try String(contentsOf: try XrayConfigurationWriter(proxyEndpoint: .default).writeConfig(for: configuration, to: temporaryConfigURL()), encoding: .utf8)
+        precondition(content.contains("xn--d1acufc.xn--p1ai"))
+        precondition(!content.contains("домен"))
+
+        let derivedTitle = SubscriptionSource(id: UUID(), urlString: "https://xn--d1acufc.xn--p1ai/sub", title: "xn--d1acufc.xn--p1ai", savedAt: Date())
+        precondition(derivedTitle.displayName == "домен.рф")
+        precondition(derivedTitle.title == "xn--d1acufc.xn--p1ai")
+        let untitled = SubscriptionSource(id: UUID(), urlString: "https://xn--d1acufc.xn--p1ai/sub", title: "", savedAt: Date())
+        precondition(untitled.displayName == "домен.рф")
+        let customTitle = SubscriptionSource(id: UUID(), urlString: "https://xn--d1acufc.xn--p1ai/sub", title: "xn--e1afmkfd", savedAt: Date())
+        precondition(customTitle.displayName == "xn--e1afmkfd", "a name the user typed is shown as typed")
     }
 
     private static func testPercentEncodedHostIsDecoded() throws {

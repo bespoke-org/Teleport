@@ -201,21 +201,21 @@ struct SplitTunnelingSettingsView: View {
                 if let match = viewModel.matchingSplitTunnelRule(for: testerValue) {
                     if viewModel.connectionMode != .tun {
                         Label(
-                            "Would match \"\(match.value)\" → \(match.action.displayName), but System Proxy mode ignores split tunneling",
+                            "Would match \"\(displayValue(match))\" → \(match.action.displayName), but System Proxy mode ignores split tunneling",
                             systemImage: "exclamationmark.triangle.fill"
                         )
                         .foregroundStyle(.orange)
                         .font(.caption)
                     } else if viewModel.isSplitTunnelEnabled {
                         Label(
-                            "Matches \"\(match.value)\" → \(match.action.displayName)",
+                            "Matches \"\(displayValue(match))\" → \(match.action.displayName)",
                             systemImage: "checkmark.circle.fill"
                         )
                         .foregroundStyle(.green)
                         .font(.caption)
                     } else {
                         Label(
-                            "Would match \"\(match.value)\" → \(match.action.displayName), but split tunneling is off",
+                            "Would match \"\(displayValue(match))\" → \(match.action.displayName), but split tunneling is off",
                             systemImage: "exclamationmark.triangle.fill"
                         )
                         .foregroundStyle(.orange)
@@ -251,7 +251,7 @@ struct SplitTunnelingSettingsView: View {
             .labelsHidden()
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(rule.value)
+                Text(displayValue(rule))
                     .font(.body.monospaced())
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -326,6 +326,14 @@ struct SplitTunnelingSettingsView: View {
         }
         // The rules list has its own columns and no room for a repeated label.
         .modifier(HiddenLabel(isHidden: label == nil))
+    }
+
+    /// A domain rule only accepts the ASCII form, which is what Xray matches; it
+    /// is shown readable.
+    private func displayValue(_ rule: SplitTunnelRule) -> String {
+        guard rule.kind == .domain else { return rule.value }
+        let prefix = rule.value.hasPrefix("full:") ? "full:" : ""
+        return prefix + DisplayHostname.unicode(String(rule.value.dropFirst(prefix.count)))
     }
 
     private func kindLabel(_ kind: SplitTunnelRuleKind) -> String {

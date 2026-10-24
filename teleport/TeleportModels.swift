@@ -537,8 +537,11 @@ nonisolated struct SavedConnection: Codable, Equatable, Identifiable {
 
     /// What the connection is called everywhere in the app.
     var displayName: String {
-        guard let customName, !customName.isEmpty else { return configuration.displayName }
-        return customName
+        if let customName, !customName.isEmpty { return customName }
+        if let remarks = configuration.remarks, !remarks.isEmpty { return remarks }
+        // `configuration.displayName` keeps the ASCII host, because it is also
+        // written into links; only this shown name decodes it.
+        return "\(DisplayHostname.unicode(configuration.host)):\(configuration.port)"
     }
 
     /// The link to share: the user's name is applied to it here, so a shared link
@@ -596,12 +599,14 @@ nonisolated struct SubscriptionSource: Codable, Equatable, Identifiable {
     var lastSkippedCount: Int
 
     var displayName: String {
+        let host = URL(string: urlString)?.host ?? ""
         if !title.isEmpty {
-            return title
+            // A title the app took from the URL is its ASCII host.
+            return title == host ? DisplayHostname.unicode(title) : title
         }
 
-        if let url = URL(string: urlString), let host = url.host, !host.isEmpty {
-            return host
+        if !host.isEmpty {
+            return DisplayHostname.unicode(host)
         }
 
         return urlString
