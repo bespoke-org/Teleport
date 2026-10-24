@@ -345,20 +345,20 @@ final class AppViewModel: ObservableObject {
         isSplitTunnelEnabled ? splitTunnelDefaultAction : .proxy
     }
 
-    var statusSummary: String {
-        switch connectionPhase {
-        case .unconfigured:
-            return savedConnections.isEmpty ? "Add a connection or subscription in Settings to get started" : "Select a connection to get started"
-        case .ready, .stopped:
     /// The connect is waiting on the administrator prompt for the helper install.
     var isInstallingHelper: Bool {
         connectionState == .awaitingUserApproval
     }
 
-            return proxyPhase == .enabled ? "Connected" : "Disconnected"
+    var statusSummary: String {
         if isInstallingHelper {
             return "Installing Teleport's helper. Enter your administrator password in the dialog."
         }
+        switch connectionPhase {
+        case .unconfigured:
+            return savedConnections.isEmpty ? "Add a connection or subscription in Settings to get started" : "Select a connection to get started"
+        case .ready, .stopped:
+            return proxyPhase == .enabled ? "Connected" : "Disconnected"
         case .starting:
             return proxyPhase == .enabling ? "Connecting…" : "Starting connection…"
         case .running:
@@ -1235,6 +1235,23 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    /// True once the teardown returns, false once the limit passes, whichever is
+    /// first. Not a task group: that would wait for the stuck teardown as well,
+    /// since cancelling it does not abort the operation queued behind it.
+    private static func awaitTeardown(_ teardown: @escaping @Sendable () async -> Void, limit: Duration) async -> Bool {
+        await withCheckedContinuation { continuation in
+            let outcome = TeardownOutcome(continuation)
+            Task {
+                await teardown()
+                outcome.resolve(true)
+            }
+            Task {
+                try? await Task.sleep(for: limit, clock: .suspending)
+                outcome.resolve(false)
+            }
+        }
+    }
+
     /// Every state change funnels through `applyConnectionState`, so logging here
     /// records transitions the app did not initiate too — a tunnel that dropped on
     /// its own is the case worth having in a file after the fact.
@@ -1251,6 +1268,8 @@ final class AppViewModel: ObservableObject {
             awaitsUplinkToReconnect = false
             log.info(Self.subsystem, "\(prefix): connected (mode \(connectionMode)) over uplink \(sessionUplink?.summary ?? "<unknown>")")
             SystemStateDump.capture("after connect", log: log)
+        case .awaitingUserApproval:
+            log.info(Self.subsystem, "\(prefix): awaiting administrator approval for the helper install")
         default:
             log.info(Self.subsystem, "\(prefix): \(state)")
         }
@@ -1280,23 +1299,6 @@ final class AppViewModel: ObservableObject {
 
     /// A routed session does not survive sleep in practice: after wake its Xray
     /// reaches the server but no tunneled stream receives a byte, and only a
-    /// True once the teardown returns, false once the limit passes, whichever is
-    /// first. Not a task group: that would wait for the stuck teardown as well,
-    /// since cancelling it does not abort the operation queued behind it.
-    private static func awaitTeardown(_ teardown: @escaping @Sendable () async -> Void, limit: Duration) async -> Bool {
-        await withCheckedContinuation { continuation in
-            let outcome = TeardownOutcome(continuation)
-            Task {
-                await teardown()
-                outcome.resolve(true)
-            }
-            Task {
-                try? await Task.sleep(for: limit, clock: .suspending)
-                outcome.resolve(false)
-            }
-        }
-    }
-
     /// rebuild recovers it. The uplink is usually unchanged, so the path observer
     /// would keep it running; wake itself is the trigger. System Proxy mode is
     /// left alone, as nothing pins it to the machine's sleep state.
@@ -1313,8 +1315,6 @@ final class AppViewModel: ObservableObject {
                     self?.isAsleep = false
                     self?.rebuildSessionAfterWake()
                 }
-        case .awaitingUserApproval:
-            log.info(Self.subsystem, "\(prefix): awaiting administrator approval for the helper install")
             }
         )
         systemWakeObserver = observer
@@ -1446,7 +1446,18 @@ final class AppViewModel: ObservableObject {
     /// A teardown that ran while an interface was down could not put that service's
     /// proxy settings back, and kept its entry instead of discarding it. Launching
     /// with no session running is the moment to finish that.
+    /// One restore at a time, and after a failure none for a while. Path changes
+    /// arrive in bursts, and each restore that times out takes 5 s per networksetup
+    /// call; the log once held 60 such failures in 50 minutes, with two restores
+    /// overlapping and each deleting a snapshot the other had already read.
+    private static let deferredProxyRestoreRetryInterval: Duration = .seconds(30)
+
     private func restoreDeferredProxyStateIfNeeded() {
+        guard deferredProxyRestoreTask == nil else { return }
+        if let failedAt = deferredProxyRestoreFailedAt,
+           SuspendingClock().now - failedAt < Self.deferredProxyRestoreRetryInterval {
+            return
+        }
         let service = systemProxyService
         let log = log
         deferredProxyRestoreTask = Task { @MainActor [weak self] in
@@ -1528,18 +1539,7 @@ final class AppViewModel: ObservableObject {
     private var hasEstablishedConnection: Bool {
         if case .connected = connectionState { return true }
         return false
-    /// One restore at a time, and after a failure none for a while. Path changes
-    /// arrive in bursts, and each restore that times out takes 5 s per networksetup
-    /// call; the log once held 60 such failures in 50 minutes, with two restores
-    /// overlapping and each deleting a snapshot the other had already read.
-    private static let deferredProxyRestoreRetryInterval: Duration = .seconds(30)
-
     }
-        guard deferredProxyRestoreTask == nil else { return }
-        if let failedAt = deferredProxyRestoreFailedAt,
-           SuspendingClock().now - failedAt < Self.deferredProxyRestoreRetryInterval {
-            return
-        }
 
     private func reconnectToSelectedConnection() {
         guard let selectedConfiguration else {
