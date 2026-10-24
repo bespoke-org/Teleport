@@ -1,0 +1,50 @@
+# Opens a pull request when XTLS/Xray-core publishes a new stable release.
+# Run by .github/workflows/xray-update.yml; the token comes from the
+# UPDATECLI_GITHUB_TOKEN environment variable.
+name: Update the bundled Xray
+
+scms:
+  teleport:
+    kind: github
+    spec:
+      owner: bespoke-org
+      repository: Teleport
+      branch: main
+      user: github-actions[bot]
+      email: 41898282+github-actions[bot]@users.noreply.github.com
+      commitmessage:
+        type: build
+        hidecredit: true
+
+sources:
+  xray:
+    name: Get the latest stable Xray-core release
+    kind: githubrelease
+    spec:
+      owner: XTLS
+      repository: Xray-core
+      typefilter:
+        release: true
+        prerelease: false
+        draft: false
+
+targets:
+  xray:
+    # Also the commit title, after the "build: " type.
+    name: 'update Xray to {{ source "xray" }}'
+    kind: shell
+    scmid: teleport
+    sourceid: xray
+    spec:
+      # The release tag is appended as the last argument. The script prints to
+      # stdout only when it changed (or under `diff` would change) a file, and
+      # with --verify fails when `just verify` fails, so nothing is committed.
+      command: scripts/bump-xray.sh --verify
+
+actions:
+  pullrequest:
+    kind: github/pullrequest
+    scmid: teleport
+    spec:
+      title: 'build: update Xray to {{ source "xray" }}'
+      description: 'Release notes: https://github.com/XTLS/Xray-core/releases/tag/{{ source "xray" }}'

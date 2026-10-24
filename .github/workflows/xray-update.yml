@@ -1,0 +1,41 @@
+# Opens a pull request when XTLS/Xray-core publishes a new stable release.
+# Updatecli (updatecli/updatecli.d/xray.yaml) runs scripts/bump-xray.sh --verify
+# in its own clone, so `just verify` has to pass before anything is committed.
+name: Xray update
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: xray-update
+
+jobs:
+  updatecli:
+    # macOS 26 arm64 image; its default Xcode (/Applications/Xcode.app) is 26.x,
+    # which the macOS 26.0 deployment target needs.
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Show the Xcode in use
+        run: xcodebuild -version
+
+      - name: Install just
+        run: brew install just
+
+      - uses: updatecli/updatecli-action@v3.10.0
+        with:
+          version: v0.123.0
+
+      - name: Update Xray and open a pull request
+        run: updatecli pipeline apply --config updatecli/updatecli.d
+        env:
+          UPDATECLI_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

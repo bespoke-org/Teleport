@@ -8,10 +8,17 @@
 # teleport/HelperInstallation/BundledArtifactPolicy.swift, which is what the app
 # verifies before it installs the binary as root. A mismatch stops the script:
 # when the pin is meant to change, update it to the digest printed here and run
-# the script again.
+# the script again, or pass --update-pin to have the script write the new
+# digest into the pin. The .dgst checks apply either way.
 #
-# Usage: scripts/fetch-xray.sh [vX.Y.Z]   (default: the version the pin was made for)
+# Usage: scripts/fetch-xray.sh [--update-pin] [vX.Y.Z]   (default: the version the pin was made for)
 set -euo pipefail
+
+update_pin=false
+if [ "${1:-}" = "--update-pin" ]; then
+    update_pin=true
+    shift
+fi
 
 VERSION="${1:-v26.10.21}"
 # One release zip per architecture slice of the universal binary.
@@ -68,11 +75,14 @@ lipo -info "$work_dir/xray"
 file "$work_dir/xray"
 
 actual_sha256=$(shasum -a 256 "$work_dir/xray" | awk '{print $1}')
-if [ "$actual_sha256" != "$pinned_sha256" ]; then
+if [ "$actual_sha256" != "$pinned_sha256" ] && [ "$update_pin" = true ]; then
+    sed -i '' "s/xraySHA256: \"$pinned_sha256\"/xraySHA256: \"$actual_sha256\"/" "$POLICY"
+    echo "Updated xraySHA256 in BundledArtifactPolicy.swift from $pinned_sha256 to $actual_sha256"
+elif [ "$actual_sha256" != "$pinned_sha256" ]; then
     echo "Universal executable digest does not match the pin in BundledArtifactPolicy.swift:" >&2
     echo "  pinned: $pinned_sha256" >&2
     echo "  actual: $actual_sha256" >&2
-    echo "If $VERSION is the intended runtime, set xraySHA256 to the actual value and rerun." >&2
+    echo "If $VERSION is the intended runtime, set xraySHA256 to the actual value and rerun, or rerun with --update-pin." >&2
     exit 1
 fi
 
