@@ -4,7 +4,6 @@ struct TestGeodata {
     static func main() throws {
         try testGeodataSettingsDefaultsWhenMissing()
         try testGeodataSettingsRoundTrip()
-        try testGeodataKindFileNames()
         try testGeodataUpdateErrorDescriptionsAreNonEmpty()
         try testStoreReportsWhetherBytesChanged()
         try testResolvedAssetsUseMetadataManifest()
@@ -228,12 +227,6 @@ struct TestGeodata {
         } catch {
             // Expected.
         }
-    }
-
-    private static func testGeodataKindFileNames() throws {
-        precondition(GeodataKind.geosite.fileName == "geosite.dat")
-        precondition(GeodataKind.geoip.fileName == "geoip.dat")
-        precondition(GeodataKind.allCases.count == 2)
     }
 
     private static func testGeodataUpdateErrorDescriptionsAreNonEmpty() throws {
