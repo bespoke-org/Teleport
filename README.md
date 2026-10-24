@@ -22,21 +22,6 @@ Teleport is a macOS menu bar client for the [Xray](https://github.com/XTLS/Xray-
 - An optional pf-based leak guard (off by default) that keeps traffic off the physical network while a TUN session is being rebuilt.
 - TCP latency checks for every connection, shown in the menu bar picker.
 
-## Comparison with other clients
-
-From each project's documentation and source code, checked in October 2026. A dash means we did not find it there.
-
-| | Protocols | Subscription formats | All apps through the tunnel | DNS and leaks | Open source, no ads or analytics | macOS |
-|---|---|---|---|---|---|---|
-| **Teleport** | VLESS, Trojan, WireGuard | Links, Xray JSON | Yes, administrator password once | DNS over DoH inside the tunnel; optional leak guard | Yes | 15+ |
-| [V2rayU](https://github.com/yanue/V2rayU) | VMess, VLESS, Trojan, Shadowsocks, Hysteria2, TUIC and others | Links, Clash YAML | Yes | - | Open source, Firebase and AppCenter analytics | 14+ |
-| [v2rayN](https://github.com/2dust/v2rayN) | Whatever its cores support (Xray, sing-box, mihomo) | Links, Clash YAML, sing-box JSON, Xray JSON | Yes, sudo password after every restart | - | Yes | 13.6+ |
-| [Hiddify](https://github.com/hiddify/hiddify-app) | VLESS, VMess, TUIC, Hysteria, WireGuard and others | Links, Clash YAML, sing-box JSON | Yes | - | Open source, license forbids commercial use | 10.15+ |
-| [Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev) | Whatever mihomo supports | Clash YAML | Yes, through a service running as root | System DNS switched to 223.6.6.6 while on | Open source, paid promotions in the README | 11+ |
-| [sing-box for Apple](https://sing-box.sagernet.org/clients/apple/) | Whatever sing-box supports | sing-box JSON | Yes, through a Network Extension | - | Yes | 13+ |
-| [Happ](https://www.happ.su) | VLESS, VMess, Trojan, Shadowsocks, SOCKS | Links, Xray JSON | - | - | Closed source | 12+ (App Store), 13+ (desktop) |
-| [V2Box](https://apps.apple.com/us/app/v2box-v2ray-client/id6446814690) | VLESS, VMess, Trojan, Shadowsocks, Hysteria2, WireGuard and others | Links | - | - | Closed source, ads in the app | 12+, Apple Silicon |
-
 ## Requirements
 
 - macOS 15 or later. Tested on macOS 27.
