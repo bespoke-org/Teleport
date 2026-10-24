@@ -167,9 +167,9 @@ Checks are standalone Swift programs in `scripts/test_*.swift`; no XCTest. Run o
 
 ## Buy us some tokens
 
-Despite much of Teleport's code being written by LLMs, we usually read the code they produce, and keeping the project working takes our time and attention.
+Although Teleport is built with LLMs, we spend a lot of time and tokens making it stable and improving its UX. If Teleport is useful to you, you can support that work with USDT.
 
-You can support us with USDT. Check the network before sending: a transfer on a network not listed here can be lost.
+Check the network before sending: a transfer on a network not listed here can be lost.
 
 | Network | Address |
 |---|---|
