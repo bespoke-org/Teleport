@@ -24,15 +24,18 @@ Teleport is a macOS menu bar client for the [Xray](https://github.com/XTLS/Xray-
 
 ## Comparison with other clients
 
-Only what the other projects' own READMEs state is listed; a blank means the README does not say.
+From each project's documentation and source code, checked in October 2026. A dash means we did not find it there.
 
-| | Teleport | [V2rayU](https://github.com/yanue/V2rayU) | [Hiddify](https://github.com/hiddify/hiddify-app) | [v2rayN](https://github.com/2dust/v2rayN) |
+| | Whole-machine routing on macOS | A rule can use a different server | Source | macOS |
 |---|---|---|---|---|
-| Platforms | macOS | macOS | Android, iOS, Windows, macOS, Linux | Windows, Linux, macOS |
-| Core | Xray | v2ray-core | sing-box | Xray, sing-box and others |
-| Whole-device routing on macOS | TUN through a root helper, plus pf leak guard | System proxy only; the README points to Proxifier for apps that ignore it | TUN mode listed, platform not specified | |
-| License | GPL-3.0-or-later | GPLv3 | GPL v3 with Hiddify's additional conditions (non-commercial use among them) | GPL-3.0 |
-| Distribution | Source only | | App Store, DMG, PKG | |
+| **Teleport** | Xray TUN, root helper installed once, optional leak guard | Yes | GPL-3.0-or-later | 26+ |
+| [V2rayU](https://github.com/yanue/V2rayU) | sing-box TUN, root helper | - | GPLv3 | 14+ |
+| [v2rayN](https://github.com/2dust/v2rayN) | sing-box TUN, sudo password after every restart | Yes | GPL-3.0 | 13.6+ |
+| [Hiddify](https://github.com/hiddify/hiddify-app) | TUN | - | GPL v3, non-commercial use only | - |
+| [Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev) | mihomo TUN, service running as root | Yes | GPL-3.0 | 11+ |
+| [sing-box for Apple](https://sing-box.sagernet.org/clients/apple/) | sing-box TUN, Network Extension | Yes | GPL-3.0-or-later | 13+ |
+| [Happ](https://www.happ.su) | - | No | Closed | 13+ |
+| [V2Box](https://apps.apple.com/us/app/v2box-v2ray-client/id6446814690) | - | - | Closed | Apple Silicon |
 
 ## Requirements
 
