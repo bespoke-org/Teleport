@@ -58,4 +58,6 @@ jobs:
       - name: Install just
         run: brew install just
 
+      - run: just build-debug
+
       - run: just test

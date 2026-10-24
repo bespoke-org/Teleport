@@ -328,8 +328,8 @@ struct TestSplitTunneling {
 
     private static func testSplitRoutingConfigurationIsAcceptedByBundledXray() throws {
         let xrayURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-            .appendingPathComponent("build/DerivedData/Build/Products/Debug/Teleport.app/Contents/Resources/xray")
-        guard FileManager.default.isExecutableFile(atPath: xrayURL.path) else { return }
+            .appendingPathComponent("teleport/Resources/xray")
+        precondition(FileManager.default.isExecutableFile(atPath: xrayURL.path), "teleport/Resources/xray is missing; run just fetch-xray")
 
         let configuration = try ConnectionLinkParser().parse(sampleVLESSLink())
         let data = try XrayConfigurationWriter(proxyEndpoint: .default).tunnelConfigData(
@@ -523,8 +523,8 @@ struct TestSplitTunneling {
 
     private static func assertAcceptedByBundledXray(_ data: Data) throws {
         let xrayURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-            .appendingPathComponent("build/DerivedData/Build/Products/Debug/Teleport.app/Contents/Resources/xray")
-        guard FileManager.default.isExecutableFile(atPath: xrayURL.path) else { return }
+            .appendingPathComponent("teleport/Resources/xray")
+        precondition(FileManager.default.isExecutableFile(atPath: xrayURL.path), "teleport/Resources/xray is missing; run just fetch-xray")
 
         let configURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("teleport-multi-outbound-\(UUID().uuidString).json")
