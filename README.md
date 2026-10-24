@@ -30,7 +30,7 @@ You can support us with USDT. Check the network before sending: a transfer on a 
 ## Requirements
 
 - macOS 26 or later (the project's deployment target).
-- Apple Silicon. The bundled Xray executable is arm64 only.
+- Apple Silicon or Intel.
 - To build: Xcode 26 or later, and optionally [just](https://github.com/casey/just) for the command-line recipes.
 - TUN mode asks for an administrator password once, to install the helper.
 
@@ -147,10 +147,10 @@ just clean
 To replace the bundled Xray with the official release build for a given version:
 
 ```bash
-scripts/fetch-xray.sh v26.6.27
+scripts/fetch-xray.sh v26.10.21
 ```
 
-The script checks the archive against the digest XTLS publishes and the executable against the pin in `BundledArtifactPolicy.swift`; when upgrading, update the pin to the digest it prints and run it again. The executable is not kept in git: `just build` runs the script when `teleport/Resources/xray` is missing or does not match the pin, and a build from Xcode fails until the script has been run once. Licenses of the bundled components are in `THIRD_PARTY_NOTICES.md`.
+The script downloads the arm64 and x86_64 release archives, checks each against the digest XTLS publishes, joins them with `lipo` into one universal executable and compares it with the pin in `BundledArtifactPolicy.swift`; when upgrading, update the pin to the digest it prints and run it again. The executable is not kept in git: `just build` runs the script when `teleport/Resources/xray` is missing or does not match the pin, and a build from Xcode fails until the script has been run once. Release builds are universal (`just build-release`), Debug builds are host-only. Licenses of the bundled components are in `THIRD_PARTY_NOTICES.md`.
 
 Formatting follows `.swift-format` (four-space indent, 160 columns). Check with `swift format lint -r teleport Shared TeleportPrivilegedHelper scripts`.
 
@@ -172,7 +172,6 @@ The remaining recipes are listed by `just --list`. None of them needs root or a 
 ## Known limitations
 
 - No signed download yet, build from source.
-- Apple Silicon only, because of the bundled Xray executable.
 - Another VPN that owns the default `utun` route blocks TUN mode entirely.
 - The leak guard lets DNS queries reach any resolver, and during a session it passes traffic of any root process, not only Xray.
 

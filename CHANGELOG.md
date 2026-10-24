@@ -14,14 +14,15 @@ Format is based on [_Keep a changelog_](https://keepachangelog.com) and uses
 - A log that outlives the session it describes, readable from the Nerd shit settings page.
 - The menu shows when a connect is installing the helper.
 - Plain-TLS links use a browser-like TLS fingerprint.
-- `scripts/fetch-xray.sh` downloads the official Xray release and checks it against the pinned digest.
+- `scripts/fetch-xray.sh` downloads the official Xray release for both architectures, checks each archive against the published digest and joins them with `lipo` into the bundled executable, which is compared with the pinned digest.
+- Release builds of the app and the privileged helper are universal (arm64 and x86_64); Debug builds stay host-only. Intel Macs were previously unsupported.
 - The privileged helper can be removed from Settings > General (disconnects first, one administrator prompt), or with `just uninstall-helper` / `scripts/uninstall.sh` when the app is already gone.
 
 ### Changed
 - The bundled community subscription lists are no longer imported on first launch. The Connections settings page offers them, with a note on who runs those servers.
 - The Team ID used for signing and for the app/helper signature checks comes from `Config/Local.xcconfig` instead of the project file and source.
 - The app talks to the privileged helper over an authenticated launchd XPC Mach service with typed, size-bounded messages. The previous helper installation is removed with `just reset-legacy-privileged-helper`.
-- Bundled Xray runtime updated to 26.6.27.
+- Bundled Xray runtime updated to 26.10.21, as a universal (arm64 and x86_64) executable.
 - The Xray executable is no longer kept in the repository. `just build` fetches it with `scripts/fetch-xray.sh` when it is missing or does not match the pin.
 - A rebuilt helper is detected by its code-directory hash; a rebuild that only re-signs the helper no longer asks for an administrator password.
 - The helper is installed before a connect changes anything else on the machine, and a failed install puts the previous installation back.

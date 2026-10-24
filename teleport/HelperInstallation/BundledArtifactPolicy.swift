@@ -3,7 +3,7 @@ import Foundation
 nonisolated struct BundledArtifactPolicy: Sendable {
     static let current = BundledArtifactPolicy(
         codeSigningRequirement: TeleportCodeSigning.currentRequirement(),
-        xraySHA256: "650e6edf792ce808554e94f891db5271c77a7c2e80188beaafbf24883b3b84a0"
+        xraySHA256: "26fde0ef5186cc2379f6a0954c0d1d20c3dc1dd9f66c83ae87ccd753eb6f93b5"
     )
 
     /// Nil when the running app has no Team ID; nothing is installed as root then.

@@ -6,7 +6,9 @@ app_name := "Teleport"
 helper_name := "dev.x.teleport.PrivilegedHelper"
 derived_data := "build/DerivedData"
 dist_dir := "build/dist"
-destination := "platform=macOS,arch=arm64"
+# Debug builds target only the host architecture; Release builds are universal (arm64 + x86_64).
+debug_destination := "platform=macOS,arch=" + `uname -m`
+release_destination := "generic/platform=macOS"
 # Extra swiftc flags for the verify binaries; `coverage` sets the profiling ones.
 verify_flags := ""
 coverage_dir := "build/coverage"
@@ -36,7 +38,7 @@ build configuration="Debug": fetch-xray
       -project {{project}} \
       -scheme {{scheme}} \
       -configuration {{configuration}} \
-      -destination '{{destination}}' \
+      -destination '{{ if configuration == "Release" { release_destination } else { debug_destination } }}' \
       -derivedDataPath {{derived_data}} \
       build
 

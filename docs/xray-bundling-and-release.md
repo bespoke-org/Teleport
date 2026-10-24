@@ -4,7 +4,7 @@
 
 The app expects:
 
-- `teleport/Resources/xray` — bundled arm64 Xray executable; not kept in git, `scripts/fetch-xray.sh` creates it and `just build` runs that script when the file is missing or does not match the pin
+- `teleport/Resources/xray` — bundled universal (arm64 + x86_64) Xray executable; not kept in git, `scripts/fetch-xray.sh` creates it and `just build` runs that script when the file is missing or does not match the pin
 - `teleport/Resources/xray-assets/geoip.dat`
 - `teleport/Resources/xray-assets/geosite.dat`
 
@@ -29,7 +29,7 @@ These UUIDs and observations are correlation only. Helper state is not persisted
 
 WireGuard connections are Xray outbounds, not a separate engine: the bundled binary must be a build that includes the `wireguard` outbound, and macOS uses its userspace (gVisor) tunnel because `kernelMode` is Linux-only. Confirm after every runtime refresh with `xray run -test -c` against a config containing a WireGuard outbound; a build without it fails there rather than at connect time.
 
-The bundled executable is the `xray` file from the official `Xray-macos-arm64-v8a.zip` release asset; `scripts/fetch-xray.sh` downloads it and checks it against the published digest and the pin in `BundledArtifactPolicy.swift`. Refresh the executable and asset directory together so binary and data remain synchronized, then update the approved digest and repeat signing verification.
+The bundled executable is a `lipo` of the `xray` files from the official `Xray-macos-arm64-v8a.zip` and `Xray-macos-64.zip` release assets; `scripts/fetch-xray.sh` downloads both, checks each against its published digest, joins them, and checks the result against the pin in `BundledArtifactPolicy.swift`. Refresh the executable and asset directory together so binary and data remain synchronized, then update the approved digest and repeat signing verification.
 
 ## Packaging considerations
 
