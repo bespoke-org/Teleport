@@ -201,12 +201,11 @@ package: (build "Release")
 package-open: package
     open {{dist_dir}}
 
-# Run all verification scripts after an Xcode build, so the privileged helper target
-# and app copy/sign phases are checked alongside the lightweight Swift scripts.
-test: build-debug test-app (test-script "hysteria") (test-script "build-approval") (test-script "leak-guard") (test-script "xpc-protocol") (test-script "helper-request-ledger") (test-script "helper-command-dispatch") (test-script "helper-xpc-endpoint") (test-script "xpc-transport")
+# Run all test scripts. Only build-approval needs the built app and builds it itself.
+test: test-app (test-script "hysteria") (test-script "build-approval") (test-script "leak-guard") (test-script "xpc-protocol") (test-script "helper-request-ledger") (test-script "helper-command-dispatch") (test-script "helper-xpc-endpoint") (test-script "xpc-transport")
 
 # Compile the scripts that need the app sources into one binary; run all its scripts or the named ones
-test-app *names:
+test-app *names: fetch-xray
     swiftc {{test_flags}} {{test_sources}} {{test_app_sources}} -o /tmp/teleport-test-app
     /tmp/teleport-test-app {{names}}
 
