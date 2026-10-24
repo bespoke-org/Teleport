@@ -20,6 +20,6 @@ prepare-release X.Y.Z`), committed before the tag.
 
 ## Tests
 
-Run only the `just test-one <name>` checks that cover the code you changed; `just test` builds
-the app and runs every script, which is slow, and CI runs the rest. Run the full `just test` before
-a release or when asked.
+Run only the `just test-one <name>` checks that cover the code you changed; `just test` runs every
+script, which is slow, and CI runs the rest along with the Xcode build. Run the full `just test` and
+`just build-debug` before a release or when asked.
