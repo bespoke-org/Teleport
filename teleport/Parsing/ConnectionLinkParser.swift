@@ -36,7 +36,7 @@ struct ConnectionLinkParser {
             host: base.host,
             port: base.port,
             remarks: base.remarks,
-            secretKey: components.user?.removingPercentEncoding,
+            secretKey: decodedUser(components),
             query: try queryDictionary(from: components).lowercasedKeys()
         )
     }
@@ -44,7 +44,7 @@ struct ConnectionLinkParser {
     nonisolated private func parseVLESS(_ rawLink: String, components: URLComponents) throws -> ConnectionConfiguration {
         let base = try parseBase(rawLink, components: components)
 
-        guard let user = components.user, !user.isEmpty else {
+        guard let user = decodedUser(components), !user.isEmpty else {
             throw ConfigurationError.missingUser
         }
 
@@ -116,7 +116,7 @@ struct ConnectionLinkParser {
         let base = try parseBase(rawLink, components: components)
         let query = try queryDictionary(from: components)
 
-        guard let password = components.user, !password.isEmpty else {
+        guard let password = decodedUser(components), !password.isEmpty else {
             throw ConfigurationError.missingPassword
         }
 
@@ -185,9 +185,15 @@ struct ConnectionLinkParser {
             throw ConfigurationError.invalidPort
         }
 
-        let remarks = components.fragment
+        let remarks = components.percentEncodedFragment?.removingPercentEncoding
         let host = rawAuthorityHost(from: rawLink) ?? parsedHost
         return (host, port, remarks)
+    }
+
+    /// Decoded here from the percent-encoded form, so the result does not depend
+    /// on how a given Foundation release decodes `URLComponents.user`.
+    nonisolated private func decodedUser(_ components: URLComponents) -> String? {
+        components.percentEncodedUser?.removingPercentEncoding
     }
 
     nonisolated private func rawAuthorityHost(from rawLink: String) -> String? {
