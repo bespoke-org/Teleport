@@ -312,7 +312,7 @@ uninstall-helper:
 changelog:
     git-cliff --unreleased
 
-# Prepend the generated section for an untagged version to CHANGELOG.md. Usage: just prepare-release 0.4.0
+# Prepend the generated section for an untagged version to CHANGELOG.md and set it as the app version. Usage: just prepare-release 0.4.0
 prepare-release version:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -332,6 +332,8 @@ prepare-release version:
       exit 1
     fi
     git-cliff --unreleased --tag "v{{version}}" --prepend CHANGELOG.md
+    # The release workflow refuses a tag that does not match the app's version.
+    sed -i '' 's/MARKETING_VERSION = [^;]*;/MARKETING_VERSION = {{version}};/' {{project}}/project.pbxproj
 
 # Fail on commits since a revision that are not Conventional Commits. Usage: just lint-commits [origin/main]
 lint-commits since="origin/main":
