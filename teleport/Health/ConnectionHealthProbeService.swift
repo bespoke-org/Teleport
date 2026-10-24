@@ -15,14 +15,19 @@ final class ConnectionHealthProbeService: @unchecked Sendable {
     private let tunnelProbeURL: URL
     private let bundle: Bundle
     private let fileManager: FileManager
+    /// Absent in tests and in any build with no privileged side: a probe that has
+    /// nothing filtering its uplink needs nothing opened for it.
+    private let uplinkExemption: ProbeUplinkExemption?
 
     init(
         tcpTimeoutSeconds: Int = 3,
         tunnelProbeTimeoutSeconds: Int = 8,
         tunnelProbeURL: URL = URL(string: "https://cp.cloudflare.com/generate_204")!,
         bundle: Bundle = .main,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        uplinkExemption: ProbeUplinkExemption? = nil
     ) {
+        self.uplinkExemption = uplinkExemption
         self.tcpTimeoutSeconds = max(1, tcpTimeoutSeconds)
         self.tunnelProbeTimeoutSeconds = max(2, tunnelProbeTimeoutSeconds)
         self.tunnelProbeURL = tunnelProbeURL
@@ -42,12 +47,37 @@ final class ConnectionHealthProbeService: @unchecked Sendable {
         }
 
         let checkedAt = Date()
+
+        // The leak guard drops everything on the uplink but the session's own
+        // servers, and drops it silently — so a server outside the session has to
+        // be let out to before it can be asked anything. Opened once for both
+        // attempts below, and closed as soon as there is an answer.
+        let openedAddresses: [String]
+        switch await uplinkExemption?.open(host: connection.configuration.host) ?? .notNeeded {
+        case .notNeeded:
+            openedAddresses = []
+        case let .opened(addresses):
+            openedAddresses = addresses
+        case .couldNotResolve:
+            return ConnectionHealthProbeResult(
+                state: .unknown,
+                checkedAt: checkedAt,
+                latencyMilliseconds: nil,
+                latencyKind: nil,
+                failureSummary: "This server's address could not be resolved, so the probe could not be let past the leak guard"
+            )
+        }
+
         var outcome = await proxyLatencyCheck(connection)
         // A probe that could not run says nothing about the server. The common
         // cause is transient and local — a port the probe picked is busy — so it is
         // worth one more attempt before reporting that nothing was learned.
         if case .indeterminate = outcome {
             outcome = await proxyLatencyCheck(connection)
+        }
+
+        if !openedAddresses.isEmpty {
+            await uplinkExemption?.close(openedAddresses)
         }
 
         switch outcome {

@@ -23,6 +23,10 @@ actor LeakGuardService {
     private let log: TeleportLog
     private var stage: LeakGuardRuleset.Stage?
     private var protectedHosts: [String] = []
+    /// Servers opened for the duration of a health check. Held apart from
+    /// `protectedHosts` so that re-arming a stage never inherits them and a probe
+    /// that ends always takes its own path back down with it.
+    private var probeExemptions = ProbeHostExemptions()
     private var isEnabled: Bool
     private var renewalTask: Task<Void, Never>?
 
@@ -75,6 +79,38 @@ actor LeakGuardService {
         try await engage()
     }
 
+    /// Whether the uplink is filtered right now, which is what makes a health probe
+    /// need a path opened before it can ask anything.
+    var isHoldingUplink: Bool {
+        isEnabled && stage != nil
+    }
+
+    /// Opens the addresses of a server a health check is about to question, and
+    /// closes them again when it is done.
+    ///
+    /// Failure is logged rather than thrown: a check is diagnostics, and must not
+    /// fail the app over a path it could not open. A path that could not be closed
+    /// is bounded by the helper's lease, which the renewal loop re-establishes from
+    /// the set held here.
+    func retainProbeHosts(_ addresses: [String]) async {
+        guard probeExemptions.retain(addresses) else { return }
+        await reengageForProbeHosts()
+    }
+
+    func releaseProbeHosts(_ addresses: [String]) async {
+        guard probeExemptions.release(addresses) else { return }
+        await reengageForProbeHosts()
+    }
+
+    private func reengageForProbeHosts() async {
+        guard isEnabled, stage != nil else { return }
+        do {
+            try await engage()
+        } catch {
+            log.warn(Self.subsystem, "could not open a path for a health check: \(LogFormat.error(error))")
+        }
+    }
+
     /// The guard is no longer wanted at all: no stage is left to come back to.
     func disarm() async {
         guard stage != nil else { return }
@@ -105,7 +141,7 @@ actor LeakGuardService {
         }
         try await client.engageLeakGuard(
             tunnelInterfaceName: tunnelInterfaceName,
-            protectedHosts: protectedHosts,
+            protectedHosts: protectedHosts + probeExemptions.addresses,
             leaseSeconds: Self.leaseSeconds
         )
         startRenewing()

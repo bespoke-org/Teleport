@@ -14,6 +14,9 @@ struct VerifyLeakGuard {
         try testTheMachineCanStillConfigureItself()
         try testEmptyProtectedHostIsDropped()
         try testPacketFilterAcceptsBothStages()
+        try testAProbeOpensItsServerAndClosesItAgain()
+        try testConcurrentProbesDoNotCloseEachOthersPath()
+        try testProbeAddressesStayInsideTheHelpersBound()
         print("verify_leak_guard: all checks passed")
     }
 
@@ -89,6 +92,63 @@ struct VerifyLeakGuard {
         let rules = LeakGuardRuleset.rules(stage: .standby, protectedHosts: ["", "203.0.113.7"])
         precondition(!rules.contains("to \n"), "an empty protected host is dropped rather than emitted")
     }
+
+    /// A health check questions a server the session does not carry, so it has to
+    /// be let out to that one address — and the path has to be gone again the
+    /// moment the check is over, or the guard is permanently wider than the session
+    /// it protects.
+    private static func testAProbeOpensItsServerAndClosesItAgain() throws {
+        var exemptions = ProbeHostExemptions()
+        precondition(exemptions.addresses.isEmpty, "nothing is open before a check asks for it")
+        precondition(exemptions.retain(["198.51.100.9"]), "opening a new address changes the ruleset")
+        precondition(exemptions.addresses == ["198.51.100.9"], "the checked server is open")
+
+        let rules = LeakGuardRuleset.rules(
+            stage: .session(tunnelInterface: "utun10"),
+            protectedHosts: ["203.0.113.7"] + exemptions.addresses
+        )
+        precondition(rules.contains("pass out quick inet to 198.51.100.9"), "the check can reach its server")
+
+        precondition(exemptions.release(["198.51.100.9"]), "closing the last hold changes the ruleset")
+        precondition(exemptions.addresses.isEmpty, "the path is gone once the check has its answer")
+    }
+
+    /// The queue runs several checks at once and two of them can name the same
+    /// address — one subscription publishing a server under two names, most often.
+    /// The first to finish must not pull the path out from under the second.
+    private static func testConcurrentProbesDoNotCloseEachOthersPath() throws {
+        var exemptions = ProbeHostExemptions()
+        precondition(exemptions.retain(["198.51.100.9"]), "the first check opens the path")
+        precondition(!exemptions.retain(["198.51.100.9"]), "the second check finds it already open")
+
+        precondition(!exemptions.release(["198.51.100.9"]), "the first check to finish leaves the path open")
+        precondition(exemptions.addresses == ["198.51.100.9"], "the check still running keeps its server reachable")
+
+        precondition(exemptions.release(["198.51.100.9"]), "the last check to finish closes it")
+        precondition(exemptions.addresses.isEmpty, "no path outlives the checks that asked for it")
+        precondition(!exemptions.release(["198.51.100.9"]), "closing what was never opened changes nothing")
+    }
+
+    /// The helper refuses a request that names more hosts than it will route, and a
+    /// refused request leaves the guard unrenewed — so a full probe queue must not
+    /// be able to push the list past that bound and take the guard down with it.
+    private static func testProbeAddressesStayInsideTheHelpersBound() throws {
+        let perProbe = ProbeHostExemptions.maximumAddressesPerProbe
+        var exemptions = ProbeHostExemptions()
+        for probe in 0 ..< Self.concurrentProbeLimit {
+            _ = exemptions.retain((0 ..< perProbe).map { "198.51.100.\(probe * perProbe + $0)" })
+        }
+        let sessionHosts = ["203.0.113.7", "203.0.113.8", "2001:db8::1"]
+        precondition(
+            sessionHosts.count + exemptions.addresses.count <= VPNHelperProtocol.maximumProtectedHosts,
+            "a full probe queue plus the session's own servers has to fit in what the helper accepts"
+        )
+    }
+
+    /// `ConnectionHealthProbeQueue`'s fan-out, which cannot be imported here without
+    /// the whole view model behind it. Raising it there without raising what the
+    /// helper accepts is exactly what this check exists to catch.
+    private static let concurrentProbeLimit = 10
 
     private static func testPacketFilterAcceptsBothStages() throws {
         for (name, rules) in [("standby", standby), ("session", session)] {

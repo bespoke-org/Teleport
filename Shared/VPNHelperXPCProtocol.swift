@@ -16,10 +16,12 @@ nonisolated enum VPNHelperProtocol {
     static let maximumConfigurationBytes = 524_288
     static let maximumResponseBytes = 1_048_576
     static let maximumDiagnosticsBytes = 262_144
-    /// One protected host route per proxy server the session dials. Bounded like
-    /// every other payload field so a client cannot make the helper install an
-    /// unbounded number of routes.
-    static let maximumProtectedHosts = 8
+    /// One protected host route per proxy server the session dials, plus the
+    /// servers a health check holds open while it questions them — the probe queue
+    /// runs several checks at once, so this has to cover a burst of them as well as
+    /// the session itself. Bounded like every other payload field so a client
+    /// cannot make the helper install an unbounded number of routes.
+    static let maximumProtectedHosts = 64
     /// The client renews the leak-guard lease well inside this; the helper clamps
     /// anything longer so a client cannot ask for a guard it never has to renew.
     static let maximumLeakGuardLeaseSeconds: Double = 180

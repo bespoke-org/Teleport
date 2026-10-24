@@ -144,7 +144,12 @@ final class AppViewModel: ObservableObject {
             connectionProviderFactory: ConnectionProviderFactory(leakGuard: leakGuard),
             leakGuard: leakGuard,
             subscriptionClient: SubscriptionClient(),
-            healthProbeService: ConnectionHealthProbeService()
+            // The same guard the session arms: a health check leaves through the
+            // physical uplink, so while the guard filters that uplink the check has
+            // to hold its own server open for the seconds it takes to ask.
+            healthProbeService: ConnectionHealthProbeService(
+                uplinkExemption: LeakGuardProbeExemption(leakGuard: leakGuard)
+            )
         )
     }
 
