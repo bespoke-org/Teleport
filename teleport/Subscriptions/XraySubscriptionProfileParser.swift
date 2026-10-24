@@ -142,13 +142,13 @@ nonisolated struct XraySubscriptionProfileParser {
 
         var components = URLComponents()
         components.scheme = proto
-        components.user = credential
+        components.percentEncodedUser = credential.addingPercentEncoding(withAllowedCharacters: .urlUserAllowed)
         components.host = uriHost
         components.port = port.intValue
         // Ordering is independent of JSON key order. The generated link also
         // serves as the refresh identity, just like an ordinary subscription URI.
         components.queryItems = query.keys.sorted().map { URLQueryItem(name: $0, value: query[$0]) }
-        components.fragment = try string(profile, "remarks")
+        components.percentEncodedFragment = try string(profile, "remarks")?.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed)
         guard let link = components.string else { throw invalid() }
         return link
     }
