@@ -29,7 +29,7 @@ These UUIDs and observations are correlation only. Helper state is not persisted
 
 WireGuard connections are Xray outbounds, not a separate engine: the bundled binary must be a build that includes the `wireguard` outbound, and macOS uses its userspace (gVisor) tunnel because `kernelMode` is Linux-only. Confirm after every runtime refresh with `xray run -test -c` against a config containing a WireGuard outbound; a build without it fails there rather than at connect time.
 
-The current bundled runtime was copied from a local Homebrew-installed Xray distribution. Refresh the executable and asset directory together so binary and data remain synchronized, then update the approved digest and repeat signing verification.
+The bundled executable is the `xray` file from the official `Xray-macos-arm64-v8a.zip` release asset; `scripts/fetch-xray.sh` downloads it and checks it against the published digest and the pin in `BundledArtifactPolicy.swift`. Refresh the executable and asset directory together so binary and data remain synchronized, then update the approved digest and repeat signing verification.
 
 ## Packaging considerations
 
