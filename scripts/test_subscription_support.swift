@@ -1,6 +1,5 @@
 import Foundation
 
-@main
 struct TestSubscriptionSupport {
     static func main() throws {
         try testXrayJSONSubscription()

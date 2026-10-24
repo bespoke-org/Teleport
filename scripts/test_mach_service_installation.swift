@@ -4,7 +4,6 @@ private func require(_ condition: @autoclosure () -> Bool, _ message: String) {
     precondition(condition(), message)
 }
 
-@main
 struct TestMachServiceInstallation {
     static func main() throws {
         let plistData = Data(PrivilegedHelperInstaller.launchDaemonPlist().utf8)
