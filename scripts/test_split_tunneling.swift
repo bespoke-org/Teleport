@@ -758,17 +758,17 @@ struct TestSplitTunneling {
     }
 
     private static func testHelperRoutesIPv6AndDoesNotBypassDNS() throws {
-        let helperSource = try privilegedHelperSource()
-        precondition(helperSource.contains("route add -inet6 -net ::/1 -interface \"$tun_interface\""))
-        precondition(helperSource.contains("route add -inet6 -net 8000::/1 -interface \"$tun_interface\""))
-        precondition(helperSource.contains("route add -inet6 -net ::/1 \"$direct_ipv6_gateway\" -ifscope \"$OUTBOUND_INTERFACE\""))
-        precondition(helperSource.contains("route add -inet6 -net 8000::/1 \"$direct_ipv6_gateway\" -ifscope \"$OUTBOUND_INTERFACE\""))
-        precondition(helperSource.contains("route delete -inet6 -net ::/1"))
-        precondition(helperSource.contains("route delete -inet6 -net 8000::/1"))
-        precondition(!helperSource.contains("scutil --dns"), "expected system DNS to follow the TUN instead of receiving physical-gateway bypass routes")
+        let helperScripts = generatedHelperScripts()
+        precondition(helperScripts.contains("route add -inet6 -net ::/1 -interface \"$tun_interface\""))
+        precondition(helperScripts.contains("route add -inet6 -net 8000::/1 -interface \"$tun_interface\""))
+        precondition(helperScripts.contains("route add -inet6 -net ::/1 \"$direct_ipv6_gateway\" -ifscope \"$OUTBOUND_INTERFACE\""))
+        precondition(helperScripts.contains("route add -inet6 -net 8000::/1 \"$direct_ipv6_gateway\" -ifscope \"$OUTBOUND_INTERFACE\""))
+        precondition(helperScripts.contains("route delete -inet6 -net ::/1"))
+        precondition(helperScripts.contains("route delete -inet6 -net 8000::/1"))
+        precondition(!helperScripts.contains("scutil --dns"), "expected system DNS to follow the TUN instead of receiving physical-gateway bypass routes")
         // The route family is now derived per protected host rather than once per
         // session, since a session may dial servers of both families.
-        precondition(helperSource.contains("case \"$1\" in *:*) printf '%s' \"-inet6\""), "expected IPv6 proxy endpoints to receive an IPv6 protected route")
+        precondition(helperScripts.contains("case \"$1\" in *:*) printf '%s' \"-inet6\""), "expected IPv6 proxy endpoints to receive an IPv6 protected route")
     }
 
     /// Every proxy server in a session needs its own host route pinned to the
@@ -956,34 +956,32 @@ struct TestSplitTunneling {
         precondition(blockIndex < routingRules.count - 1, "the QUIC block must precede the catch-all")
     }
 
-    private static func privilegedHelperSource() throws -> String {
-        let root = URL(fileURLWithPath: "TeleportPrivilegedHelper", isDirectory: true)
-        guard let enumerator = FileManager.default.enumerator(
-            at: root,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            preconditionFailure("expected to enumerate privileged helper sources")
-        }
-
-        let sourceURLs = enumerator
-            .compactMap { $0 as? URL }
-            .filter { $0.pathExtension == "swift" }
-            .sorted { $0.path < $1.path }
-
-        precondition(!sourceURLs.isEmpty, "expected privileged helper Swift sources")
-        return try sourceURLs
-            .map { try String(contentsOf: $0, encoding: .utf8) }
-            .joined(separator: "\n")
+    private static func generatedHelperScripts() -> String {
+        let builder = XrayTunScriptBuilder(installedXrayPath: "/Library/PrivilegedHelperTools/xray")
+        let startScript = builder.makeStartScript(
+            helperStateDirectoryPath: "/var/db/dev.x.teleport",
+            configPath: "/var/db/dev.x.teleport/xray-tun-config.json",
+            assetDirectoryPath: "/tmp/geodata-resolved",
+            protectedHosts: ["203.0.113.7", "2001:db8::7"],
+            tunnelInterfaceName: "utun9",
+            outboundInterface: "en0",
+            installsIPv6Routes: true
+        )
+        let stopScript = builder.makeStopScript(
+            helperStateDirectoryPath: "/var/db/dev.x.teleport",
+            protectedHosts: ["203.0.113.7", "2001:db8::7"],
+            outboundInterface: "en0"
+        )
+        return startScript + "\n" + stopScript
     }
 
     private static func testHelperAddsScopedDirectRoutes() throws {
-        let helperSource = try privilegedHelperSource()
-        precondition(helperSource.contains("cleanup_direct_routes"), "expected helper to clean up scoped direct routes")
-        precondition(helperSource.contains("protect_direct_routes"), "expected helper to install scoped direct routes")
-        precondition(helperSource.contains("-ifscope \"$OUTBOUND_INTERFACE\""), "expected direct routes to be scoped to the physical interface")
-        precondition(helperSource.contains("route add -net 0.0.0.0/1 \"$direct_gateway\" -ifscope"), "expected lower IPv4 direct route through the physical gateway")
-        precondition(helperSource.contains("route add -net 128.0.0.0/1 \"$direct_gateway\" -ifscope"), "expected upper IPv4 direct route through the physical gateway")
+        let helperScripts = generatedHelperScripts()
+        precondition(helperScripts.contains("cleanup_direct_routes"), "expected helper to clean up scoped direct routes")
+        precondition(helperScripts.contains("protect_direct_routes"), "expected helper to install scoped direct routes")
+        precondition(helperScripts.contains("-ifscope \"$OUTBOUND_INTERFACE\""), "expected direct routes to be scoped to the physical interface")
+        precondition(helperScripts.contains("route add -net 0.0.0.0/1 \"$direct_gateway\" -ifscope"), "expected lower IPv4 direct route through the physical gateway")
+        precondition(helperScripts.contains("route add -net 128.0.0.0/1 \"$direct_gateway\" -ifscope"), "expected upper IPv4 direct route through the physical gateway")
     }
 
     private static func testTunnelConfigExposesLocalSocksAndHTTPPorts() throws {

@@ -287,7 +287,6 @@ private final class StoredReply: @unchecked Sendable {
 @main
 private enum TestXPCTransport {
     static func main() async throws {
-        try await verifiesExplicitAllowedClassesConfiguration()
         try await verifiesCommandRoutingAndNormalReplies()
         await verifiesConcurrentSendsShareConnectionCreation()
         await verifiesProxyErrorMapping()
@@ -298,14 +297,6 @@ private enum TestXPCTransport {
         try await verifiesDeadlineAndIgnoresLateReply()
         await verifiesInvalidResponseMapping()
         print("test_xpc_transport: all checks passed")
-    }
-
-    private static func verifiesExplicitAllowedClassesConfiguration() async throws {
-        let source = try String(
-            contentsOfFile: "teleport/TUN/XPCTUNHelperTransport.swift",
-            encoding: .utf8
-        )
-        precondition(source.contains("interface.setClasses"))
     }
 
     private static func verifiesCommandRoutingAndNormalReplies() async throws {

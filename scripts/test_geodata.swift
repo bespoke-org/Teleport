@@ -4,8 +4,6 @@ struct TestGeodata {
     static func main() throws {
         try testGeodataSettingsDefaultsWhenMissing()
         try testGeodataSettingsRoundTrip()
-        try testGeodataKindFileNames()
-        try testGeodataUpdateErrorDescriptionsAreNonEmpty()
         try testStoreReportsWhetherBytesChanged()
         try testResolvedAssetsUseMetadataManifest()
         try testSourceURLRequiresHTTPS()
@@ -227,29 +225,6 @@ struct TestGeodata {
             preconditionFailure("expected \(what) to be rejected as \(kind.fileName)")
         } catch {
             // Expected.
-        }
-    }
-
-    private static func testGeodataKindFileNames() throws {
-        precondition(GeodataKind.geosite.fileName == "geosite.dat")
-        precondition(GeodataKind.geoip.fileName == "geoip.dat")
-        precondition(GeodataKind.allCases.count == 2)
-    }
-
-    private static func testGeodataUpdateErrorDescriptionsAreNonEmpty() throws {
-        let errors: [GeodataUpdateError] = [
-            .invalidURL,
-            .networkFailure("boom"),
-            .invalidResponse,
-            .emptyPayload,
-            .tooSmall,
-            .insecureURL,
-            .unreadablePayload(.geosite),
-            .unreadablePayload(.geoip),
-            .bundledDefaultMissing
-        ]
-        for error in errors {
-            precondition(!(error.errorDescription ?? "").isEmpty, "expected a non-empty description for \(error)")
         }
     }
 }

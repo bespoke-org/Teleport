@@ -33,6 +33,7 @@ struct TestCore {
         precondition(configuration.transport == .ws)
         precondition(configuration.security == .tls)
         precondition(configuration.vlessUserID == "123e4567-e89b-12d3-a456-426614174000")
+        precondition(configuration.alpn == ["h2", "http/1.1"])
 
         let configURL = try XrayConfigurationWriter(proxyEndpoint: .default).writeConfig(for: configuration, to: temporaryConfigURL())
         let content = try String(contentsOf: configURL, encoding: .utf8)
