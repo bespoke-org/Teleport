@@ -127,13 +127,13 @@ not report the server's UDP-disabled handshake flag to Teleport.
 Run from the repository root:
 
 ```sh
-just test-hysteria
-just test-subscription-support
-just test-persistence
+just test-script hysteria
+just test-script subscription-support
+just test-script persistence
 just test-hysteria-integration
 ```
 
-`test-hysteria` depends on `fetch-xray`, so both Hysteria recipes work on a
+`just test-script hysteria` runs `fetch-xray`, so both Hysteria recipes work on a
 fresh checkout without first building the app. The download is checked against
 the bundled core's SHA-256 pin.
 
@@ -153,7 +153,7 @@ port is configured, and that traffic changes destination port after an explicit
 five-second interval while TCP, HTTP, and UDP continue working. They cover plain
 TLS, Salamander, Gecko, migration from the obsolete hopping field, and a Gecko
 URI with the `mport`/`alpn`/`fp` extensions. Run only
-these checks after `just test-hysteria` with:
+these checks after `just test-script hysteria` with:
 
 ```sh
 python3 scripts/test_hysteria_integration.py /tmp/teleport-test-hysteria --hopping-only

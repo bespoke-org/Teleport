@@ -203,92 +203,44 @@ package-open: package
 
 # Run all verification scripts after an Xcode build, so the privileged helper target
 # and app copy/sign phases are checked alongside the lightweight Swift scripts.
-test: build-debug test-app test-hysteria test-build-approval test-leak-guard test-xpc-protocol test-helper-request-ledger test-helper-command-dispatch test-helper-xpc-endpoint test-xpc-transport
+test: build-debug test-app (test-script "hysteria") (test-script "build-approval") (test-script "leak-guard") (test-script "xpc-protocol") (test-script "helper-request-ledger") (test-script "helper-command-dispatch") (test-script "helper-xpc-endpoint") (test-script "xpc-transport")
 
-# Compile the scripts that need the app sources into one binary and run the named scripts, or all of
-# them. Usage: just test-app [script...], e.g. just test-app core geodata
+# Compile the scripts that need the app sources into one binary; run all its scripts or the named ones
 test-app *names:
     swiftc {{test_flags}} {{test_sources}} {{test_app_sources}} -o /tmp/teleport-test-app
     /tmp/teleport-test-app {{names}}
 
-# Check the administrator-approved build pinning against the built Debug app
-test-build-approval: build-debug
-    swiftc {{test_flags}} {{test_sources}} scripts/test_build_approval.swift -o /tmp/teleport-test-build-approval
-    /tmp/teleport-test-build-approval
-
-# Run core parser/config verification
-test-core: (test-app "core")
-
-# Run subscription import verification
-test-subscription-support: (test-app "subscription-support")
-
-# Verify Hysteria 2 import, persistence, sharing and bundled-core configuration
-test-hysteria: fetch-xray
-    swiftc {{test_flags}} {{test_sources}} scripts/test_hysteria.swift -o /tmp/teleport-test-hysteria
-    /tmp/teleport-test-hysteria
+# Run scripts/test_<name>.swift. Usage: just test-script leak-guard
+test-script name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{name}}" in
+      leak-guard) sources="Shared/LeakGuardRuleset.swift Shared/TUNHelperXPCProtocol.swift teleport/TUN/ProbeHostExemptions.swift" ;;
+      xpc-protocol) sources="Shared/*.swift" ;;
+      helper-request-ledger) sources="Shared/*.swift TeleportPrivilegedHelper/IPC/HelperRequestLedger.swift" ;;
+      helper-command-dispatch) sources="Shared/*.swift TeleportPrivilegedHelper/IPC/HelperRequestLedger.swift TeleportPrivilegedHelper/IPC/HelperCommandExecuting.swift TeleportPrivilegedHelper/IPC/HelperCommandDispatcher.swift" ;;
+      helper-xpc-endpoint) sources="Shared/*.swift TeleportPrivilegedHelper/IPC/HelperRequestLedger.swift TeleportPrivilegedHelper/IPC/HelperCommandExecuting.swift TeleportPrivilegedHelper/IPC/HelperCommandDispatcher.swift TeleportPrivilegedHelper/IPC/HelperXPCService.swift" ;;
+      xpc-transport) sources="Shared/*.swift teleport/TUN/TUNHelperTransport.swift teleport/TUN/XPCTUNHelperTransport.swift" ;;
+      # Kept out of test-app: the integration script runs this binary with its own arguments.
+      hysteria) {{just_executable()}} fetch-xray; sources="{{test_sources}}" ;;
+      # Checks the approval of the built Debug app.
+      build-approval) {{just_executable()}} build-debug; sources="{{test_sources}}" ;;
+      # The other scripts need the app sources and run in the test-app binary.
+      *) exec {{just_executable()}} test_flags='{{test_flags}}' test-app "{{name}}" ;;
+    esac
+    name="{{name}}"
+    swiftc {{test_flags}} $sources "scripts/test_${name//-/_}.swift" -o "/tmp/teleport-test-$name"
+    "/tmp/teleport-test-$name"
 
 # Exercise TCP/UDP through a local Hysteria 2 server without changing macOS networking
-test-hysteria-integration: test-hysteria
+test-hysteria-integration: (test-script "hysteria")
     python3 scripts/test_hysteria_integration.py /tmp/teleport-test-hysteria
-
-# Run connection health metadata verification
-test-connection-health: (test-app "connection-health")
-
-# Run connection provider state and presentation verification
-test-connection-provider: (test-app "connection-provider")
-
-# Run split-tunnel rule classification/matching/routing verification
-test-split-tunneling: (test-app "split-tunneling")
-
-# Run geodata settings/model verification
-test-geodata: (test-app "geodata")
-
-# Run ConfigurationStore Keychain-failure-handling verification
-test-persistence: (test-app "persistence")
-
-# Check how a running session reacts to the uplink underneath it changing
-test-uplink-reconciliation: (test-app "uplink-reconciliation")
-
-# Check the pf ruleset that keeps traffic off the uplink between sessions
-test-leak-guard:
-    swiftc {{test_flags}} Shared/LeakGuardRuleset.swift Shared/TUNHelperXPCProtocol.swift teleport/TUN/ProbeHostExemptions.swift scripts/test_leak_guard.swift -o /tmp/teleport-test-leak-guard
-    /tmp/teleport-test-leak-guard
-
-# Test the shared privileged-helper XPC protocol and payload bounds
-test-xpc-protocol:
-    swiftc {{test_flags}} Shared/*.swift scripts/test_xpc_protocol.swift -o /tmp/teleport-test-xpc-protocol
-    /tmp/teleport-test-xpc-protocol
-
-# Test bounded same-daemon privileged-helper request deduplication
-test-helper-request-ledger:
-    swiftc {{test_flags}} Shared/*.swift TeleportPrivilegedHelper/IPC/HelperRequestLedger.swift scripts/test_helper_request_ledger.swift -o /tmp/teleport-test-helper-request-ledger
-    /tmp/teleport-test-helper-request-ledger
-
-# Test typed privileged-helper command dispatch and request deduplication
-test-helper-command-dispatch:
-    swiftc {{test_flags}} Shared/*.swift TeleportPrivilegedHelper/IPC/HelperRequestLedger.swift TeleportPrivilegedHelper/IPC/HelperCommandExecuting.swift TeleportPrivilegedHelper/IPC/HelperCommandDispatcher.swift scripts/test_helper_command_dispatch.swift -o /tmp/teleport-test-helper-command-dispatch
-    /tmp/teleport-test-helper-command-dispatch
-
-# Test the authenticated privileged-helper XPC endpoint composition
-test-helper-xpc-endpoint:
-    swiftc {{test_flags}} Shared/*.swift TeleportPrivilegedHelper/IPC/HelperRequestLedger.swift TeleportPrivilegedHelper/IPC/HelperCommandExecuting.swift TeleportPrivilegedHelper/IPC/HelperCommandDispatcher.swift TeleportPrivilegedHelper/IPC/HelperXPCService.swift scripts/test_helper_xpc_endpoint.swift -o /tmp/teleport-test-helper-xpc-endpoint
-    /tmp/teleport-test-helper-xpc-endpoint
-
-# Test app-side XPC connection ownership and transport races
-test-xpc-transport:
-    swiftc {{test_flags}} Shared/*.swift teleport/TUN/TUNHelperTransport.swift teleport/TUN/XPCTUNHelperTransport.swift scripts/test_xpc_transport.swift -o /tmp/teleport-test-xpc-transport
-    /tmp/teleport-test-xpc-transport
-
-# Test the typed privileged-helper client and bounded reconciliation
-test-privileged-helper-client: (test-app "privileged-helper-client")
-
-# Test the LaunchDaemon Mach service and explicit legacy reset tooling
-test-mach-service-installation: (test-app "mach-service-installation")
 
 # Line coverage of the test scripts over the sources they compile (views and most helper sources are not among them)
 coverage:
     rm -rf "{{coverage_dir}}" && mkdir -p "{{coverage_dir}}"
-    LLVM_PROFILE_FILE="{{coverage_dir}}/%m.profraw" just test_flags="-profile-generate -profile-coverage-mapping" test-app test-hysteria test-leak-guard test-xpc-protocol test-helper-request-ledger test-helper-command-dispatch test-helper-xpc-endpoint test-xpc-transport
+    rm -f /tmp/teleport-test-*
+    LLVM_PROFILE_FILE="{{coverage_dir}}/%m.profraw" just test_flags="-profile-generate -profile-coverage-mapping" test-script hysteria test-script leak-guard test-script xpc-protocol test-script helper-request-ledger test-script helper-command-dispatch test-script helper-xpc-endpoint test-script xpc-transport test-app
     xcrun llvm-profdata merge -sparse "{{coverage_dir}}"/*.profraw -o "{{coverage_dir}}/merged.profdata"
     xcrun llvm-cov report $(for binary in /tmp/teleport-test-*; do printf -- '-object %s ' "$binary"; done) -instr-profile "{{coverage_dir}}/merged.profdata" -ignore-filename-regex='scripts/' | tee "{{coverage_dir}}/report.txt"
 
