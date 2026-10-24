@@ -5,3 +5,7 @@ build/
 .claude
 .worktrees/
 Config/Local.xcconfig
+# Internal planning notes and review drafts, kept locally.
+review-report.md
+openspec/
+docs/superpowers/
