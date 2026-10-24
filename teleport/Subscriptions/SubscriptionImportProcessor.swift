@@ -7,43 +7,66 @@ nonisolated struct SubscriptionImportProcessor {
         sourceID: UUID,
         filterDuplicateImports: Bool
     ) throws -> SubscriptionImportResult {
-        var importedEntries: [ImportedSubscriptionEntry] = []
-        var skippedCount = 0
-        var seenDuplicateKeys: Set<String> = []
+        try importEntries(
+            candidates: links.map(SubscriptionCandidate.link), parser: parser,
+            sourceID: sourceID, filterDuplicateImports: filterDuplicateImports
+        )
+    }
 
-        for rawLink in links {
+    static func importEntries(
+        candidates: [SubscriptionCandidate],
+        parser: ConnectionLinkParser,
+        sourceID: UUID,
+        filterDuplicateImports: Bool
+    ) throws -> SubscriptionImportResult {
+        var importedEntries: [ImportedSubscriptionEntry] = []
+        var skippedReasons: [String: Int] = [:]
+        var seenDuplicateKeys: Set<String> = []
+        var seenEntryIDs: Set<String> = []
+
+        for candidate in candidates {
+            guard case let .link(rawLink) = candidate else {
+                if case let .skipped(reason) = candidate { skippedReasons[reason, default: 0] += 1 }
+                continue
+            }
             do {
                 let configuration = try parser.parse(rawLink)
                 let sourceEntryID = rawLink.trimmingCharacters(in: .whitespacesAndNewlines)
-
+                // Exact repetitions share a refresh identity even when optional
+                // endpoint deduplication is off. Keeping both breaks reconciliation.
+                guard seenEntryIDs.insert(sourceEntryID).inserted else { continue }
                 if filterDuplicateImports {
-                    let duplicateKey = configuration.duplicateFilterIdentity
-                    guard seenDuplicateKeys.insert(duplicateKey).inserted else {
-                        continue
-                    }
+                    guard seenDuplicateKeys.insert(configuration.duplicateFilterIdentity).inserted else { continue }
                 }
-
-                importedEntries.append(
-                    ImportedSubscriptionEntry(
-                        sourceEntryID: sourceEntryID,
-                        configuration: configuration
-                    )
-                )
+                importedEntries.append(ImportedSubscriptionEntry(sourceEntryID: sourceEntryID, configuration: configuration))
             } catch {
-                skippedCount += 1
+                skippedReasons[skipReason(for: error), default: 0] += 1
             }
         }
-
         _ = sourceID
-
-        guard !importedEntries.isEmpty else {
-            throw SubscriptionError.noSupportedEntries
-        }
-
-        return SubscriptionImportResult(
+        let result = SubscriptionImportResult(
             importedEntries: disambiguateDuplicateDisplayNames(in: importedEntries),
-            skippedCount: skippedCount
+            skippedReasons: skippedReasons
         )
+        guard !importedEntries.isEmpty else {
+            throw SubscriptionError.noImportableEntries(result.statusMessage ?? "No supported entries were found")
+        }
+        return result
+    }
+
+    private static func skipReason(for error: Error) -> String {
+        // Parser errors may contain provider-supplied values. Summarize their
+        // category instead of persisting credentials or arbitrary text in status.
+        guard let error = error as? ConfigurationError else { return "Invalid connection settings" }
+        switch error {
+        case .unsupportedTransport: return "Unsupported transport"
+        case .unsupportedSecurity: return "Unsupported security"
+        case .unsupportedFlow: return "Unsupported VLESS flow"
+        case .missingParameter: return "Missing required connection parameters"
+        case .invalidUUID: return "Invalid VLESS user ID"
+        case .missingPassword: return "Missing Trojan password"
+        default: return "Invalid connection settings"
+        }
     }
 
     private static func disambiguateDuplicateDisplayNames(in entries: [ImportedSubscriptionEntry]) -> [ImportedSubscriptionEntry] {

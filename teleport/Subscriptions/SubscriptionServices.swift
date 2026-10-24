@@ -1,11 +1,22 @@
 import Foundation
 
-struct SubscriptionImportResult {
+nonisolated struct SubscriptionImportResult {
     let importedEntries: [ImportedSubscriptionEntry]
-    let skippedCount: Int
+    let skippedReasons: [String: Int]
+
+    var skippedCount: Int { skippedReasons.values.reduce(0, +) }
+
+    var skipSummary: String {
+        skippedReasons.sorted { $0.key < $1.key }.map { "\($0.value) × \($0.key)" }.joined(separator: "; ")
+    }
+
+    var statusMessage: String? {
+        guard skippedCount > 0 else { return nil }
+        return "Imported \(importedEntries.count), skipped \(skippedCount). \(skipSummary)"
+    }
 }
 
-struct ImportedSubscriptionEntry {
+nonisolated struct ImportedSubscriptionEntry {
     let sourceEntryID: String
     let configuration: ConnectionConfiguration
 }
@@ -27,39 +38,23 @@ struct SubscriptionConnectionReconciler {
         let previousSelectedConnection = existingConnections.first { $0.id == selectedConnectionID }
         let previousImportedEntries = existingConnections.filter { $0.source?.subscriptionSourceID == sourceID }
 
-        let existingIDsByEntry: [String: UUID] = Dictionary(uniqueKeysWithValues: previousImportedEntries.compactMap { connection in
+        // Older imports could persist duplicate entry IDs. Keep one complete
+        // record so identity, name and health all come from the same copy.
+        let existingByEntry = Dictionary(previousImportedEntries.compactMap { connection -> (String, SavedConnection)? in
             guard let source = connection.source else { return nil }
-            return (source.subscriptionEntryID, connection.id)
-        })
-        let existingSavedAtByEntry: [String: Date] = Dictionary(uniqueKeysWithValues: previousImportedEntries.compactMap { connection in
-            guard let source = connection.source else { return nil }
-            return (source.subscriptionEntryID, connection.savedAt)
-        })
-        let existingHealthByEntry: [String: ConnectionHealthCheck] = Dictionary(uniqueKeysWithValues: previousImportedEntries.compactMap { connection in
-            guard let source = connection.source,
-                  let healthCheck = connection.healthCheck else {
-                return nil
-            }
-            return (source.subscriptionEntryID, healthCheck)
-        })
-        // A name the user gave an imported connection survives the refresh, like
-        // its identity and health do.
-        let existingNamesByEntry: [String: String] = Dictionary(uniqueKeysWithValues: previousImportedEntries.compactMap { connection in
-            guard let source = connection.source,
-                  let customName = connection.customName else {
-                return nil
-            }
-            return (source.subscriptionEntryID, customName)
+            return (source.subscriptionEntryID, connection)
+        }, uniquingKeysWith: { first, next in
+            next.id == selectedConnectionID ? next : first
         })
 
         let replacementConnections = importedEntries.map { entry in
             SavedConnection(
-                id: existingIDsByEntry[entry.sourceEntryID] ?? UUID(),
+                id: existingByEntry[entry.sourceEntryID]?.id ?? UUID(),
                 configuration: entry.configuration,
-                savedAt: existingSavedAtByEntry[entry.sourceEntryID] ?? fetchedAt,
+                savedAt: existingByEntry[entry.sourceEntryID]?.savedAt ?? fetchedAt,
                 source: ConnectionSourceMetadata(subscriptionSourceID: sourceID, subscriptionEntryID: entry.sourceEntryID),
-                healthCheck: existingHealthByEntry[entry.sourceEntryID],
-                customName: existingNamesByEntry[entry.sourceEntryID]
+                healthCheck: existingByEntry[entry.sourceEntryID]?.healthCheck,
+                customName: existingByEntry[entry.sourceEntryID]?.customName
             )
         }
         .sorted { lhs, rhs in
@@ -100,7 +95,7 @@ struct SubscriptionConnectionReconciler {
 }
 
 struct SubscriptionClient {
-    func fetchCandidateLinks(from url: URL) async throws -> [String] {
+    func fetchCandidates(from url: URL) async throws -> [SubscriptionCandidate] {
         let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
         let session = URLSession(configuration: .ephemeral)
         defer { session.finishTasksAndInvalidate() }
@@ -129,35 +124,6 @@ struct SubscriptionClient {
             throw SubscriptionError.emptyPayload
         }
 
-        let rawText = String(decoding: responseData, as: UTF8.self)
-        let directLinks = extractCandidateLinks(from: rawText)
-        if !directLinks.isEmpty {
-            return directLinks
-        }
-
-        let compactBase64 = rawText
-            .components(separatedBy: .whitespacesAndNewlines)
-            .joined()
-
-        if let decodedData = Data(base64Encoded: compactBase64, options: [.ignoreUnknownCharacters]) {
-            let decodedText = String(decoding: decodedData, as: UTF8.self)
-            let decodedLinks = extractCandidateLinks(from: decodedText)
-            if !decodedLinks.isEmpty {
-                return decodedLinks
-            }
-        }
-
-        throw SubscriptionError.noSupportedEntries
-    }
-
-    private func extractCandidateLinks(from text: String) -> [String] {
-        text
-            .split(whereSeparator: { $0.isNewline })
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .filter { value in
-                let lowercased = value.lowercased()
-                return lowercased.hasPrefix("vless://") || lowercased.hasPrefix("trojan://")
-            }
+        return try SubscriptionPayloadDecoder().decode(responseData)
     }
 }

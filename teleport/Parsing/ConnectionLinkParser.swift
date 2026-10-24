@@ -116,7 +116,7 @@ struct ConnectionLinkParser {
         let base = try parseBase(rawLink, components: components)
         let query = try queryDictionary(from: components)
 
-        guard let password = components.user?.removingPercentEncoding, !password.isEmpty else {
+        guard let password = components.user, !password.isEmpty else {
             throw ConfigurationError.missingPassword
         }
 
@@ -185,7 +185,7 @@ struct ConnectionLinkParser {
             throw ConfigurationError.invalidPort
         }
 
-        let remarks = components.fragment?.removingPercentEncoding
+        let remarks = components.fragment
         let host = rawAuthorityHost(from: rawLink) ?? parsedHost
         return (host, port, remarks)
     }

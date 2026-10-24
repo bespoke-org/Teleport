@@ -1,0 +1,33 @@
+{
+  "remarks": "Example VLESS profile",
+  "log": { "loglevel": "warning" },
+  "inbounds": [{ "tag": "local", "protocol": "socks", "port": 10808 }],
+  "dns": { "servers": ["1.1.1.1"] },
+  "routing": { "rules": [{ "type": "field", "protocol": ["bittorrent"], "outboundTag": "direct" }] },
+  "outbounds": [
+    {
+      "tag": "proxy",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [{
+          "address": "vpn.example.com",
+          "port": 443,
+          "users": [{ "id": "123e4567-e89b-12d3-a456-426614174000", "encryption": "none", "flow": "xtls-rprx-vision" }]
+        }]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "tcpSettings": {},
+        "realitySettings": {
+          "serverName": "www.example.com",
+          "fingerprint": "chrome",
+          "publicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "shortId": "a1b2c3d4"
+        }
+      }
+    },
+    { "protocol": "freedom", "tag": "direct" },
+    { "protocol": "blackhole", "tag": "block" }
+  ]
+}

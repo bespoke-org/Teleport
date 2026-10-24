@@ -961,7 +961,9 @@ enum SubscriptionError: LocalizedError, Equatable {
     case networkFailure(String)
     case invalidResponse
     case emptyPayload
-    case noSupportedEntries
+    case unsupportedFormat
+    case invalidJSON
+    case noImportableEntries(String)
 
     var errorDescription: String? {
         switch self {
@@ -974,9 +976,13 @@ enum SubscriptionError: LocalizedError, Equatable {
         case .invalidResponse:
             return "Subscription server returned an invalid response"
         case .emptyPayload:
-            return "Subscription did not contain any links"
-        case .noSupportedEntries:
-            return "Subscription does not contain any supported VLESS or Trojan links"
+            return "Subscription did not contain any entries"
+        case .unsupportedFormat:
+            return "Unsupported subscription format. Expected VLESS/Trojan links, Base64 links, or Xray JSON profiles."
+        case .invalidJSON:
+            return "Subscription contains malformed JSON"
+        case let .noImportableEntries(summary):
+            return "No compatible connections could be imported. \(summary)"
         }
     }
 }
