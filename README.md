@@ -10,10 +10,9 @@ Teleport is a macOS menu bar client for the [Xray](https://github.com/XTLS/Xray-
 - Subscriptions from `http://` and `https://` URLs, with periodic refresh and duplicate filtering.
 - Two connection modes: **System Proxy** (no administrator rights) and **VPN** (TUN interface through a root helper).
 - Split tunneling: rules by domain, IP range, geosite category or geoip country, grouped in named profiles. A rule can send its traffic through a different saved connection, so one session can dial several servers.
+- Geodata (`geoip.dat`, `geosite.dat`) bundled, with optional downloads from a source of your choice.
 - A pf-based leak guard that keeps traffic off the physical network while a VPN session is being rebuilt.
 - TCP latency checks for every connection, shown in the menu bar picker.
-- Geodata (`geoip.dat`, `geosite.dat`) bundled, with optional downloads from a source of your choice.
-- Settings window with General, Connections, Split tunneling, Geodata, Nerd shit (logs) and About pages.
 
 ## Requirements
 
@@ -172,23 +171,12 @@ just coverage                         # line coverage of the verify scripts
 
 The remaining recipes are listed by `just --list`. None of them needs root or a logged-in GUI session; VPN connect/disconnect, helper installation and leak-guard behaviour on a real network are checked by hand (see `docs/xray-bundling-and-release.md`).
 
-### Project layout
-
-- `teleport/` is the app: SwiftUI views, `ViewModels/AppViewModel` as the single orchestrator, `Parsing/` for links and geodata, `Subscriptions/`, `Health/`, `XrayCore/` for config generation, `SystemProxy/` and `VPN/` as the two connection providers, `HelperInstallation/` for the one code path that asks for a password.
-- `TeleportPrivilegedHelper/` is the root daemon: `IPC/` authenticates and decodes, `Session/` runs start/stop/status, `Routing/` generates the route and pf scripts, `Xray/` manages the root Xray process.
-- `Shared/` is compiled into both: the XPC protocol and messages, the leak guard ruleset, the signature requirement, logging.
-- `scripts/` holds the verify programs, `fetch-xray.sh`, and a reset script for the helper.
-- `docs/runtime-source-layout.md` describes the boundaries between these parts in more detail.
-
 ## Known limitations
 
-- Build from source only. The app is not notarized, so the helper is installed with `launchctl` from an administrator shell rather than through `SMAppService`.
+- No signed download yet, build from source.
 - Apple Silicon only, because of the bundled Xray executable.
-- On stop, the helper removes the half-default routes by destination rather than from a record of what the session installed, and a route it could not remove is not reported. A failed start undoes its own changes (see the EXIT trap in `XrayTunScriptBuilder.swift`).
-- The leak guard lets DNS reach any resolver, so the names being resolved can reach the uplink's resolver while no session exists; the address they are resolved from is what the guard protects. During a session it also passes traffic from any root process, not only Xray.
-- Split-tunnel domain rules rely on Xray sniffing the destination name. QUIC is blocked inside the tunnel so that HTTP/3 falls back to a connection whose name can be read.
 - Another VPN that owns the default `utun` route blocks VPN mode entirely.
-- The 33 MB Xray executable is committed to the repository.
+- The leak guard lets DNS queries reach any resolver, and during a session it passes traffic of any root process, not only Xray.
 
 ## Comparison with other clients
 
