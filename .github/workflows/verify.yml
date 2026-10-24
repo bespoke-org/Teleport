@@ -14,16 +14,34 @@ concurrency:
 
 jobs:
   verify:
-    # macOS 26 arm64 image; its default Xcode is 26.x, the version the project is developed with.
+    # Foundation's behaviour differs between macOS releases, so the checks run on
+    # each supported one. The macos-15 image ships Xcode 26 but not as the default.
+    # The xcode-27 preview image runs macOS 27 and has only Xcode 27.
     # Without Config/Local.xcconfig the build is signed ad hoc.
-    runs-on: macos-26
+    name: verify (macOS ${{ matrix.macos }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - macos: 15
+            runner: macos-15
+            developer-dir: /Applications/Xcode_26.3.app/Contents/Developer
+          - macos: 26
+            runner: macos-26
+            developer-dir: /Applications/Xcode.app/Contents/Developer
+          - macos: 27
+            runner: xcode-27
+            developer-dir: /Applications/Xcode.app/Contents/Developer
+    runs-on: ${{ matrix.runner }}
+    env:
+      DEVELOPER_DIR: ${{ matrix.developer-dir }}
     steps:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
-      - name: Show the Xcode in use
-        run: xcodebuild -version
+      - name: Show the macOS and Xcode in use
+        run: sw_vers && xcodebuild -version
 
       - name: Install just
         run: brew install just
