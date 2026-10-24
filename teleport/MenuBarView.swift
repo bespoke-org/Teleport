@@ -87,17 +87,7 @@ struct MenuBarView: View {
             showsLatency: viewModel.showsLatencyInMenuBarPicker,
             makeHealthSnapshot: viewModel.healthSnapshotForPicker,
             healthSummary: viewModel.healthSummary(for:),
-            onSelect: { id in viewModel.selectConnection(id: id) },
-            onOpenSettings: {
-                NSApplication.shared.activate(ignoringOtherApps: true)
-                // As an accessory (menu-bar-only) app, activation doesn't always
-                // finish before openWindow tries to bring the window forward,
-                // which can leave it unfocused until a second click. Deferring to
-                // the next run loop turn lets activation land first.
-                DispatchQueue.main.async {
-                    openWindow(id: "settings")
-                }
-            }
+            onSelect: { id in viewModel.selectConnection(id: id) }
         )
         .equatable()
     }
@@ -117,9 +107,6 @@ struct MenuBarView: View {
 
     private var actionSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Actions")
-                .font(.subheadline.weight(.semibold))
-
             HStack {
                 Button(viewModel.canDisconnect ? "Disconnect" : "Connect") {
                     if viewModel.canDisconnect {
@@ -160,7 +147,6 @@ private struct ConnectionPickerSection: View, Equatable {
     let makeHealthSnapshot: () -> [UUID: ConnectionHealthCheck]
     let healthSummary: (ConnectionHealthCheck) -> String
     let onSelect: (UUID) -> Void
-    let onOpenSettings: () -> Void
 
     @State private var pickerHealthSnapshot: [UUID: ConnectionHealthCheck] = [:]
 
@@ -177,15 +163,10 @@ private struct ConnectionPickerSection: View, Equatable {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Connection")
-                .font(.subheadline.weight(.semibold))
-
             if savedConnectionCount == 0 {
                 Text("No saved connections")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-
-                Button("Open Settings", action: onOpenSettings)
             } else {
                 Menu {
                     if !manualItems.isEmpty {
