@@ -17,10 +17,9 @@ struct XrayTunScriptBuilder: Sendable {
 
         // This generated script does not return until Xray has created a TUN and
         // both IPv4 half-default routes have passed post-install checks.
-        // TODO(gpt-5.6-sol): Convert route changes into a journaled transaction with
-        // one EXIT/signal cleanup trap. The script has many explicit error branches,
-        // but an unexpected `set -e` failure can bypass them and leave partial root
-        // state. Record exact route tuples so cleanup removes only this session's
+        // The EXIT trap below undoes this script's routes and process on any
+        // failure, including a command `set -e` stopped on.
+        // TODO: Record exact route tuples so cleanup removes only this session's
         // mutations rather than every route that shares a destination prefix.
         return """
         set -eu
@@ -39,15 +38,32 @@ struct XrayTunScriptBuilder: Sendable {
         OUTBOUND_INTERFACE=\(q(outboundInterface))
         INSTALL_IPV6_ROUTES=\(installsIPv6Routes ? 1 : 0)
         IPV6_ROUTES_INSTALLED=0
+        pid=""
 
-        cleanup_ipv6_routes_on_failure() {
+        # Every failure leaves through here, the explicit branches below and a
+        # command `set -e` stopped on alike: the Xray this script started is gone
+        # and the routes it installed are out. The explicit branches run the same
+        # cleanup first; a second pass over removed routes changes nothing.
+        cleanup_on_failure() {
             status=$?
-            if [ "$status" -ne 0 ] && [ "$IPV6_ROUTES_INSTALLED" -eq 1 ]; then
+            [ "$status" -ne 0 ] || return 0
+            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+                kill "$pid" 2>/dev/null || true
+                sleep 0.5
+                kill -9 "$pid" 2>/dev/null || true
+            fi
+            route delete -net 0.0.0.0/1 >/dev/null 2>&1 || true
+            route delete -net 128.0.0.0/1 >/dev/null 2>&1 || true
+            if [ "$IPV6_ROUTES_INSTALLED" -eq 1 ]; then
                 route delete -inet6 -net ::/1 >/dev/null 2>&1 || true
                 route delete -inet6 -net 8000::/1 >/dev/null 2>&1 || true
             fi
+            cleanup_host_routes
+            cleanup_dns_routes
+            cleanup_direct_routes
+            rm -f "$PID_FILE"
         }
-        trap cleanup_ipv6_routes_on_failure EXIT
+        trap cleanup_on_failure EXIT
 
         \(deleteHostRouteFunction())
         \(protectedHostFunctions())
@@ -319,7 +335,7 @@ struct XrayTunScriptBuilder: Sendable {
         commands.append("cleanup_host_routes")
         commands.append("cleanup_dns_routes")
         commands.append("cleanup_direct_routes")
-        // TODO(gpt-5.6-sol): These destination-only deletes are not tied to a
+        // TODO: These destination-only deletes are not tied to a
         // Teleport session, and `|| true` hides cleanup failures from the client.
         // Delete only journaled routes and report any route that could not be removed.
         commands.append("route delete -net 0.0.0.0/1 >/dev/null 2>&1 || true")
