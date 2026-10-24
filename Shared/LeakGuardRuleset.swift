@@ -53,6 +53,12 @@ nonisolated enum LeakGuardRuleset: Sendable {
         var lines: [String] = []
         lines.append("# Teleport leak guard — flushed by a reboot, by the app, or by its lease expiring.")
         lines.append("pass quick on lo0 all")
+        // A `pass` rule keeps state with `flags S/SA`, so the local-network rules
+        // below let the machine open connections but never let it answer one: a
+        // SYN-ACK carries ACK and falls through to the block. Inbound traffic is not
+        // what the guard exists for, and state created on the way in lets the reply
+        // out before any rule is evaluated — AirDrop and Handoff accept connections.
+        lines.append("pass in quick all")
 
         if case let .session(tunnelInterface) = stage {
             lines.append("pass out quick on \(tunnelInterface) all")

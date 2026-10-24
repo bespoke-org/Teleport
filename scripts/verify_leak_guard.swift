@@ -78,6 +78,9 @@ struct VerifyLeakGuard {
         precondition(standby.contains("192.168.0.0/16"), "local networks survive the guard")
         precondition(standby.contains("port { 53, 853 }"), "name resolution survives the guard")
         precondition(standby.contains("fe80::/10"), "IPv6 neighbour discovery survives the guard")
+        for rules in [standby, session] {
+            precondition(rules.contains("pass in quick all"), "connections from the local network can be answered")
+        }
     }
 
     /// An empty entry would emit `pass out quick inet to ` — a rule pf rejects,
