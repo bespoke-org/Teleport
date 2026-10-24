@@ -1,7 +1,6 @@
 import Foundation
 import Security
 
-@main
 struct TestPersistence {
     static func main() throws {
         try testKeychainReadStatusClassification()

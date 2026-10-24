@@ -1,6 +1,5 @@
 import Foundation
 
-@main
 struct TestSplitTunneling {
     static func main() throws {
         try testClassifiesValidDomainAndIPValues()

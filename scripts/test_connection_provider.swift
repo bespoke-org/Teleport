@@ -1,6 +1,5 @@
 import Foundation
 
-@main
 struct TestConnectionProvider {
     static func main() async throws {
         testConnectionPresentationMapping()
