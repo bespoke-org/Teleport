@@ -165,8 +165,7 @@ private final class LostStopReplyConnectionFactory: @unchecked Sendable {
     }
 }
 
-@main
-private enum TestPrivilegedHelperClient {
+enum TestPrivilegedHelperClient {
     static func main() async throws {
         try await verifyDeadlinesPayloadsAndNormalMapping()
         try await verifyCommandSpecificSuccessPayloadValidation()

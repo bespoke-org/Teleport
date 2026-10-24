@@ -1,6 +1,5 @@
 import Foundation
 
-@main
 struct TestConnectionHealth {
     static func main() throws {
         try testHealthMetadataSnapshotRoundTrip()

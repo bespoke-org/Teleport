@@ -1,6 +1,5 @@
 import Foundation
 
-@main
 struct TestGeodata {
     static func main() throws {
         try testGeodataSettingsDefaultsWhenMissing()

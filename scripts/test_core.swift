@@ -1,6 +1,5 @@
 import Foundation
 
-@main
 struct TestCore {
     static func main() throws {
         try testValidVLESSParsingAndConfigGeneration()

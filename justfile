@@ -13,6 +13,8 @@ release_destination := "generic/platform=macOS"
 test_flags := ""
 coverage_dir := "build/coverage"
 test_sources := "teleport/TeleportModels.swift teleport/App/*.swift teleport/Connection/*.swift teleport/Parsing/*.swift teleport/Persistence/*.swift teleport/Subscriptions/*.swift teleport/XrayCore/*.swift teleport/SystemProxy/*.swift teleport/TUN/*.swift teleport/HelperInstallation/*.swift teleport/Geodata/*.swift teleport/Health/*.swift teleport/ViewModels/*.swift Shared/*.swift"
+# Scripts compiled with test_sources into the one test-app binary, plus the helper files they use.
+test_app_sources := "TeleportPrivilegedHelper/Support/HelperPlatform.swift TeleportPrivilegedHelper/Routing/XrayTunScriptBuilder.swift scripts/test_app.swift scripts/test_core.swift scripts/test_subscription_support.swift scripts/test_connection_health.swift scripts/test_connection_provider.swift scripts/test_split_tunneling.swift scripts/test_geodata.swift scripts/test_persistence.swift scripts/test_uplink_reconciliation.swift scripts/test_privileged_helper_client.swift scripts/test_mach_service_installation.swift"
 
 # List available recipes
 default:
@@ -201,17 +203,19 @@ package-open: package
 
 # Run all verification scripts after an Xcode build, so the privileged helper target
 # and app copy/sign phases are checked alongside the lightweight Swift scripts.
-test: build-debug test-core test-subscription-support test-hysteria test-connection-health test-connection-provider test-split-tunneling test-geodata test-persistence test-uplink-reconciliation test-leak-guard test-xpc-protocol test-helper-request-ledger test-helper-command-dispatch test-helper-xpc-endpoint test-xpc-transport test-privileged-helper-client test-mach-service-installation
+test: build-debug test-app test-hysteria test-leak-guard test-xpc-protocol test-helper-request-ledger test-helper-command-dispatch test-helper-xpc-endpoint test-xpc-transport
+
+# Compile the scripts that need the app sources into one binary and run the named suites, or all of
+# them. Usage: just test-app [suite...], e.g. just test-app core geodata
+test-app *suites:
+    swiftc {{test_flags}} {{test_sources}} {{test_app_sources}} -o /tmp/teleport-test-app
+    /tmp/teleport-test-app {{suites}}
 
 # Run core parser/config verification
-test-core:
-    swiftc {{test_flags}} {{test_sources}} scripts/test_core.swift -o /tmp/teleport-test-core
-    /tmp/teleport-test-core
+test-core: (test-app "core")
 
 # Run subscription import verification
-test-subscription-support:
-    swiftc {{test_flags}} {{test_sources}} scripts/test_subscription_support.swift -o /tmp/teleport-test-subscription-support
-    /tmp/teleport-test-subscription-support
+test-subscription-support: (test-app "subscription-support")
 
 # Verify Hysteria 2 import, persistence, sharing and bundled-core configuration
 test-hysteria: fetch-xray
@@ -223,34 +227,22 @@ test-hysteria-integration: test-hysteria
     python3 scripts/test_hysteria_integration.py /tmp/teleport-test-hysteria
 
 # Run connection health metadata verification
-test-connection-health:
-    swiftc {{test_flags}} {{test_sources}} scripts/test_connection_health.swift -o /tmp/teleport-test-connection-health
-    /tmp/teleport-test-connection-health
+test-connection-health: (test-app "connection-health")
 
 # Run connection provider state and presentation verification
-test-connection-provider:
-    swiftc {{test_flags}} {{test_sources}} scripts/test_connection_provider.swift -o /tmp/teleport-test-connection-provider
-    /tmp/teleport-test-connection-provider
+test-connection-provider: (test-app "connection-provider")
 
 # Run split-tunnel rule classification/matching/routing verification
-test-split-tunneling:
-    swiftc {{test_flags}} {{test_sources}} TeleportPrivilegedHelper/Support/HelperPlatform.swift TeleportPrivilegedHelper/Routing/XrayTunScriptBuilder.swift scripts/test_split_tunneling.swift -o /tmp/teleport-test-split-tunneling
-    /tmp/teleport-test-split-tunneling
+test-split-tunneling: (test-app "split-tunneling")
 
 # Run geodata settings/model verification
-test-geodata:
-    swiftc {{test_flags}} {{test_sources}} scripts/test_geodata.swift -o /tmp/teleport-test-geodata
-    /tmp/teleport-test-geodata
+test-geodata: (test-app "geodata")
 
 # Run ConfigurationStore Keychain-failure-handling verification
-test-persistence:
-    swiftc {{test_flags}} {{test_sources}} scripts/test_persistence.swift -o /tmp/teleport-test-persistence
-    /tmp/teleport-test-persistence
+test-persistence: (test-app "persistence")
 
 # Check how a running session reacts to the uplink underneath it changing
-test-uplink-reconciliation:
-    swiftc {{test_flags}} {{test_sources}} scripts/test_uplink_reconciliation.swift -o /tmp/teleport-test-uplink-reconciliation
-    /tmp/teleport-test-uplink-reconciliation
+test-uplink-reconciliation: (test-app "uplink-reconciliation")
 
 # Check the pf ruleset that keeps traffic off the uplink between sessions
 test-leak-guard:
@@ -283,19 +275,15 @@ test-xpc-transport:
     /tmp/teleport-test-xpc-transport
 
 # Test the typed privileged-helper client and bounded reconciliation
-test-privileged-helper-client:
-    swiftc {{test_flags}} {{test_sources}} scripts/test_privileged_helper_client.swift -o /tmp/teleport-test-privileged-helper-client
-    /tmp/teleport-test-privileged-helper-client
+test-privileged-helper-client: (test-app "privileged-helper-client")
 
 # Test the LaunchDaemon Mach service and explicit legacy reset tooling
-test-mach-service-installation:
-    swiftc {{test_flags}} {{test_sources}} scripts/test_mach_service_installation.swift -o /tmp/teleport-test-mach-service-installation
-    /tmp/teleport-test-mach-service-installation
+test-mach-service-installation: (test-app "mach-service-installation")
 
 # Line coverage of the test scripts over the sources they compile (views and most helper sources are not among them)
 coverage:
     rm -rf "{{coverage_dir}}" && mkdir -p "{{coverage_dir}}"
-    LLVM_PROFILE_FILE="{{coverage_dir}}/%m.profraw" just test_flags="-profile-generate -profile-coverage-mapping" test-core test-subscription-support test-hysteria test-connection-health test-connection-provider test-split-tunneling test-geodata test-persistence test-uplink-reconciliation test-leak-guard test-xpc-protocol test-helper-request-ledger test-helper-command-dispatch test-helper-xpc-endpoint test-xpc-transport test-privileged-helper-client test-mach-service-installation
+    LLVM_PROFILE_FILE="{{coverage_dir}}/%m.profraw" just test_flags="-profile-generate -profile-coverage-mapping" test-app test-hysteria test-leak-guard test-xpc-protocol test-helper-request-ledger test-helper-command-dispatch test-helper-xpc-endpoint test-xpc-transport
     xcrun llvm-profdata merge -sparse "{{coverage_dir}}"/*.profraw -o "{{coverage_dir}}/merged.profdata"
     xcrun llvm-cov report $(for binary in /tmp/teleport-test-*; do printf -- '-object %s ' "$binary"; done) -instr-profile "{{coverage_dir}}/merged.profdata" -ignore-filename-regex='scripts/' | tee "{{coverage_dir}}/report.txt"
 
