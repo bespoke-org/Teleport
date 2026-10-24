@@ -9,7 +9,7 @@ Format is based on [_Keep a changelog_](https://keepachangelog.com) and uses
 - WireGuard connections from `wireguard://` links and `[Interface]` files. Names routed to a peer are resolved through that peer's own DNS servers.
 - Saved connections can be renamed; the name survives subscription refreshes.
 - TUN mode routes IPv6 and DNS through the tunnel. IPv6 is only claimed when the uplink has global IPv6.
-- Leak guard: pf rules keep traffic off the physical uplink while a TUN session is being rebuilt, after a wake or an uplink change. Settings has a switch for it.
+- Leak guard: pf rules keep traffic off the physical uplink while a TUN session is being rebuilt, after a wake or an uplink change. Settings has a switch for it; it is off by default.
 - A TUN session is rebuilt when the machine wakes from sleep or the uplink changes, and torn down by the helper when its Xray exits.
 - A log that outlives the session it describes, readable from the Nerd shit settings page.
 - The menu shows when a connect is installing the helper.

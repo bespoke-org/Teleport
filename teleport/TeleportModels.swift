@@ -837,7 +837,7 @@ struct AppSnapshot: Codable, Equatable {
         splitTunnelProfiles: [SplitTunnelProfile] = [SplitTunnelProfile(name: "Default")],
         selectedSplitTunnelProfileID: UUID? = nil,
         isSplitTunnelEnabled: Bool = false,
-        isLeakGuardEnabled: Bool = true,
+        isLeakGuardEnabled: Bool = false,
         geodataSettings: GeodataSourceSettings = GeodataSourceSettings()
     ) {
         self.savedConnections = savedConnections
@@ -897,8 +897,8 @@ struct AppSnapshot: Codable, Equatable {
         }
 
         isSplitTunnelEnabled = try container.decodeIfPresent(Bool.self, forKey: .isSplitTunnelEnabled) ?? false
-        // A snapshot written before the guard existed gets it on, like a fresh one.
-        isLeakGuardEnabled = try container.decodeIfPresent(Bool.self, forKey: .isLeakGuardEnabled) ?? true
+        // A snapshot written before the guard existed gets it off, like a fresh one.
+        isLeakGuardEnabled = try container.decodeIfPresent(Bool.self, forKey: .isLeakGuardEnabled) ?? false
         geodataSettings = try container.decodeIfPresent(GeodataSourceSettings.self, forKey: .geodataSettings) ?? GeodataSourceSettings()
     }
 }
