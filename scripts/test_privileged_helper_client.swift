@@ -91,7 +91,7 @@ private final class LostStopReplyProxy: NSObject, TUNHelperXPCProtocol, @uncheck
         lock.withLock { statusCalls += 1 }
         do {
             let envelope: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(request)
-            reply(try VerifyPrivilegedHelperClient.response(
+            reply(try TestPrivilegedHelperClient.response(
                 requestID: envelope.requestID,
                 sessionID: sessionID,
                 payload: StatusResponse(helperVersion: "8", phase: .idle, summary: nil, details: nil)
@@ -166,7 +166,7 @@ private final class LostStopReplyConnectionFactory: @unchecked Sendable {
 }
 
 @main
-private enum VerifyPrivilegedHelperClient {
+private enum TestPrivilegedHelperClient {
     static func main() async throws {
         try await verifyDeadlinesPayloadsAndNormalMapping()
         try await verifyCommandSpecificSuccessPayloadValidation()
@@ -182,7 +182,7 @@ private enum VerifyPrivilegedHelperClient {
         try await verifyLostXPCStopReplyDoesNotReplayMutation()
         try await verifyRuntimeResolvesMissingSessionWithoutInventingIdentity()
         try await verifyInvalidStopResponsePreservesCachedState()
-        print("verify_privileged_helper_client: all checks passed")
+        print("test_privileged_helper_client: all checks passed")
     }
 
     private static func verifyDeadlinesPayloadsAndNormalMapping() async throws {

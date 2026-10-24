@@ -4,14 +4,14 @@ import Foundation
 /// Exercising it through a real interface going down is not something a check can
 /// arrange, so the decision itself is a pure function and this covers it directly.
 @main
-struct VerifyUplinkReconciliation {
+struct TestUplinkReconciliation {
     static func main() throws {
         try testUnchangedUplinkKeepsSessionRunning()
         try testMissingUplinkTearsSessionDown()
         try testChangedInterfaceReconnects()
         try testSameInterfaceWithNewRouterReconnects()
         try testUnknownSessionUplinkIsNotTreatedAsAChange()
-        print("verify_uplink_reconciliation: all checks passed")
+        print("test_uplink_reconciliation: all checks passed")
     }
 
     private static let wifi = SystemUplinkInventory.Uplink(interfaceName: "en0", routerAddress: "192.168.1.1")

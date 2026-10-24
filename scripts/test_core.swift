@@ -1,7 +1,7 @@
 import Foundation
 
 @main
-struct VerifyCore {
+struct TestCore {
     static func main() throws {
         try testValidVLESSParsingAndConfigGeneration()
         try testPunycodeHostParsingPreservesASCIIHost()
@@ -20,7 +20,7 @@ struct VerifyCore {
         try testMalformedAndUnsupportedLinks()
         try testRuntimeStartupFailureWithoutBundledBinary()
         try testBundledArtifactVerifierAcceptsExpectedHash()
-        print("verify_core: all checks passed")
+        print("test_core: all checks passed")
     }
 
     private static func testValidVLESSParsingAndConfigGeneration() throws {

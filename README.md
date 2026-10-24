@@ -143,7 +143,7 @@ Formatting follows `.swift-format` (four-space indent, 160 columns). Check with 
 just test
 ```
 
-Checks are standalone Swift programs in `scripts/verify_*.swift`; no XCTest. Run one with `just verify-<name>`. Connecting, helper installation and the leak guard on a real network are tested by hand.
+Checks are standalone Swift programs in `scripts/test_*.swift`; no XCTest. Run one with `just test-<name>`. Connecting, helper installation and the leak guard on a real network are tested by hand.
 
 ## Known limitations
 

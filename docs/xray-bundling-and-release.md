@@ -74,7 +74,7 @@ Run:
 
 ```bash
 just clean
-just verify
+just test
 ```
 
 The suite checks shared protocol bounds/revision, helper ledger and dispatch, authenticated endpoint composition, client transport races, reconciliation behavior, Mach-service plist generation, architecture boundaries, both Debug builds, helper embedding, and signatures covered by the existing flow.

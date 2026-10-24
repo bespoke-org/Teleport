@@ -1,7 +1,7 @@
 import Foundation
 
 @main
-struct VerifyGeodata {
+struct TestGeodata {
     static func main() throws {
         try testGeodataSettingsDefaultsWhenMissing()
         try testGeodataSettingsRoundTrip()
@@ -13,7 +13,7 @@ struct VerifyGeodata {
         try testFormatValidationRejectsUnusablePayloads()
         try testFormatValidationRejectsTheOtherKind()
         try testFormatValidationRejectsOversizedIntegerVarints()
-        print("verify_geodata: all checks passed")
+        print("test_geodata: all checks passed")
     }
 
     /// Redirects the Application Support base directory to a throwaway location so

@@ -5,7 +5,7 @@ import Foundation
 /// is flushed as well: the daemon being booted out cannot release it itself.
 ///
 /// `scripts/uninstall.sh` removes the same set for a machine the app is already
-/// gone from; `verify_mach_service_installation` checks the two agree.
+/// gone from; `test_mach_service_installation` checks the two agree.
 nonisolated struct PrivilegedHelperUninstaller: Sendable {
     private let shellRunner: PrivilegedShellRunner
 

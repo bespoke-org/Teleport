@@ -1,13 +1,13 @@
 import Foundation
 
 @main
-struct VerifyConnectionHealth {
+struct TestConnectionHealth {
     static func main() throws {
         try testHealthMetadataSnapshotRoundTrip()
         try testLegacySnapshotWithoutHealthMetadata()
         try testSubscriptionRefreshPreservesHealthForEquivalentEntry()
         try testScopedWireGuardPeerIsJudgedByItsHandshake()
-        print("verify_connection_health: all checks passed")
+        print("test_connection_health: all checks passed")
     }
 
     /// A WireGuard peer that carries only a few subnets cannot deliver a request

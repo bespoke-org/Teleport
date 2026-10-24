@@ -1,7 +1,7 @@
 import Foundation
 
 @main
-struct VerifySubscriptionSupport {
+struct TestSubscriptionSupport {
     static func main() throws {
         try testXrayJSONSubscription()
         try testMixedJSONAndSkipReasons()
@@ -21,7 +21,7 @@ struct VerifySubscriptionSupport {
         try testDuplicateSubscriptionImportFiltering()
         try testSelectionPreservationAcrossRefresh()
         try testCustomNameSurvivesRefresh()
-        print("verify_subscription_support: all checks passed")
+        print("test_subscription_support: all checks passed")
     }
 
     private static func testXrayJSONSubscription() throws {

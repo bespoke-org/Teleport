@@ -3,7 +3,7 @@
 # gone from. The same removal is available in Settings > General while the app
 # is installed. Paths mirror Shared/PrivilegedHelperConstants.swift and the
 # LaunchDaemon plist in teleport/HelperInstallation/PrivilegedHelperInstaller.swift;
-# scripts/verify_mach_service_installation.swift checks they stay in step.
+# scripts/test_mach_service_installation.swift checks they stay in step.
 set -euo pipefail
 
 if [[ "$(id -u)" -ne 0 ]]; then

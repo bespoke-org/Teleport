@@ -63,7 +63,7 @@ private func requireOffset(of fragment: String, in source: String) throws -> Str
 }
 
 @main
-struct VerifyHelperXPCEndpoint {
+struct TestHelperXPCEndpoint {
     static func main() async throws {
         let mainSource = try String(contentsOfFile: "TeleportPrivilegedHelper/main.swift", encoding: .utf8)
         let authenticatorSource = try String(contentsOfFile: "TeleportPrivilegedHelper/IPC/ClientAuthenticator.swift", encoding: .utf8)
@@ -123,6 +123,6 @@ struct VerifyHelperXPCEndpoint {
         precondition(oversized.error?.localizedDescription.count ?? 0 <= 256)
         precondition(oversized.replyCount == 1)
 
-        print("verify_helper_xpc_endpoint: all checks passed")
+        print("test_helper_xpc_endpoint: all checks passed")
     }
 }

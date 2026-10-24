@@ -5,7 +5,7 @@ private func require(_ condition: @autoclosure () -> Bool, _ message: String) {
 }
 
 @main
-struct VerifyMachServiceInstallation {
+struct TestMachServiceInstallation {
     static func main() throws {
         let plistData = Data(PrivilegedHelperInstaller.launchDaemonPlist().utf8)
         let decoded = try PropertyListSerialization.propertyList(from: plistData, format: nil)
@@ -34,7 +34,7 @@ struct VerifyMachServiceInstallation {
 
         try verifyUninstall(logPath: plist["StandardOutPath"] as? String ?? "")
 
-        print("verify_mach_service_installation: all checks passed")
+        print("test_mach_service_installation: all checks passed")
     }
 
     /// The uninstall has to remove what the install writes, and the standalone
