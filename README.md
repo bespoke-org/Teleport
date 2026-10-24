@@ -10,11 +10,11 @@
   <a href="#buy-us-some-tokens"><img src="https://img.shields.io/badge/donate-USDT-26A17B?logo=tether&logoColor=white" alt="Donate USDT"></a>
 </p>
 
-Teleport is a macOS menu bar client for the [Xray](https://github.com/XTLS/Xray-core) proxy core. It keeps a list of VLESS, Trojan and WireGuard connections, imports them from subscription URLs, and sends traffic through the selected one either by setting the macOS system proxy or by routing the whole machine through a TUN interface.
+Teleport is a macOS menu bar client for the [Xray](https://github.com/XTLS/Xray-core) proxy core. It keeps a list of VLESS, Trojan, Hysteria 2 and WireGuard connections, imports them from subscription URLs, and sends traffic through the selected one either by setting the macOS system proxy or by routing the whole machine through a TUN interface.
 
 ## Features
 
-- Connections from `vless://`, `trojan://` and `wireguard://` links and from WireGuard `[Interface]` configuration files.
+- Connections from `vless://`, `trojan://`, `hysteria2://` (`hy2://`) and `wireguard://` links and from WireGuard `[Interface]` configuration files. Hysteria 2 details are in [docs/hysteria2.md](docs/hysteria2.md).
 - Subscriptions from `http://` and `https://` URLs, with periodic refresh and duplicate filtering.
 - Two connection modes: **System Proxy** (no administrator rights) and **TUN** (the whole machine is routed through a tunnel interface; needs a root helper).
 - Split tunneling: rules by domain, IP range, geosite category or geoip country, grouped in named profiles. A rule can send its traffic through a different saved connection, so one session can dial several servers.
