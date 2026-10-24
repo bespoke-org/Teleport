@@ -48,12 +48,6 @@ Without a `DEVELOPMENT_TEAM` the build is signed ad hoc. System Proxy mode works
 
 On first launch the app has no connections. Add a link or a subscription URL in Settings > Connections. The same page can add two community subscription lists that ship with the app (`packaging/bundled-connections.json`, from [igareck/vpn-configs-for-russia](https://github.com/igareck/vpn-configs-for-russia)). They are not added on their own: the servers in those lists are run by people nobody here knows, and everything sent through them can be read or altered by whoever operates them.
 
-## Subscription formats
-
-Subscriptions accept newline-separated VLESS/Trojan links, Base64-encoded lists, and Xray JSON containing one profile or an array of profiles. JSON import supports a single VLESS/Trojan proxy outbound per profile with connection and transport settings Teleport can preserve. Imported connections retain their identity across JSON key-order and whitespace changes.
-
-Teleport imports server settings and uses its own listeners, DNS, and routing. Provider `inbounds`, `dns`, and ordinary routing rules are not applied. Balancers, outbound chains, multiple proxy outbounds, unsupported protocols, and unrepresentable transport settings such as `xhttpSettings.extra` are skipped with reasons shown under the subscription in Connections. A mixed subscription can import its supported profiles; an entirely unsupported response leaves existing saved connections intact and explains the failure.
-
 ## Connection modes
 
 ### System Proxy
