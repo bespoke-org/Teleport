@@ -162,14 +162,14 @@ struct VerifySubscriptionSupport {
         let saved = SavedConnection(
             id: connectionID, configuration: initial.importedEntries[0].configuration, savedAt: Date(timeIntervalSince1970: 100),
             source: ConnectionSourceMetadata(subscriptionSourceID: sourceID, subscriptionEntryID: initial.importedEntries[0].sourceEntryID),
-            customName: "My Liberty server"
+            customName: "My saved server"
         )
         let replacement = SubscriptionConnectionReconciler().reconcile(
             existingConnections: [saved], sourceID: sourceID, selectedConnectionID: connectionID,
             importedEntries: refreshed.importedEntries, fetchedAt: Date(), autoSelectFirstImported: false
         )
         precondition(replacement.selectedConnectionID == connectionID)
-        precondition(replacement.savedConnections[0].customName == "My Liberty server")
+        precondition(replacement.savedConnections[0].customName == "My saved server")
         precondition(replacement.savedConnections[0].savedAt == saved.savedAt)
         let encoded = try JSONEncoder().encode(replacement.savedConnections[0])
         let restored = try JSONDecoder().decode(SavedConnection.self, from: encoded)

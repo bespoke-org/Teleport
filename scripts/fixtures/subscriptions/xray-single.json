@@ -1,5 +1,5 @@
 {
-  "remarks": "Sanitized Liberty profile",
+  "remarks": "Example VLESS profile",
   "log": { "loglevel": "warning" },
   "inbounds": [{ "tag": "local", "protocol": "socks", "port": 10808 }],
   "dns": { "servers": ["1.1.1.1"] },

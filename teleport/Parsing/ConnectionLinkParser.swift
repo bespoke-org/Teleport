@@ -116,8 +116,6 @@ struct ConnectionLinkParser {
         let base = try parseBase(rawLink, components: components)
         let query = try queryDictionary(from: components)
 
-        // URLComponents has already percent-decoded user info. Decoding twice
-        // corrupts literal percent sequences in passwords imported from JSON.
         guard let password = components.user, !password.isEmpty else {
             throw ConfigurationError.missingPassword
         }
