@@ -1862,9 +1862,9 @@ final class AppViewModel: ObservableObject {
                     throw SubscriptionError.invalidURL
                 }
 
-                let links = try await subscriptionClient.fetchCandidateLinks(from: url)
-                let importResult = try Self.importSubscriptionEntries(
-                    links: links,
+                let candidates = try await subscriptionClient.fetchCandidates(from: url)
+                let importResult = try SubscriptionImportProcessor.importEntries(
+                    candidates: candidates,
                     parser: parser,
                     sourceID: source.id,
                     filterDuplicateImports: source.filterDuplicateImports
@@ -1873,6 +1873,7 @@ final class AppViewModel: ObservableObject {
                 self?.applyImportedEntries(
                     importResult.importedEntries,
                     skippedCount: importResult.skippedCount,
+                    importStatus: importResult.statusMessage,
                     to: source.id,
                     fetchedAt: Date(),
                     autoSelectFirstImported: autoSelectFirstImported
@@ -1905,6 +1906,7 @@ final class AppViewModel: ObservableObject {
     private func applyImportedEntries(
         _ importedEntries: [ImportedSubscriptionEntry],
         skippedCount: Int,
+        importStatus: String?,
         to sourceID: UUID,
         fetchedAt: Date,
         autoSelectFirstImported: Bool
@@ -1944,7 +1946,7 @@ final class AppViewModel: ObservableObject {
         updateSubscriptionSource(sourceID) {
             $0.lastRefreshedAt = fetchedAt
             $0.lastSkippedCount = skippedCount
-            $0.lastError = skippedCount > 0 ? "Skipped \(skippedCount) unsupported entries during last refresh" : nil
+            $0.lastError = importStatus
         }
 
         refreshingSubscriptionIDs.remove(sourceID)

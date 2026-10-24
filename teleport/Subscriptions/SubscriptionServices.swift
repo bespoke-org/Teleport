@@ -1,11 +1,22 @@
 import Foundation
 
-struct SubscriptionImportResult {
+nonisolated struct SubscriptionImportResult {
     let importedEntries: [ImportedSubscriptionEntry]
-    let skippedCount: Int
+    let skippedReasons: [String: Int]
+
+    var skippedCount: Int { skippedReasons.values.reduce(0, +) }
+
+    var skipSummary: String {
+        skippedReasons.sorted { $0.key < $1.key }.map { "\($0.value) × \($0.key)" }.joined(separator: "; ")
+    }
+
+    var statusMessage: String? {
+        guard skippedCount > 0 else { return nil }
+        return "Imported \(importedEntries.count), skipped \(skippedCount). \(skipSummary)"
+    }
 }
 
-struct ImportedSubscriptionEntry {
+nonisolated struct ImportedSubscriptionEntry {
     let sourceEntryID: String
     let configuration: ConnectionConfiguration
 }
@@ -100,7 +111,7 @@ struct SubscriptionConnectionReconciler {
 }
 
 struct SubscriptionClient {
-    func fetchCandidateLinks(from url: URL) async throws -> [String] {
+    func fetchCandidates(from url: URL) async throws -> [SubscriptionCandidate] {
         let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
         let session = URLSession(configuration: .ephemeral)
         defer { session.finishTasksAndInvalidate() }
@@ -129,35 +140,6 @@ struct SubscriptionClient {
             throw SubscriptionError.emptyPayload
         }
 
-        let rawText = String(decoding: responseData, as: UTF8.self)
-        let directLinks = extractCandidateLinks(from: rawText)
-        if !directLinks.isEmpty {
-            return directLinks
-        }
-
-        let compactBase64 = rawText
-            .components(separatedBy: .whitespacesAndNewlines)
-            .joined()
-
-        if let decodedData = Data(base64Encoded: compactBase64, options: [.ignoreUnknownCharacters]) {
-            let decodedText = String(decoding: decodedData, as: UTF8.self)
-            let decodedLinks = extractCandidateLinks(from: decodedText)
-            if !decodedLinks.isEmpty {
-                return decodedLinks
-            }
-        }
-
-        throw SubscriptionError.noSupportedEntries
-    }
-
-    private func extractCandidateLinks(from text: String) -> [String] {
-        text
-            .split(whereSeparator: { $0.isNewline })
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .filter { value in
-                let lowercased = value.lowercased()
-                return lowercased.hasPrefix("vless://") || lowercased.hasPrefix("trojan://")
-            }
+        return try SubscriptionPayloadDecoder().decode(responseData)
     }
 }
