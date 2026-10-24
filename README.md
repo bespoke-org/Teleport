@@ -65,6 +65,14 @@ DNS is answered by Xray inside the tunnel; the helper publishes a resolver entry
 
 If another VPN owns the default `utun` route, Teleport refuses to start TUN mode. Disconnect it first, or use System Proxy mode.
 
+#### Leak guard (optional, off by default)
+
+Settings > General > Leak guard. When on, a pf ruleset (anchor `com.apple/dev.x.teleport`) drops any outbound traffic that would bypass the tunnel.
+
+- Allowed: loopback, the tunnel interface, DHCP, local and link-local destinations, DNS (ports 53 and 853), the servers of the current session, and root processes (Xray's `direct` outbound runs as root).
+- Everything else outbound, IPv4 and IPv6, is dropped. Inbound traffic is not filtered.
+- The guard is held on a lease: the app renews it every 45 seconds, the helper releases it after 180 seconds without renewal. A crashed app leaves the machine offline for at most three minutes. The helper also releases a guard it finds at its own start.
+
 ## Security model
 
 ### What runs as root
@@ -74,14 +82,6 @@ TUN mode installs a LaunchDaemon (`dev.x.teleport.PrivilegedHelper`) that runs a
 - It can only: report status, start or stop a session, read its own logs, engage or release the leak guard.
 - Starting a session runs the root copy of Xray with the configuration the app sends, installs the routes above and publishes the DNS entry. The app passes data, never commands.
 - It talks only to this app: the caller must be the user at the console and signed with the same Team ID as the helper.
-
-### Leak guard (optional, off by default)
-
-Settings > General > Leak guard. When on, a pf ruleset (anchor `com.apple/dev.x.teleport`) drops any outbound traffic that would bypass the tunnel while TUN mode is active.
-
-- Allowed: loopback, the tunnel interface, DHCP, local and link-local destinations, DNS (ports 53 and 853), the servers of the current session, and root processes (Xray's `direct` outbound runs as root).
-- Everything else outbound, IPv4 and IPv6, is dropped. Inbound traffic is not filtered.
-- The guard is held on a lease: the app renews it every 45 seconds, the helper releases it after 180 seconds without renewal. A crashed app leaves the machine offline for at most three minutes. The helper also releases a guard it finds at its own start.
 
 ### Stored data
 
