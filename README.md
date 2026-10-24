@@ -1,8 +1,21 @@
 # Teleport
 
+[![Buy us some tokens](https://img.shields.io/badge/buy%20us%20some%20tokens-USDT-26A17B)](#buy-us-some-tokens)
+
 Teleport is a macOS menu bar client for the [Xray](https://github.com/XTLS/Xray-core) proxy core. It keeps a list of VLESS, Trojan and WireGuard connections, imports them from subscription URLs, and sends traffic through the selected one either by setting the macOS system proxy or by routing the whole machine through a TUN interface.
 
 <!-- Screenshot: the menu bar popover with the connection picker and the connect button. Add the image as docs/screenshot-menu.png and reference it here. -->
+
+## Buy us some tokens
+
+Despite much of Teleport's code being written by LLMs, we usually read the code they produce, and keeping the project working takes our time and attention.
+
+You can support us with USDT. Check the network before sending: a transfer on a network not listed here can be lost.
+
+| Network | Address |
+|---|---|
+| TRON (TRC20) | `TFKx2Mhwqkx94LSq9zbYAXj27yxPcTwqG1` |
+| Ethereum (ERC20), BNB Chain (BEP20) | `0xe87761Cc781270389D2F55e2c7bA64E2cebb78E2` |
 
 ## Features
 
