@@ -3,7 +3,6 @@ import Foundation
 /// The rule a running session is reconciled against when the network path changes.
 /// Exercising it through a real interface going down is not something a check can
 /// arrange, so the decision itself is a pure function and this covers it directly.
-@main
 struct TestUplinkReconciliation {
     static func main() throws {
         try testUnchangedUplinkKeepsSessionRunning()

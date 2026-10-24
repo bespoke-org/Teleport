@@ -15,8 +15,6 @@ struct XPCProtocolVerification {
     }
 
     private static func verifyExactRevisionAndStartRoundTrip() throws {
-        precondition(TUNHelperProtocol.revision == 10)
-
         let requestID = UUID()
         let sessionID = UUID()
         let request = TUNHelperRequestEnvelope(

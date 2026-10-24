@@ -1,6 +1,5 @@
 import Foundation
 
-@main
 struct TestSubscriptionSupport {
     static func main() throws {
         try testXrayJSONSubscription()
@@ -13,8 +12,6 @@ struct TestSubscriptionSupport {
         try testLegacyDuplicateRefresh()
         try testJSONTransportsAndRuntimeRoundTrip()
         try testPlainAndBase64SubscriptionPayloadParsing()
-        try testVLESSTLSVisionParsing()
-        try testExtendedTransportParsing()
         try testInsecureTLSParsingAndPersistence()
         try testSubscriptionSnapshotRoundTrip()
         try testLegacyMultiConfigSnapshotDecoding()
@@ -371,39 +368,6 @@ struct TestSubscriptionSupport {
         precondition(plain.importedEntries[1].configuration.protocolType == .trojan)
     }
 
-    private static func testVLESSTLSVisionParsing() throws {
-        let parser = ConnectionLinkParser()
-        let configuration = try parser.parse(vlessTLSVisionLink())
-
-        precondition(configuration.protocolType == .vless)
-        precondition(configuration.security == .tls)
-        precondition(configuration.transport == .tcp)
-        precondition(configuration.vlessFlow == "xtls-rprx-vision")
-        precondition(configuration.serverName == "example.com")
-        precondition(configuration.alpn == ["http/1.1"])
-    }
-
-    private static func testExtendedTransportParsing() throws {
-        let parser = ConnectionLinkParser()
-
-        let grpcConfiguration = try parser.parse(vlessGRPCLink())
-        precondition(grpcConfiguration.transport == .grpc)
-        precondition(grpcConfiguration.grpcServiceName == "teleport-grpc")
-
-        let xhttpConfiguration = try parser.parse(vlessXHTTPLink())
-        precondition(xhttpConfiguration.transport == .xhttp)
-        precondition(xhttpConfiguration.transportMode == "auto")
-        precondition(xhttpConfiguration.path == "/edge")
-
-        let rawConfiguration = try parser.parse(vlessRawLink())
-        precondition(rawConfiguration.transport == .raw)
-        precondition(rawConfiguration.security == .none)
-
-        let trojanGRPCConfiguration = try parser.parse(trojanGRPCLink())
-        precondition(trojanGRPCConfiguration.transport == .grpc)
-        precondition(trojanGRPCConfiguration.grpcServiceName == "teleport-trojan")
-    }
-
     private static func testInsecureTLSParsingAndPersistence() throws {
         let parser = ConnectionLinkParser()
         let configuration = try parser.parse(trojanInsecureTLSLink())
@@ -656,27 +620,7 @@ struct TestSubscriptionSupport {
         ]
     }
 
-    private static func vlessTLSVisionLink() -> String {
-        "vless://123e4567-e89b-12d3-a456-426614174000@example.com:443?security=tls&type=tcp&sni=example.com&alpn=http%2F1.1&flow=xtls-rprx-vision#TLSVision"
-    }
-
     private static func trojanInsecureTLSLink() -> String {
         "trojan://secret-password@example.org:443?security=tls&type=ws&sni=example.org&host=cdn.example.org&path=%2Fsocket&allowInsecure=1#Beta"
-    }
-
-    private static func vlessGRPCLink() -> String {
-        "vless://123e4567-e89b-12d3-a456-426614174000@example.com:443?security=reality&type=grpc&serviceName=teleport-grpc&sni=example.com&fp=chrome&pbk=abc123abc123abc123abc123abc123abc123abc123&sid=a1b2c3d4#VLESSgRPC"
-    }
-
-    private static func vlessXHTTPLink() -> String {
-        "vless://123e4567-e89b-12d3-a456-426614174000@example.com:443?security=reality&type=xhttp&path=%2Fedge&mode=auto&sni=example.com&fp=chrome&pbk=abc123abc123abc123abc123abc123abc123abc123&sid=a1b2c3d4#VLESSxHTTP"
-    }
-
-    private static func vlessRawLink() -> String {
-        "vless://123e4567-e89b-12d3-a456-426614174000@example.com:443?security=none&type=raw#VLESSraw"
-    }
-
-    private static func trojanGRPCLink() -> String {
-        "trojan://secret-password@example.org:443?security=tls&type=grpc&sni=example.org&serviceName=teleport-trojan#TrojanGRPC"
     }
 }

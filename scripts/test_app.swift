@@ -1,0 +1,29 @@
+import Foundation
+
+// The scripts that need the app sources are compiled into one binary, so the sources are
+// compiled once. Arguments name the suites to run (e.g. `core`); without them all run.
+@main
+struct TestApp {
+    static func main() async throws {
+        let suites: [(name: String, run: () async throws -> Void)] = [
+            ("core", { try TestCore.main() }),
+            ("subscription-support", { try TestSubscriptionSupport.main() }),
+            ("connection-health", { try TestConnectionHealth.main() }),
+            ("connection-provider", { try await TestConnectionProvider.main() }),
+            ("split-tunneling", { try TestSplitTunneling.main() }),
+            ("geodata", { try TestGeodata.main() }),
+            ("persistence", { try TestPersistence.main() }),
+            ("uplink-reconciliation", { try TestUplinkReconciliation.main() }),
+            ("privileged-helper-client", { try await TestPrivilegedHelperClient.main() }),
+            ("mach-service-installation", { try TestMachServiceInstallation.main() }),
+        ]
+        let names = Array(CommandLine.arguments.dropFirst())
+        for name in names where !suites.contains(where: { $0.name == name }) {
+            fputs("Unknown suite \(name); known: \(suites.map(\.name).joined(separator: " "))\n", stderr)
+            exit(2)
+        }
+        for suite in suites where names.isEmpty || names.contains(suite.name) {
+            try await suite.run()
+        }
+    }
+}
