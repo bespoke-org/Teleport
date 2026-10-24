@@ -15,12 +15,12 @@ struct XPCProtocolVerification {
     }
 
     private static func verifyExactRevisionAndStartRoundTrip() throws {
-        precondition(VPNHelperProtocol.revision == 10)
+        precondition(TUNHelperProtocol.revision == 10)
 
         let requestID = UUID()
         let sessionID = UUID()
-        let request = VPNHelperRequestEnvelope(
-            revision: VPNHelperProtocol.revision,
+        let request = TUNHelperRequestEnvelope(
+            revision: TUNHelperProtocol.revision,
             requestID: requestID,
             sessionID: sessionID,
             payload: StartSessionRequest(
@@ -32,8 +32,8 @@ struct XPCProtocolVerification {
                 outboundInterface: "en0"
             )
         )
-        let encoded = try VPNHelperCodec.encodeRequest(request)
-        let decoded: VPNHelperRequestEnvelope<StartSessionRequest> = try VPNHelperCodec.decodeRequest(encoded)
+        let encoded = try TUNHelperCodec.encodeRequest(request)
+        let decoded: TUNHelperRequestEnvelope<StartSessionRequest> = try TUNHelperCodec.decodeRequest(encoded)
         precondition(decoded == request)
     }
 
@@ -41,8 +41,8 @@ struct XPCProtocolVerification {
     /// carries no session identifier, and its lease is bounded so a client cannot
     /// ask for one it never has to renew.
     private static func verifyLeakGuardRoundTripAndBounds() throws {
-        let request = VPNHelperRequestEnvelope(
-            revision: VPNHelperProtocol.revision,
+        let request = TUNHelperRequestEnvelope(
+            revision: TUNHelperProtocol.revision,
             requestID: UUID(),
             sessionID: nil,
             payload: EngageLeakGuardRequest(
@@ -51,67 +51,67 @@ struct XPCProtocolVerification {
                 leaseSeconds: 180
             )
         )
-        let encoded = try VPNHelperCodec.encodeRequest(request)
-        let decoded: VPNHelperRequestEnvelope<EngageLeakGuardRequest> = try VPNHelperCodec.decodeRequest(encoded)
+        let encoded = try TUNHelperCodec.encodeRequest(request)
+        let decoded: TUNHelperRequestEnvelope<EngageLeakGuardRequest> = try TUNHelperCodec.decodeRequest(encoded)
         precondition(decoded == request)
 
         // A standby guard has no tunnel yet, which is the state it exists for.
-        let standby = VPNHelperRequestEnvelope(
-            revision: VPNHelperProtocol.revision,
+        let standby = TUNHelperRequestEnvelope(
+            revision: TUNHelperProtocol.revision,
             requestID: UUID(),
             sessionID: nil,
             payload: EngageLeakGuardRequest(tunnelInterfaceName: nil, protectedHosts: [], leaseSeconds: 60)
         )
-        precondition((try? VPNHelperCodec.encodeRequest(standby)) != nil, "a standby guard request must encode")
+        precondition((try? TUNHelperCodec.encodeRequest(standby)) != nil, "a standby guard request must encode")
 
-        let sessionScoped = VPNHelperRequestEnvelope(
-            revision: VPNHelperProtocol.revision,
+        let sessionScoped = TUNHelperRequestEnvelope(
+            revision: TUNHelperProtocol.revision,
             requestID: UUID(),
             sessionID: UUID(),
             payload: EngageLeakGuardRequest(tunnelInterfaceName: "utun9", protectedHosts: [], leaseSeconds: 60)
         )
-        precondition((try? VPNHelperCodec.encodeRequest(sessionScoped)) == nil, "a guard request must not carry a session identifier")
+        precondition((try? TUNHelperCodec.encodeRequest(sessionScoped)) == nil, "a guard request must not carry a session identifier")
 
-        let unbounded = VPNHelperRequestEnvelope(
-            revision: VPNHelperProtocol.revision,
+        let unbounded = TUNHelperRequestEnvelope(
+            revision: TUNHelperProtocol.revision,
             requestID: UUID(),
             sessionID: nil,
             payload: EngageLeakGuardRequest(
                 tunnelInterfaceName: nil,
                 protectedHosts: [],
-                leaseSeconds: VPNHelperProtocol.maximumLeakGuardLeaseSeconds + 1
+                leaseSeconds: TUNHelperProtocol.maximumLeakGuardLeaseSeconds + 1
             )
         )
-        precondition((try? VPNHelperCodec.encodeRequest(unbounded)) == nil, "a lease beyond the protocol limit must be rejected")
+        precondition((try? TUNHelperCodec.encodeRequest(unbounded)) == nil, "a lease beyond the protocol limit must be rejected")
     }
 
     private static func verifyAllResponseRoundTrips() throws {
         let requestID = UUID()
         let sessionID = UUID()
 
-        try roundTrip(VPNHelperResponseEnvelope(
-            revision: VPNHelperProtocol.revision,
+        try roundTrip(TUNHelperResponseEnvelope(
+            revision: TUNHelperProtocol.revision,
             requestID: requestID,
             sessionID: sessionID,
             payload: StatusResponse(helperVersion: "8", phase: .running, summary: "Running", details: nil),
             failure: nil
         ))
-        try roundTrip(VPNHelperResponseEnvelope(
-            revision: VPNHelperProtocol.revision,
+        try roundTrip(TUNHelperResponseEnvelope(
+            revision: TUNHelperProtocol.revision,
             requestID: requestID,
             sessionID: sessionID,
             payload: StartSessionResponse(phase: .running, summary: "Started", details: nil),
             failure: nil
         ))
-        try roundTrip(VPNHelperResponseEnvelope(
-            revision: VPNHelperProtocol.revision,
+        try roundTrip(TUNHelperResponseEnvelope(
+            revision: TUNHelperProtocol.revision,
             requestID: requestID,
             sessionID: sessionID,
             payload: StopSessionResponse(phase: .idle, summary: "Stopped", details: nil),
             failure: nil
         ))
-        try roundTrip(VPNHelperResponseEnvelope(
-            revision: VPNHelperProtocol.revision,
+        try roundTrip(TUNHelperResponseEnvelope(
+            revision: TUNHelperProtocol.revision,
             requestID: requestID,
             sessionID: nil,
             payload: DiagnosticsResponse(
@@ -125,21 +125,21 @@ struct XPCProtocolVerification {
     }
 
     private static func verifyStructuredFailureRoundTripsWithoutSessionIDs() throws {
-        let failure = VPNHelperProtocolFailure(
+        let failure = TUNHelperProtocolFailure(
             code: .commandFailed,
             summary: "Command failed",
             details: "Xray exited",
             retryDisposition: .never
         )
-        try roundTrip(VPNHelperResponseEnvelope<StartSessionResponse>(
-            revision: VPNHelperProtocol.revision,
+        try roundTrip(TUNHelperResponseEnvelope<StartSessionResponse>(
+            revision: TUNHelperProtocol.revision,
             requestID: UUID(),
             sessionID: nil,
             payload: nil,
             failure: failure
         ))
-        try roundTrip(VPNHelperResponseEnvelope<StopSessionResponse>(
-            revision: VPNHelperProtocol.revision,
+        try roundTrip(TUNHelperResponseEnvelope<StopSessionResponse>(
+            revision: TUNHelperProtocol.revision,
             requestID: UUID(),
             sessionID: nil,
             payload: nil,
@@ -148,21 +148,21 @@ struct XPCProtocolVerification {
     }
 
     private static func verifyRevisionRejection() throws {
-        let request = VPNHelperRequestEnvelope(
-            revision: VPNHelperProtocol.revision + 1,
+        let request = TUNHelperRequestEnvelope(
+            revision: TUNHelperProtocol.revision + 1,
             requestID: UUID(),
             sessionID: nil,
             payload: StatusRequest()
         )
         let rawData = try JSONEncoder().encode(request)
         expectFailure(.incompatibleService) {
-            let _: VPNHelperRequestEnvelope<StatusRequest> = try VPNHelperCodec.decodeRequest(rawData)
+            let _: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(rawData)
         }
     }
 
     private static func verifyRequestSessionValidation() throws {
-        expectRequestSessionFailure(VPNHelperRequestEnvelope(
-            revision: VPNHelperProtocol.revision,
+        expectRequestSessionFailure(TUNHelperRequestEnvelope(
+            revision: TUNHelperProtocol.revision,
             requestID: UUID(),
             sessionID: nil,
             payload: StartSessionRequest(
@@ -174,8 +174,8 @@ struct XPCProtocolVerification {
                 outboundInterface: "en0"
             )
         ))
-        expectRequestSessionFailure(VPNHelperRequestEnvelope(
-            revision: VPNHelperProtocol.revision,
+        expectRequestSessionFailure(TUNHelperRequestEnvelope(
+            revision: TUNHelperProtocol.revision,
             requestID: UUID(),
             sessionID: nil,
             payload: StopSessionRequest(
@@ -184,14 +184,14 @@ struct XPCProtocolVerification {
                 outboundInterface: "en0"
             )
         ))
-        expectRequestSessionFailure(VPNHelperRequestEnvelope(
-            revision: VPNHelperProtocol.revision,
+        expectRequestSessionFailure(TUNHelperRequestEnvelope(
+            revision: TUNHelperProtocol.revision,
             requestID: UUID(),
             sessionID: UUID(),
             payload: StatusRequest()
         ))
-        expectRequestSessionFailure(VPNHelperRequestEnvelope(
-            revision: VPNHelperProtocol.revision,
+        expectRequestSessionFailure(TUNHelperRequestEnvelope(
+            revision: TUNHelperProtocol.revision,
             requestID: UUID(),
             sessionID: UUID(),
             payload: ReadDiagnosticsRequest(log: .xray, maximumBytes: 1_024)
@@ -199,28 +199,28 @@ struct XPCProtocolVerification {
     }
 
     private static func verifyConfigurationBounds() throws {
-        let accepted = startRequest(configData: Data(repeating: 0x61, count: VPNHelperProtocol.maximumConfigurationBytes))
-        _ = try VPNHelperCodec.encodeRequest(accepted)
+        let accepted = startRequest(configData: Data(repeating: 0x61, count: TUNHelperProtocol.maximumConfigurationBytes))
+        _ = try TUNHelperCodec.encodeRequest(accepted)
 
-        let rejected = startRequest(configData: Data(repeating: 0x61, count: VPNHelperProtocol.maximumConfigurationBytes + 1))
+        let rejected = startRequest(configData: Data(repeating: 0x61, count: TUNHelperProtocol.maximumConfigurationBytes + 1))
         expectFailure(.payloadTooLarge) {
-            _ = try VPNHelperCodec.encodeRequest(rejected)
+            _ = try TUNHelperCodec.encodeRequest(rejected)
         }
     }
 
     private static func verifyDiagnosticsBounds() throws {
-        let accepted = diagnosticsResponse(textBytes: VPNHelperProtocol.maximumDiagnosticsBytes)
-        _ = try VPNHelperCodec.encodeResponse(accepted)
+        let accepted = diagnosticsResponse(textBytes: TUNHelperProtocol.maximumDiagnosticsBytes)
+        _ = try TUNHelperCodec.encodeResponse(accepted)
 
-        let rejected = diagnosticsResponse(textBytes: VPNHelperProtocol.maximumDiagnosticsBytes + 1)
+        let rejected = diagnosticsResponse(textBytes: TUNHelperProtocol.maximumDiagnosticsBytes + 1)
         expectFailure(.payloadTooLarge) {
-            _ = try VPNHelperCodec.encodeResponse(rejected)
+            _ = try TUNHelperCodec.encodeResponse(rejected)
         }
     }
 
-    private static func startRequest(configData: Data) -> VPNHelperRequestEnvelope<StartSessionRequest> {
-        VPNHelperRequestEnvelope(
-            revision: VPNHelperProtocol.revision,
+    private static func startRequest(configData: Data) -> TUNHelperRequestEnvelope<StartSessionRequest> {
+        TUNHelperRequestEnvelope(
+            revision: TUNHelperProtocol.revision,
             requestID: UUID(),
             sessionID: UUID(),
             payload: StartSessionRequest(
@@ -234,9 +234,9 @@ struct XPCProtocolVerification {
         )
     }
 
-    private static func diagnosticsResponse(textBytes: Int) -> VPNHelperResponseEnvelope<DiagnosticsResponse> {
-        VPNHelperResponseEnvelope(
-            revision: VPNHelperProtocol.revision,
+    private static func diagnosticsResponse(textBytes: Int) -> TUNHelperResponseEnvelope<DiagnosticsResponse> {
+        TUNHelperResponseEnvelope(
+            revision: TUNHelperProtocol.revision,
             requestID: UUID(),
             sessionID: nil,
             payload: DiagnosticsResponse(
@@ -249,18 +249,18 @@ struct XPCProtocolVerification {
         )
     }
 
-    private static func roundTrip<Payload>(_ response: VPNHelperResponseEnvelope<Payload>) throws
+    private static func roundTrip<Payload>(_ response: TUNHelperResponseEnvelope<Payload>) throws
     where Payload: Codable & Sendable & Equatable {
-        let encoded = try VPNHelperCodec.encodeResponse(response)
-        let decoded: VPNHelperResponseEnvelope<Payload> = try VPNHelperCodec.decodeResponse(encoded)
+        let encoded = try TUNHelperCodec.encodeResponse(response)
+        let decoded: TUNHelperResponseEnvelope<Payload> = try TUNHelperCodec.decodeResponse(encoded)
         precondition(decoded == response)
     }
 
     private static func expectRequestSessionFailure<Payload>(
-        _ request: VPNHelperRequestEnvelope<Payload>
+        _ request: TUNHelperRequestEnvelope<Payload>
     ) where Payload: Codable & Sendable & Equatable {
         expectFailure(.malformedPayload) {
-            _ = try VPNHelperCodec.encodeRequest(request)
+            _ = try TUNHelperCodec.encodeRequest(request)
         }
 
         let rawData: Data
@@ -270,18 +270,18 @@ struct XPCProtocolVerification {
             preconditionFailure("Could not create malformed request fixture: \(error)")
         }
         expectFailure(.malformedPayload) {
-            let _: VPNHelperRequestEnvelope<Payload> = try VPNHelperCodec.decodeRequest(rawData)
+            let _: TUNHelperRequestEnvelope<Payload> = try TUNHelperCodec.decodeRequest(rawData)
         }
     }
 
     private static func expectFailure(
-        _ code: VPNHelperFailureCode,
+        _ code: TUNHelperFailureCode,
         operation: () throws -> Void
     ) {
         do {
             try operation()
             preconditionFailure("Expected protocol failure \(code.rawValue)")
-        } catch let failure as VPNHelperProtocolFailure {
+        } catch let failure as TUNHelperProtocolFailure {
             precondition(failure.code == code)
         } catch {
             preconditionFailure("Unexpected error: \(error)")

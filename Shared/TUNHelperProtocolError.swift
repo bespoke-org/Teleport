@@ -1,10 +1,10 @@
 import Foundation
 
-nonisolated protocol VPNHelperClientPresentableError: Error, Sendable {
+nonisolated protocol TUNHelperClientPresentableError: Error, Sendable {
     var clientSummary: String { get }
 }
 
-nonisolated enum VPNHelperFailureCode: String, Codable, Sendable {
+nonisolated enum TUNHelperFailureCode: String, Codable, Sendable {
     case incompatibleService
     case malformedPayload
     case payloadTooLarge
@@ -18,37 +18,37 @@ nonisolated enum VPNHelperFailureCode: String, Codable, Sendable {
     case indeterminate
 }
 
-nonisolated enum VPNHelperRetryDisposition: String, Codable, Sendable {
+nonisolated enum TUNHelperRetryDisposition: String, Codable, Sendable {
     case never
     case reconnectAndQueryStatus
     case reinstallService
 }
 
-nonisolated struct VPNHelperProtocolFailure: Codable, Sendable, Equatable, Error {
-    let code: VPNHelperFailureCode
+nonisolated struct TUNHelperProtocolFailure: Codable, Sendable, Equatable, Error {
+    let code: TUNHelperFailureCode
     let summary: String
     let details: String?
-    let retryDisposition: VPNHelperRetryDisposition
+    let retryDisposition: TUNHelperRetryDisposition
 }
 
-private nonisolated enum VPNHelperSessionRequirement {
+private nonisolated enum TUNHelperSessionRequirement {
     case absent
     case required
     case optional
 }
 
-private nonisolated protocol VPNHelperPayloadValidating {
-    static var sessionRequirement: VPNHelperSessionRequirement { get }
+private nonisolated protocol TUNHelperPayloadValidating {
+    static var sessionRequirement: TUNHelperSessionRequirement { get }
     func validate() throws
 }
 
-extension StatusRequest: VPNHelperPayloadValidating {
-    fileprivate static let sessionRequirement: VPNHelperSessionRequirement = .absent
+extension StatusRequest: TUNHelperPayloadValidating {
+    fileprivate static let sessionRequirement: TUNHelperSessionRequirement = .absent
     fileprivate func validate() throws {}
 }
 
-extension StartSessionRequest: VPNHelperPayloadValidating {
-    fileprivate static let sessionRequirement: VPNHelperSessionRequirement = .required
+extension StartSessionRequest: TUNHelperPayloadValidating {
+    fileprivate static let sessionRequirement: TUNHelperSessionRequirement = .required
 
     fileprivate func validate() throws {
         try validateStateDirectoryPath(stateDirectoryPath)
@@ -60,13 +60,13 @@ extension StartSessionRequest: VPNHelperPayloadValidating {
         guard !configData.isEmpty else {
             throw protocolFailure(.malformedPayload, "The Xray configuration is empty")
         }
-        guard configData.count <= VPNHelperProtocol.maximumConfigurationBytes else {
+        guard configData.count <= TUNHelperProtocol.maximumConfigurationBytes else {
             throw protocolFailure(.payloadTooLarge, "The Xray configuration exceeds the protocol limit")
         }
         guard !protectedHosts.isEmpty else {
             throw protocolFailure(.malformedPayload, "The session has no protected hosts")
         }
-        guard protectedHosts.count <= VPNHelperProtocol.maximumProtectedHosts else {
+        guard protectedHosts.count <= TUNHelperProtocol.maximumProtectedHosts else {
             throw protocolFailure(.payloadTooLarge, "The session exceeds the protected host limit")
         }
         for protectedHost in protectedHosts {
@@ -77,13 +77,13 @@ extension StartSessionRequest: VPNHelperPayloadValidating {
     }
 }
 
-extension StopSessionRequest: VPNHelperPayloadValidating {
-    fileprivate static let sessionRequirement: VPNHelperSessionRequirement = .required
+extension StopSessionRequest: TUNHelperPayloadValidating {
+    fileprivate static let sessionRequirement: TUNHelperSessionRequirement = .required
 
     fileprivate func validate() throws {
         try validateStateDirectoryPath(stateDirectoryPath)
         if let protectedHosts {
-            guard protectedHosts.count <= VPNHelperProtocol.maximumProtectedHosts else {
+            guard protectedHosts.count <= TUNHelperProtocol.maximumProtectedHosts else {
                 throw protocolFailure(.payloadTooLarge, "The session exceeds the protected host limit")
             }
             for protectedHost in protectedHosts {
@@ -96,52 +96,52 @@ extension StopSessionRequest: VPNHelperPayloadValidating {
     }
 }
 
-extension EngageLeakGuardRequest: VPNHelperPayloadValidating {
+extension EngageLeakGuardRequest: TUNHelperPayloadValidating {
     // The guard is not tied to one session: it is held across the teardown and
     // rebuild that a session change consists of, which is the window it exists for.
-    fileprivate static let sessionRequirement: VPNHelperSessionRequirement = .absent
+    fileprivate static let sessionRequirement: TUNHelperSessionRequirement = .absent
 
     fileprivate func validate() throws {
         if let tunnelInterfaceName {
             try validateNonEmpty(tunnelInterfaceName, field: "tunnelInterfaceName")
         }
-        guard protectedHosts.count <= VPNHelperProtocol.maximumProtectedHosts else {
+        guard protectedHosts.count <= TUNHelperProtocol.maximumProtectedHosts else {
             throw protocolFailure(.payloadTooLarge, "The leak guard exceeds the protected host limit")
         }
         for protectedHost in protectedHosts {
             try validateNonEmpty(protectedHost, field: "protectedHosts")
         }
-        guard leaseSeconds > 0, leaseSeconds <= VPNHelperProtocol.maximumLeakGuardLeaseSeconds else {
+        guard leaseSeconds > 0, leaseSeconds <= TUNHelperProtocol.maximumLeakGuardLeaseSeconds else {
             throw protocolFailure(.malformedPayload, "The leak-guard lease is outside the permitted range")
         }
     }
 }
 
-extension ReleaseLeakGuardRequest: VPNHelperPayloadValidating {
-    fileprivate static let sessionRequirement: VPNHelperSessionRequirement = .absent
+extension ReleaseLeakGuardRequest: TUNHelperPayloadValidating {
+    fileprivate static let sessionRequirement: TUNHelperSessionRequirement = .absent
     fileprivate func validate() throws {}
 }
 
-extension LeakGuardResponse: VPNHelperPayloadValidating {
-    fileprivate static let sessionRequirement: VPNHelperSessionRequirement = .absent
+extension LeakGuardResponse: TUNHelperPayloadValidating {
+    fileprivate static let sessionRequirement: TUNHelperSessionRequirement = .absent
     fileprivate func validate() throws {}
 }
 
-extension ReadDiagnosticsRequest: VPNHelperPayloadValidating {
-    fileprivate static let sessionRequirement: VPNHelperSessionRequirement = .absent
+extension ReadDiagnosticsRequest: TUNHelperPayloadValidating {
+    fileprivate static let sessionRequirement: TUNHelperSessionRequirement = .absent
 
     fileprivate func validate() throws {
         guard maximumBytes > 0 else {
             throw protocolFailure(.malformedPayload, "The diagnostics byte limit must be positive")
         }
-        guard maximumBytes <= VPNHelperProtocol.maximumDiagnosticsBytes else {
+        guard maximumBytes <= TUNHelperProtocol.maximumDiagnosticsBytes else {
             throw protocolFailure(.payloadTooLarge, "The diagnostics byte limit exceeds the protocol limit")
         }
     }
 }
 
-extension StatusResponse: VPNHelperPayloadValidating {
-    fileprivate static let sessionRequirement: VPNHelperSessionRequirement = .optional
+extension StatusResponse: TUNHelperPayloadValidating {
+    fileprivate static let sessionRequirement: TUNHelperSessionRequirement = .optional
 
     fileprivate func validate() throws {
         try validateNonEmpty(helperVersion, field: "helperVersion")
@@ -150,8 +150,8 @@ extension StatusResponse: VPNHelperPayloadValidating {
     }
 }
 
-extension StartSessionResponse: VPNHelperPayloadValidating {
-    fileprivate static let sessionRequirement: VPNHelperSessionRequirement = .required
+extension StartSessionResponse: TUNHelperPayloadValidating {
+    fileprivate static let sessionRequirement: TUNHelperSessionRequirement = .required
 
     fileprivate func validate() throws {
         try validateDiagnosticText(summary)
@@ -159,8 +159,8 @@ extension StartSessionResponse: VPNHelperPayloadValidating {
     }
 }
 
-extension StopSessionResponse: VPNHelperPayloadValidating {
-    fileprivate static let sessionRequirement: VPNHelperSessionRequirement = .required
+extension StopSessionResponse: TUNHelperPayloadValidating {
+    fileprivate static let sessionRequirement: TUNHelperSessionRequirement = .required
 
     fileprivate func validate() throws {
         try validateDiagnosticText(summary)
@@ -168,37 +168,37 @@ extension StopSessionResponse: VPNHelperPayloadValidating {
     }
 }
 
-extension DiagnosticsResponse: VPNHelperPayloadValidating {
-    fileprivate static let sessionRequirement: VPNHelperSessionRequirement = .absent
+extension DiagnosticsResponse: TUNHelperPayloadValidating {
+    fileprivate static let sessionRequirement: TUNHelperSessionRequirement = .absent
 
     fileprivate func validate() throws {
-        guard text.lengthOfBytes(using: .utf8) <= VPNHelperProtocol.maximumDiagnosticsBytes else {
+        guard text.lengthOfBytes(using: .utf8) <= TUNHelperProtocol.maximumDiagnosticsBytes else {
             throw protocolFailure(.payloadTooLarge, "The diagnostics response exceeds the protocol limit")
         }
         try validateDiagnosticText(metadata)
     }
 }
 
-nonisolated enum VPNHelperCodec {
-    static func encodeRequest<Payload>(_ envelope: VPNHelperRequestEnvelope<Payload>) throws -> Data
+nonisolated enum TUNHelperCodec {
+    static func encodeRequest<Payload>(_ envelope: TUNHelperRequestEnvelope<Payload>) throws -> Data
     where Payload: Codable & Sendable & Equatable {
         try validateRevision(envelope.revision)
         try validateSessionID(envelope.sessionID, payloadType: Payload.self)
         try validatePayload(envelope.payload)
-        return try encode(envelope, maximumBytes: VPNHelperProtocol.maximumRequestBytes)
+        return try encode(envelope, maximumBytes: TUNHelperProtocol.maximumRequestBytes)
     }
 
-    static func decodeRequest<Payload>(_ data: Data) throws -> VPNHelperRequestEnvelope<Payload>
+    static func decodeRequest<Payload>(_ data: Data) throws -> TUNHelperRequestEnvelope<Payload>
     where Payload: Codable & Sendable & Equatable {
-        try validateEncodedSize(data, maximumBytes: VPNHelperProtocol.maximumRequestBytes)
-        let envelope: VPNHelperRequestEnvelope<Payload> = try decode(data)
+        try validateEncodedSize(data, maximumBytes: TUNHelperProtocol.maximumRequestBytes)
+        let envelope: TUNHelperRequestEnvelope<Payload> = try decode(data)
         try validateRevision(envelope.revision)
         try validateSessionID(envelope.sessionID, payloadType: Payload.self)
         try validatePayload(envelope.payload)
         return envelope
     }
 
-    static func encodeResponse<Payload>(_ envelope: VPNHelperResponseEnvelope<Payload>) throws -> Data
+    static func encodeResponse<Payload>(_ envelope: TUNHelperResponseEnvelope<Payload>) throws -> Data
     where Payload: Codable & Sendable & Equatable {
         try validateRevision(envelope.revision)
         try validateResponseShape(payload: envelope.payload, failure: envelope.failure)
@@ -209,13 +209,13 @@ nonisolated enum VPNHelperCodec {
         if let failure = envelope.failure {
             try validateFailure(failure)
         }
-        return try encode(envelope, maximumBytes: VPNHelperProtocol.maximumResponseBytes)
+        return try encode(envelope, maximumBytes: TUNHelperProtocol.maximumResponseBytes)
     }
 
-    static func decodeResponse<Payload>(_ data: Data) throws -> VPNHelperResponseEnvelope<Payload>
+    static func decodeResponse<Payload>(_ data: Data) throws -> TUNHelperResponseEnvelope<Payload>
     where Payload: Codable & Sendable & Equatable {
-        try validateEncodedSize(data, maximumBytes: VPNHelperProtocol.maximumResponseBytes)
-        let envelope: VPNHelperResponseEnvelope<Payload> = try decode(data)
+        try validateEncodedSize(data, maximumBytes: TUNHelperProtocol.maximumResponseBytes)
+        let envelope: TUNHelperResponseEnvelope<Payload> = try decode(data)
         try validateRevision(envelope.revision)
         try validateResponseShape(payload: envelope.payload, failure: envelope.failure)
         if let payload = envelope.payload {
@@ -233,7 +233,7 @@ nonisolated enum VPNHelperCodec {
             let data = try JSONEncoder().encode(value)
             try validateEncodedSize(data, maximumBytes: maximumBytes)
             return data
-        } catch let failure as VPNHelperProtocolFailure {
+        } catch let failure as TUNHelperProtocolFailure {
             throw failure
         } catch {
             throw protocolFailure(.malformedPayload, "The protocol value could not be encoded", details: String(describing: error))
@@ -243,7 +243,7 @@ nonisolated enum VPNHelperCodec {
     private static func decode<Value: Decodable>(_ data: Data) throws -> Value {
         do {
             return try JSONDecoder().decode(Value.self, from: data)
-        } catch let failure as VPNHelperProtocolFailure {
+        } catch let failure as TUNHelperProtocolFailure {
             throw failure
         } catch {
             throw protocolFailure(.malformedPayload, "The protocol payload could not be decoded", details: String(describing: error))
@@ -260,7 +260,7 @@ nonisolated enum VPNHelperCodec {
     }
 
     private static func validateRevision(_ revision: UInt) throws {
-        guard revision == VPNHelperProtocol.revision else {
+        guard revision == TUNHelperProtocol.revision else {
             throw protocolFailure(
                 .incompatibleService,
                 "The privileged helper protocol revision is incompatible",
@@ -270,13 +270,13 @@ nonisolated enum VPNHelperCodec {
     }
 
     private static func validatePayload<Payload>(_ payload: Payload) throws {
-        if let payload = payload as? any VPNHelperPayloadValidating {
+        if let payload = payload as? any TUNHelperPayloadValidating {
             try payload.validate()
         }
     }
 
     private static func validateSessionID<Payload>(_ sessionID: UUID?, payloadType: Payload.Type) throws {
-        guard let payloadType = payloadType as? any VPNHelperPayloadValidating.Type else { return }
+        guard let payloadType = payloadType as? any TUNHelperPayloadValidating.Type else { return }
         switch payloadType.sessionRequirement {
         case .absent:
             guard sessionID == nil else {
@@ -293,14 +293,14 @@ nonisolated enum VPNHelperCodec {
 
     private static func validateResponseShape<Payload>(
         payload: Payload?,
-        failure: VPNHelperProtocolFailure?
+        failure: TUNHelperProtocolFailure?
     ) throws {
         guard (payload == nil) != (failure == nil) else {
             throw protocolFailure(.malformedPayload, "A response must contain either a payload or a failure")
         }
     }
 
-    private static func validateFailure(_ failure: VPNHelperProtocolFailure) throws {
+    private static func validateFailure(_ failure: TUNHelperProtocolFailure) throws {
         try validateNonEmpty(failure.summary, field: "failure.summary")
         try validateDiagnosticText(failure.summary)
         try validateDiagnosticText(failure.details)
@@ -343,12 +343,12 @@ private nonisolated func validateDiagnosticText(_ value: String?) throws {
 }
 
 private nonisolated func protocolFailure(
-    _ code: VPNHelperFailureCode,
+    _ code: TUNHelperFailureCode,
     _ summary: String,
     details: String? = nil,
-    retryDisposition: VPNHelperRetryDisposition = .never
-) -> VPNHelperProtocolFailure {
-    VPNHelperProtocolFailure(
+    retryDisposition: TUNHelperRetryDisposition = .never
+) -> TUNHelperProtocolFailure {
+    TUNHelperProtocolFailure(
         code: code,
         summary: summary,
         details: details,

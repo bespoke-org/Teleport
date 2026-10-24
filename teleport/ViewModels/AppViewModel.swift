@@ -984,10 +984,10 @@ final class AppViewModel: ObservableObject {
     }
 
     /// Coalesces rapid rule edits (typing, dragging to reorder, flipping several
-    /// toggles) into a single VPN reconnect once the user settles, instead of
+    /// toggles) into a single TUN reconnect once the user settles, instead of
     /// tearing the tunnel down and back up on every individual change.
     private func scheduleSplitTunnelLiveApply() {
-        guard connectionMode == .vpn, hasActiveConnectionSession else { return }
+        guard connectionMode == .tun, hasActiveConnectionSession else { return }
         guard hasEstablishedConnection else {
             pendingSplitTunnelLiveApply = true
             return
@@ -1002,7 +1002,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private func applySplitTunnelRulesLiveIfNeeded() {
-        guard !isTerminating, connectionMode == .vpn, hasEstablishedConnection else { return }
+        guard !isTerminating, connectionMode == .tun, hasEstablishedConnection else { return }
         guard !isOperationPending else {
             pendingSplitTunnelLiveApply = true
             return
@@ -1017,7 +1017,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private func applyDeferredSplitTunnelRulesLiveIfNeeded() {
-        guard connectionMode == .vpn, hasEstablishedConnection else { return }
+        guard connectionMode == .tun, hasEstablishedConnection else { return }
         guard pendingSplitTunnelLiveApply
             || activeSplitTunnelRules != appliedSplitTunnelRules
             || activeSplitTunnelDefaultAction != appliedSplitTunnelDefaultAction else { return }
@@ -1092,7 +1092,7 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    /// Deletes a downloaded custom override so VPN mode falls back to Teleport's
+    /// Deletes a downloaded custom override so TUN mode falls back to Teleport's
     /// bundled default for that kind on the next connect.
     func resetGeodataToBundled(kind: GeodataKind) {
         guard !updatingGeodataKinds.contains(kind) else { return }
@@ -1182,9 +1182,9 @@ final class AppViewModel: ObservableObject {
 
     /// Geodata is read by Xray at process startup, so an update only takes
     /// effect after a restart; reuse the normal reconnect path immediately if
-    /// VPN mode is already connected instead of waiting for the user to notice.
+    /// TUN mode is already connected instead of waiting for the user to notice.
     private func applyGeodataLiveIfNeeded() {
-        guard connectionMode == .vpn, hasEstablishedConnection else { return }
+        guard connectionMode == .tun, hasEstablishedConnection else { return }
         reconnectToSelectedConnection()
     }
 
@@ -1393,7 +1393,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private func rebuildSessionAfterWake() {
-        guard !isTerminating, connectionMode == .vpn, hasEstablishedConnection, !isOperationPending else { return }
+        guard !isTerminating, connectionMode == .tun, hasEstablishedConnection, !isOperationPending else { return }
         // A session built after the machine went to sleep did not live through the
         // sleep and does not need rebuilding. The path observer routinely gets
         // there first — a wake onto a different network is a path change, and its
@@ -1417,7 +1417,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private func armLeakGuardStandby() {
-        guard isLeakGuardEnabled, connectionMode == .vpn else { return }
+        guard isLeakGuardEnabled, connectionMode == .tun else { return }
         let leakGuard = leakGuard
         Task { await leakGuard.armStandby() }
     }
@@ -1468,7 +1468,7 @@ final class AppViewModel: ObservableObject {
 
         // System Proxy mode points applications at a local port, which no change of
         // uplink invalidates. Only a routed session pins itself to one.
-        guard connectionMode == .vpn, hasEstablishedConnection, !isOperationPending else { return }
+        guard connectionMode == .tun, hasEstablishedConnection, !isOperationPending else { return }
 
         switch UplinkChangeDecision.decide(sessionUplink: sessionUplink, currentUplink: currentUplink) {
         case .keepRunning:

@@ -8,14 +8,14 @@ The app expects:
 - `teleport/Resources/xray-assets/geoip.dat`
 - `teleport/Resources/xray-assets/geosite.dat`
 
-The System Proxy runtime resolves these resources from the app bundle. VPN installation verifies and copies the approved runtime and assets into root-owned paths.
+The System Proxy runtime resolves these resources from the app bundle. TUN mode installation verifies and copies the approved runtime and assets into root-owned paths.
 
 ## Runtime boundaries
 
 - `teleport/XrayCore` builds Xray JSON without process or privilege code.
 - `teleport/Connection` defines the provider API and state consumed by `AppViewModel`.
 - `teleport/SystemProxy` owns the unprivileged provider, user Xray process, and proxy settings.
-- `teleport/VPN` owns the root-Xray provider, typed helper client, and XPC transport.
+- `teleport/TUN` owns the root-Xray provider, typed helper client, and XPC transport.
 - `teleport/HelperInstallation` owns the transitional administrator installer.
 - `TeleportPrivilegedHelper` is the separate root executable containing authenticated XPC ingress, synchronous command dispatch, process lifecycle, and routes.
 
@@ -59,7 +59,7 @@ Automated verification does not replace real macOS checks for:
 1. explicit legacy-helper reset, fresh installation, and upgrade/cutover installation;
 2. acceptance using the production Developer ID requirement and rejection of unsigned/wrong-team clients;
 3. System Proxy connect/disconnect;
-4. VPN connect/disconnect and current IPv4 route cleanup;
+4. TUN connect/disconnect and current IPv4 route cleanup;
 5. WireGuard connect/disconnect against a real peer in both modes, including a large-transfer check for the MTU the peer advertises;
 6. live helper interruption during status, start, and stop;
 7. app termination during a pending request;

@@ -1,13 +1,13 @@
 import Foundation
 
 private func expectTransportError(
-    _ expected: VPNHelperTransportError,
+    _ expected: TUNHelperTransportError,
     operation: () async throws -> Data
 ) async {
     do {
         _ = try await operation()
         preconditionFailure("Expected transport error: \(expected)")
-    } catch let error as VPNHelperTransportError {
+    } catch let error as TUNHelperTransportError {
         precondition(error == expected, "Expected \(expected), got \(error)")
     } catch {
         preconditionFailure("Unexpected error: \(error)")
@@ -29,16 +29,16 @@ private func value<T: Sendable>(of task: Task<T, Never>, timeout: Double) async 
     }
 }
 
-private final class FakeProxy: NSObject, VPNHelperXPCProtocol {
+private final class FakeProxy: NSObject, TUNHelperXPCProtocol {
     private let lock = NSLock()
-    private var commands: [VPNHelperCommand] = []
-    var handle: (VPNHelperCommand, Data, @escaping (Data?, NSError?) -> Void) -> Void
+    private var commands: [TUNHelperCommand] = []
+    var handle: (TUNHelperCommand, Data, @escaping (Data?, NSError?) -> Void) -> Void
 
-    init(handle: @escaping (VPNHelperCommand, Data, @escaping (Data?, NSError?) -> Void) -> Void) {
+    init(handle: @escaping (TUNHelperCommand, Data, @escaping (Data?, NSError?) -> Void) -> Void) {
         self.handle = handle
     }
 
-    var recordedCommands: [VPNHelperCommand] {
+    var recordedCommands: [TUNHelperCommand] {
         lock.lock()
         defer { lock.unlock() }
         return commands
@@ -69,7 +69,7 @@ private final class FakeProxy: NSObject, VPNHelperXPCProtocol {
     }
 
     private func invoke(
-        _ command: VPNHelperCommand,
+        _ command: TUNHelperCommand,
         request: Data,
         reply: @escaping (Data?, NSError?) -> Void
     ) {
@@ -80,7 +80,7 @@ private final class FakeProxy: NSObject, VPNHelperXPCProtocol {
     }
 }
 
-private final class FakeConnection: VPNHelperXPCConnection, @unchecked Sendable {
+private final class FakeConnection: TUNHelperXPCConnection, @unchecked Sendable {
     private let lock = NSLock()
     private let proxy: FakeProxy
     private var interruption: (@Sendable () -> Void)?
@@ -118,10 +118,10 @@ private final class FakeConnection: VPNHelperXPCConnection, @unchecked Sendable 
         defer { lock.unlock() }
         guard let configuredInterface else { return false }
         let methods = [
-            #selector(VPNHelperXPCProtocol.getStatus(_:withReply:)),
-            #selector(VPNHelperXPCProtocol.startSession(_:withReply:)),
-            #selector(VPNHelperXPCProtocol.stopSession(_:withReply:)),
-            #selector(VPNHelperXPCProtocol.readDiagnostics(_:withReply:))
+            #selector(TUNHelperXPCProtocol.getStatus(_:withReply:)),
+            #selector(TUNHelperXPCProtocol.startSession(_:withReply:)),
+            #selector(TUNHelperXPCProtocol.stopSession(_:withReply:)),
+            #selector(TUNHelperXPCProtocol.readDiagnostics(_:withReply:))
         ]
         return methods.allSatisfy { method in
             let requestClasses = configuredInterface.classes(
@@ -167,7 +167,7 @@ private final class FakeConnection: VPNHelperXPCConnection, @unchecked Sendable 
         lock.unlock()
     }
 
-    func remoteProxy(errorHandler: @escaping @Sendable (Error) -> Void) -> (any VPNHelperXPCProtocol)? {
+    func remoteProxy(errorHandler: @escaping @Sendable (Error) -> Void) -> (any TUNHelperXPCProtocol)? {
         lock.lock()
         let failure = proxyFailure
         lock.unlock()
@@ -221,7 +221,7 @@ private final class ConnectionFactory: @unchecked Sendable {
         return index
     }
 
-    func make() -> any VPNHelperXPCConnection {
+    func make() -> any TUNHelperXPCConnection {
         lock.lock()
         defer { lock.unlock() }
         precondition(index < connections.count, "Unexpected connection creation")
@@ -302,7 +302,7 @@ private enum VerifyXPCTransport {
 
     private static func verifiesExplicitAllowedClassesConfiguration() async throws {
         let source = try String(
-            contentsOfFile: "teleport/VPN/XPCVPNHelperTransport.swift",
+            contentsOfFile: "teleport/TUN/XPCTUNHelperTransport.swift",
             encoding: .utf8
         )
         precondition(source.contains("interface.setClasses"))
@@ -316,9 +316,9 @@ private enum VerifyXPCTransport {
         }
         let connection = FakeConnection(proxy: proxy)
         let factory = ConnectionFactory([connection])
-        let transport = XPCVPNHelperTransport(connectionFactory: { factory.make() })
+        let transport = XPCTUNHelperTransport(connectionFactory: { factory.make() })
 
-        for command in [VPNHelperCommand.status, .startSession, .stopSession, .readDiagnostics] {
+        for command in [TUNHelperCommand.status, .startSession, .stopSession, .readDiagnostics] {
             let received = try await transport.send(
                 command: command,
                 requestData: Data("request".utf8),
@@ -339,7 +339,7 @@ private enum VerifyXPCTransport {
         let factory = ConnectionFactory([connection])
         let creationStarted = DispatchSemaphore(value: 0)
         let allowCreation = DispatchSemaphore(value: 0)
-        let transport = XPCVPNHelperTransport(connectionFactory: {
+        let transport = XPCTUNHelperTransport(connectionFactory: {
             creationStarted.signal()
             allowCreation.wait()
             return factory.make()
@@ -391,7 +391,7 @@ private enum VerifyXPCTransport {
         let proxy = FakeProxy { _, _, reply in reply(Data(), nil) }
         let connection = FakeConnection(proxy: proxy, proxyFailure: error)
         let factory = ConnectionFactory([connection])
-        let transport = XPCVPNHelperTransport(connectionFactory: { factory.make() })
+        let transport = XPCTUNHelperTransport(connectionFactory: { factory.make() })
 
         await expectTransportError(.unavailable("proxy unavailable")) {
             try await transport.send(command: .status, requestData: Data(), timeout: 1)
@@ -407,7 +407,7 @@ private enum VerifyXPCTransport {
         }
         let connection = FakeConnection(proxy: proxy)
         let factory = ConnectionFactory([connection])
-        let transport = XPCVPNHelperTransport(connectionFactory: { factory.make() })
+        let transport = XPCTUNHelperTransport(connectionFactory: { factory.make() })
 
         await expectTransportError(.unavailable("reply rejected")) {
             try await transport.send(command: .status, requestData: Data(), timeout: 1)
@@ -423,7 +423,7 @@ private enum VerifyXPCTransport {
         let secondProxy = FakeProxy { _, _, reply in reply(Data("replacement".utf8), nil) }
         let secondConnection = FakeConnection(proxy: secondProxy)
         let factory = ConnectionFactory([firstConnection, secondConnection])
-        let transport = XPCVPNHelperTransport(connectionFactory: { factory.make() })
+        let transport = XPCTUNHelperTransport(connectionFactory: { factory.make() })
         let result = StoredTransportResult()
 
         let send = Task {
@@ -461,7 +461,7 @@ private enum VerifyXPCTransport {
         let secondProxy = FakeProxy { _, _, reply in reply(response, nil) }
         let secondConnection = FakeConnection(proxy: secondProxy)
         let factory = ConnectionFactory([firstConnection, secondConnection])
-        let transport = XPCVPNHelperTransport(connectionFactory: { factory.make() })
+        let transport = XPCTUNHelperTransport(connectionFactory: { factory.make() })
 
         await expectTransportError(.interrupted) {
             try await transport.send(command: .startSession, requestData: Data(), timeout: 1)
@@ -481,7 +481,7 @@ private enum VerifyXPCTransport {
         let secondProxy = FakeProxy { _, _, reply in reply(Data("ok".utf8), nil) }
         let secondConnection = FakeConnection(proxy: secondProxy)
         let factory = ConnectionFactory([firstConnection, secondConnection])
-        let transport = XPCVPNHelperTransport(connectionFactory: { factory.make() })
+        let transport = XPCTUNHelperTransport(connectionFactory: { factory.make() })
 
         await expectTransportError(.invalidated) {
             try await transport.send(command: .stopSession, requestData: Data(), timeout: 1)
@@ -496,7 +496,7 @@ private enum VerifyXPCTransport {
         let proxy = FakeProxy { _, _, reply in storedReply.store(reply) }
         let connection = FakeConnection(proxy: proxy)
         let factory = ConnectionFactory([connection])
-        let transport = XPCVPNHelperTransport(connectionFactory: { factory.make() })
+        let transport = XPCTUNHelperTransport(connectionFactory: { factory.make() })
 
         await expectTransportError(.deadlineExceeded) {
             try await transport.send(command: .startSession, requestData: Data(), timeout: 0.01)
@@ -512,7 +512,7 @@ private enum VerifyXPCTransport {
         let proxy = FakeProxy { _, _, reply in reply(nil, nil) }
         let connection = FakeConnection(proxy: proxy)
         let factory = ConnectionFactory([connection])
-        let transport = XPCVPNHelperTransport(connectionFactory: { factory.make() })
+        let transport = XPCTUNHelperTransport(connectionFactory: { factory.make() })
 
         await expectTransportError(.invalidResponse("The privileged helper returned neither data nor an error")) {
             try await transport.send(command: .readDiagnostics, requestData: Data(), timeout: 1)

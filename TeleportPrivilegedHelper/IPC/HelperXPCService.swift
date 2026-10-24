@@ -1,12 +1,12 @@
 import Foundation
 
 protocol HelperCommandDispatching: Sendable {
-    func dispatch(command: VPNHelperCommand, requestData: Data) async -> Data
+    func dispatch(command: TUNHelperCommand, requestData: Data) async -> Data
 }
 
 extension HelperCommandDispatcher: HelperCommandDispatching {}
 
-nonisolated final class HelperXPCService: NSObject, VPNHelperXPCProtocol {
+nonisolated final class HelperXPCService: NSObject, TUNHelperXPCProtocol {
     static let errorDomain = "dev.x.teleport.helper.xpc"
 
     private let dispatcher: any HelperCommandDispatching
@@ -41,13 +41,13 @@ nonisolated final class HelperXPCService: NSObject, VPNHelperXPCProtocol {
     }
 
     private func dispatch(
-        _ command: VPNHelperCommand,
+        _ command: TUNHelperCommand,
         request: Data,
         reply: @escaping (Data?, NSError?) -> Void
     ) {
         Task { [dispatcher] in
             let response = await dispatcher.dispatch(command: command, requestData: request)
-            guard response.count <= VPNHelperProtocol.maximumResponseBytes else {
+            guard response.count <= TUNHelperProtocol.maximumResponseBytes else {
                 reply(
                     nil,
                     NSError(

@@ -28,12 +28,12 @@ struct SplitTunnelingSettingsView: View {
                     )
                 ) {
                     Text("Split tunneling")
-                    Text("Route specific domains or IP/CIDR ranges directly, through the proxy, or block them, while VPN mode is active. This matches destinations, not individual apps — macOS has no supported per-app VPN routing outside managed (MDM) configurations.")
+                    Text("Route specific domains or IP/CIDR ranges directly, through the proxy, or block them, while TUN mode is active. This matches destinations, not individual apps — macOS has no supported per-app TUN routing outside managed (MDM) configurations.")
                 }
 
-                if viewModel.connectionMode != .vpn {
+                if viewModel.connectionMode != .tun {
                     Label(
-                        "Split tunneling is configured here but only applies in VPN mode. System Proxy mode ignores these rules.",
+                        "Split tunneling is configured here but only applies in TUN mode. System Proxy mode ignores these rules.",
                         systemImage: "exclamationmark.triangle.fill"
                     )
                     .font(.caption)
@@ -199,7 +199,7 @@ struct SplitTunnelingSettingsView: View {
                 }
 
                 if let match = viewModel.matchingSplitTunnelRule(for: testerValue) {
-                    if viewModel.connectionMode != .vpn {
+                    if viewModel.connectionMode != .tun {
                         Label(
                             "Would match \"\(match.value)\" → \(match.action.displayName), but System Proxy mode ignores split tunneling",
                             systemImage: "exclamationmark.triangle.fill"

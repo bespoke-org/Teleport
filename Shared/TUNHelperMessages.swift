@@ -1,6 +1,6 @@
 import Foundation
 
-nonisolated enum VPNHelperCommand: String, Codable, Sendable {
+nonisolated enum TUNHelperCommand: String, Codable, Sendable {
     case status
     case startSession
     case stopSession
@@ -9,7 +9,7 @@ nonisolated enum VPNHelperCommand: String, Codable, Sendable {
     case releaseLeakGuard
 }
 
-nonisolated enum VPNHelperSessionPhase: String, Codable, Sendable {
+nonisolated enum TUNHelperSessionPhase: String, Codable, Sendable {
     case idle
     case starting
     case running
@@ -18,7 +18,7 @@ nonisolated enum VPNHelperSessionPhase: String, Codable, Sendable {
     case unknown
 }
 
-nonisolated struct VPNHelperRequestEnvelope<Payload>: Codable, Sendable, Equatable
+nonisolated struct TUNHelperRequestEnvelope<Payload>: Codable, Sendable, Equatable
 where Payload: Codable & Sendable & Equatable {
     let revision: UInt
     let requestID: UUID
@@ -26,13 +26,13 @@ where Payload: Codable & Sendable & Equatable {
     let payload: Payload
 }
 
-nonisolated struct VPNHelperResponseEnvelope<Payload>: Codable, Sendable, Equatable
+nonisolated struct TUNHelperResponseEnvelope<Payload>: Codable, Sendable, Equatable
 where Payload: Codable & Sendable & Equatable {
     let revision: UInt
     let requestID: UUID
     let sessionID: UUID?
     let payload: Payload?
-    let failure: VPNHelperProtocolFailure?
+    let failure: TUNHelperProtocolFailure?
 }
 
 nonisolated struct StatusRequest: Codable, Sendable, Equatable {}
@@ -88,7 +88,7 @@ nonisolated struct StopSessionRequest: Codable, Sendable, Equatable {
     let outboundInterface: String?
 }
 
-nonisolated enum VPNHelperLog: String, Codable, Sendable {
+nonisolated enum TUNHelperLog: String, Codable, Sendable {
     case config
     case xray
     case control
@@ -121,31 +121,31 @@ nonisolated struct LeakGuardResponse: Codable, Sendable, Equatable {
 }
 
 nonisolated struct ReadDiagnosticsRequest: Codable, Sendable, Equatable {
-    let log: VPNHelperLog
+    let log: TUNHelperLog
     let maximumBytes: Int
 }
 
 nonisolated struct StatusResponse: Codable, Sendable, Equatable {
     let helperVersion: String
-    let phase: VPNHelperSessionPhase
+    let phase: TUNHelperSessionPhase
     let summary: String?
     let details: String?
 }
 
 nonisolated struct StartSessionResponse: Codable, Sendable, Equatable {
-    let phase: VPNHelperSessionPhase
+    let phase: TUNHelperSessionPhase
     let summary: String?
     let details: String?
 }
 
 nonisolated struct StopSessionResponse: Codable, Sendable, Equatable {
-    let phase: VPNHelperSessionPhase
+    let phase: TUNHelperSessionPhase
     let summary: String?
     let details: String?
 }
 
 nonisolated struct DiagnosticsResponse: Codable, Sendable, Equatable {
-    let log: VPNHelperLog
+    let log: TUNHelperLog
     let text: String
     let metadata: String
     let wasTruncated: Bool

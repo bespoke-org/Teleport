@@ -1,6 +1,6 @@
 import Foundation
 
-/// Coordinates the user-visible VPN transaction around the lower-level runtime:
+/// Coordinates the user-visible TUN transaction around the lower-level runtime:
 /// reject obvious VPN conflicts, disable System Proxy, derive the physical uplink,
 /// build Xray JSON, and ask the privileged runtime to start or stop the session.
 final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
@@ -128,7 +128,7 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
         // all put back, and the catch below does the putting back.
         try Task.checkCancellation()
         try await BlockingWork.run { [systemProxyService] in
-            try systemProxyService.suspendProxyForVPN()
+            try systemProxyService.suspendProxyForTUN()
         }
 
         do {
@@ -204,9 +204,9 @@ enum XrayTunConnectionError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case let .existingVPNDetected(interface):
-            return "Another VPN appears to be active on \(interface). Disconnect it before using Teleport VPN mode, or use System Proxy mode."
+            return "Another VPN appears to be active on \(interface). Disconnect it before using Teleport TUN mode, or use System Proxy mode."
         case let .proxyAddressResolutionFailed(host):
-            return "Teleport could not resolve the proxy server \(host) before installing VPN routes. Check the network and try again."
+            return "Teleport could not resolve the proxy server \(host) before installing TUN routes. Check the network and try again."
         case let .proxyRouteUnavailable(host):
             return "Teleport could not find a reachable physical route to the proxy server \(host). Reconnect to the network and try again."
         }

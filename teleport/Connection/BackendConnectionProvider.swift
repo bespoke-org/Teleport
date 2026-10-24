@@ -25,7 +25,7 @@ nonisolated final class BackendConnectionProvider: ConnectionProvider, @unchecke
         self.mode = mode
         self.backend = backend
         self.supervisionInterval = supervisionInterval
-        // Where the backend stands can only be answered asynchronously (VPN mode
+        // Where the backend stands can only be answered asynchronously (TUN mode
         // asks the privileged helper over XPC), so the provider starts out
         // resolving and publishes the answer as the first queued operation.
         let stateStore = ConnectionStateStore(initialState: .preparing)
@@ -129,7 +129,7 @@ nonisolated final class BackendConnectionProvider: ConnectionProvider, @unchecke
                 guard case .connected = stateStore.current() else { return }
                 stateStore.update(.failed(ConnectionFailure(
                     summary: "Xray stopped unexpectedly",
-                    details: mode == .vpn
+                    details: mode == .tun
                         ? "The tunnel's routes were removed so the machine routes directly. Reconnect to start it again."
                         : "System proxy settings were restored so the machine routes directly. Reconnect to start it again."
                 )))

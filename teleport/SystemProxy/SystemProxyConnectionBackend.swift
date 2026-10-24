@@ -2,20 +2,20 @@ import Foundation
 
 /// System Proxy mode: an unprivileged Xray process plus macOS proxy settings.
 /// Split-tunnel policy is deliberately unused here — routing decisions belong to
-/// Xray's TUN inbound, which only VPN mode runs.
+/// Xray's TUN inbound, which only TUN mode runs.
 final class SystemProxyConnectionBackend: ConnectionBackend, @unchecked Sendable {
     private let runtimeManager: XrayRuntimeManager
     private let proxyService: SystemProxyService
-    private let vpnRuntimeManager: PrivilegedXrayRuntimeManager?
+    private let tunRuntimeManager: PrivilegedXrayRuntimeManager?
 
     init(
         runtimeManager: XrayRuntimeManager,
         proxyService: SystemProxyService,
-        vpnRuntimeManager: PrivilegedXrayRuntimeManager? = PrivilegedXrayRuntimeManager()
+        tunRuntimeManager: PrivilegedXrayRuntimeManager? = PrivilegedXrayRuntimeManager()
     ) {
         self.runtimeManager = runtimeManager
         self.proxyService = proxyService
-        self.vpnRuntimeManager = vpnRuntimeManager
+        self.tunRuntimeManager = tunRuntimeManager
     }
 
     func hasRestorableState() -> Bool {
@@ -34,7 +34,7 @@ final class SystemProxyConnectionBackend: ConnectionBackend, @unchecked Sendable
 
     func start(_ request: ConnectionRequest, reportPhase: @escaping @Sendable (ConnectionState) -> Void) async throws {
         do {
-            try await vpnRuntimeManager?.cleanupIfHelperAvailable(protectedHosts: [request.configuration.host])
+            try await tunRuntimeManager?.cleanupIfHelperAvailable(protectedHosts: [request.configuration.host])
             try await startRuntime(request)
             try await BlockingWork.run { [self] in
                 try proxyService.enableProxy(endpoint: request.localProxy)
@@ -51,7 +51,7 @@ final class SystemProxyConnectionBackend: ConnectionBackend, @unchecked Sendable
                 try proxyService.disableProxy()
                 runtimeManager.stop()
             }
-            try await vpnRuntimeManager?.cleanupIfHelperAvailable(protectedHosts: [request.configuration.host])
+            try await tunRuntimeManager?.cleanupIfHelperAvailable(protectedHosts: [request.configuration.host])
             try await startRuntime(request)
             try await BlockingWork.run { [self] in
                 try proxyService.enableProxy(endpoint: request.localProxy)

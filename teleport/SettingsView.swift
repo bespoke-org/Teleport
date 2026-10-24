@@ -69,7 +69,7 @@ private struct GeneralSettingsView: View {
                     }
                 } label: {
                     Text("Teleport mode")
-                    Text("System Proxy routes apps that respect macOS proxy settings. VPN routes the whole device through Xray TUN and requires administrator approval. Disconnect before changing modes.")
+                    Text("System Proxy routes apps that respect macOS proxy settings. TUN routes the whole device through Xray TUN and requires administrator approval. Disconnect before changing modes.")
                 }
                 .disabled(!viewModel.canChangeSelection || viewModel.hasActiveConnectionSession)
             }
@@ -180,7 +180,7 @@ private struct GeneralSettingsView: View {
                     )
                 ) {
                     Text("Block traffic outside the tunnel")
-                    Text("In VPN mode, keep traffic off the network while Teleport is rebuilding a session — after waking, or after changing Wi-Fi. Local networks and DNS still work. Turn this off to sign in to a hotel or airport Wi-Fi page.")
+                    Text("In TUN mode, keep traffic off the network while Teleport is rebuilding a session — after waking, or after changing Wi-Fi. Local networks and DNS still work. Turn this off to sign in to a hotel or airport Wi-Fi page.")
                 }
             }
         }
@@ -411,9 +411,9 @@ private enum NerdLogFile: String, CaseIterable, Identifiable, Hashable {
     case app
     case helper
     case systemProxy
-    case vpnConfig
-    case vpn
-    case vpnControl
+    case tunConfig
+    case tun
+    case tunControl
 
     var id: Self { self }
 
@@ -425,12 +425,12 @@ private enum NerdLogFile: String, CaseIterable, Identifiable, Hashable {
             return "Helper"
         case .systemProxy:
             return "System Proxy"
-        case .vpnConfig:
-            return "VPN Config"
-        case .vpn:
-            return "VPN"
-        case .vpnControl:
-            return "VPN Control"
+        case .tunConfig:
+            return "TUN Config"
+        case .tun:
+            return "TUN"
+        case .tunControl:
+            return "TUN Control"
         }
     }
 
@@ -440,11 +440,11 @@ private enum NerdLogFile: String, CaseIterable, Identifiable, Hashable {
             return nil
         case .helper:
             return "helper.log"
-        case .vpnConfig:
+        case .tunConfig:
             return "xray-tun-config.json"
-        case .vpn:
+        case .tun:
             return "xray-tun.log"
-        case .vpnControl:
+        case .tunControl:
             return "xray-tun-control.log"
         }
     }
@@ -457,11 +457,11 @@ private enum NerdLogFile: String, CaseIterable, Identifiable, Hashable {
             return Self.helperStateDirectoryURL.appendingPathComponent("helper.log")
         case .systemProxy:
             return Self.applicationSupportDirectoryURL.appendingPathComponent("xray.log")
-        case .vpnConfig:
+        case .tunConfig:
             return Self.helperStateDirectoryURL.appendingPathComponent("xray-tun-config.json")
-        case .vpn:
+        case .tun:
             return Self.helperStateDirectoryURL.appendingPathComponent("xray-tun.log")
-        case .vpnControl:
+        case .tunControl:
             return Self.helperStateDirectoryURL.appendingPathComponent("xray-tun-control.log")
         }
     }

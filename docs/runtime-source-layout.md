@@ -17,21 +17,21 @@ Defines the provider-oriented API consumed by upper application layers:
 
 ### `teleport/XrayCore`
 
-Builds Xray JSON for System Proxy and VPN/TUN sessions. It does not launch processes, mutate system settings/routes, or contact the helper.
+Builds Xray JSON for System Proxy and TUN sessions. It does not launch processes, mutate system settings/routes, or contact the helper.
 
 ### `teleport/SystemProxy`
 
 Owns the unprivileged System Proxy provider, its transitional backend, the user-level Xray process, and macOS proxy settings.
 
-### `teleport/VPN`
+### `teleport/TUN`
 
 Owns app-side root-Xray orchestration:
 
 - `RootXrayConnectionProvider` is the provider facade.
 - `XrayTunConnectionBackend` remains the transitional synchronous backend.
 - `PrivilegedXrayRuntimeManager` coordinates installation preflight, typed helper calls, and app-side cached correlation state.
-- `VPNHelperTransport` hides transport details from higher layers.
-- `XPCVPNHelperTransport` owns `NSXPCConnection`, deadlines, interruption/invalidation handling, generation-safe replacement, and exactly-once completion.
+- `TUNHelperTransport` hides transport details from higher layers.
+- `XPCTUNHelperTransport` owns `NSXPCConnection`, deadlines, interruption/invalidation handling, generation-safe replacement, and exactly-once completion.
 - `PrivilegedHelperClient` encodes exact-revision typed messages and performs one bounded status reconciliation after an indeterminate mutating reply. It never automatically retransmits start or stop.
 - `XrayTunSessionState` persists app-side correlation needed for later stop attempts. It is not authoritative root ownership.
 
@@ -77,16 +77,16 @@ Contains shared helper configuration, platform lookups, and bounded shell execut
 
 ### `main.swift`
 
-Bootstraps `NSXPCListener` for `VPNHelperProtocol.machServiceName`, installs the authenticated delegate, resumes the listener, and runs the process loop.
+Bootstraps `NSXPCListener` for `TUNHelperProtocol.machServiceName`, installs the authenticated delegate, resumes the listener, and runs the process loop.
 
 ## Shared source
 
 The `Shared` directory is compiled into both existing targets:
 
 - `PrivilegedHelperConstants.swift` contains installation compatibility and root-owned paths.
-- `VPNHelperXPCProtocol.swift` defines the Foundation-only XPC surface, exact revision 8, Mach-service name, and payload bounds.
-- `VPNHelperMessages.swift` defines typed Codable request/response values.
-- `VPNHelperProtocolError.swift` validates exact revisions, command payloads, session shapes, and encoded sizes.
+- `TUNHelperXPCProtocol.swift` defines the Foundation-only XPC surface, exact revision 8, Mach-service name, and payload bounds.
+- `TUNHelperMessages.swift` defines typed Codable request/response values.
+- `TUNHelperProtocolError.swift` validates exact revisions, command payloads, session shapes, and encoded sizes.
 
 ## Dependency direction
 
@@ -97,7 +97,7 @@ AppViewModel
             -> BackendConnectionProvider -> transitional backend
                 -> PrivilegedXrayRuntimeManager
                     -> PrivilegedHelperClient
-                        -> VPNHelperTransport / XPCVPNHelperTransport
+                        -> TUNHelperTransport / XPCTUNHelperTransport
                             -> authenticated XPC Mach service
                                 -> HelperCommandDispatcher
                                     -> XrayTunController

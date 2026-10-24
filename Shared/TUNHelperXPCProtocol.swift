@@ -1,6 +1,6 @@
 import Foundation
 
-@objc nonisolated protocol VPNHelperXPCProtocol {
+@objc nonisolated protocol TUNHelperXPCProtocol {
     func getStatus(_ request: Data, withReply reply: @escaping (Data?, NSError?) -> Void)
     func startSession(_ request: Data, withReply reply: @escaping (Data?, NSError?) -> Void)
     func stopSession(_ request: Data, withReply reply: @escaping (Data?, NSError?) -> Void)
@@ -9,7 +9,7 @@ import Foundation
     func releaseLeakGuard(_ request: Data, withReply reply: @escaping (Data?, NSError?) -> Void)
 }
 
-nonisolated enum VPNHelperProtocol {
+nonisolated enum TUNHelperProtocol {
     static let revision: UInt = 10
     static let machServiceName = "dev.x.teleport.helper"
     static let maximumRequestBytes = 1_048_576

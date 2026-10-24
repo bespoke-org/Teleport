@@ -86,7 +86,7 @@ struct VerifyConnectionProvider {
             store: store,
             connectionProviderFactory: ConnectionProviderFactory(
                 systemProxyProvider: { provider },
-                vpnProvider: { provider }
+                tunProvider: { provider }
             ),
             subscriptionClient: SubscriptionClient(),
             healthProbeService: ConnectionHealthProbeService(),
@@ -110,16 +110,16 @@ struct VerifyConnectionProvider {
         let systemProxyProvider = SystemProxyConnectionProvider(
             coordinator: BackendConnectionProvider(mode: .systemProxy, backend: RecordingConnectionBackend())
         )
-        let vpnProvider = RootXrayConnectionProvider(
-            coordinator: BackendConnectionProvider(mode: .vpn, backend: RecordingConnectionBackend())
+        let tunProvider = RootXrayConnectionProvider(
+            coordinator: BackendConnectionProvider(mode: .tun, backend: RecordingConnectionBackend())
         )
         let factory = ConnectionProviderFactory(
             systemProxyProvider: { systemProxyProvider },
-            vpnProvider: { vpnProvider }
+            tunProvider: { tunProvider }
         )
 
         precondition(factory.makeProvider(for: .systemProxy) is SystemProxyConnectionProvider)
-        precondition(factory.makeProvider(for: .vpn) is RootXrayConnectionProvider)
+        precondition(factory.makeProvider(for: .tun) is RootXrayConnectionProvider)
     }
 
     private static func testConnectionStateStorePublishesInitialAndUpdatedStates() async {
@@ -136,7 +136,7 @@ struct VerifyConnectionProvider {
 
     private static func testProviderConnectReconnectAndDisconnect() async throws {
         let backend = RecordingConnectionBackend()
-        let provider = BackendConnectionProvider(mode: .vpn, backend: backend)
+        let provider = BackendConnectionProvider(mode: .tun, backend: backend)
         let request = try makeRequest()
         await awaitInitialState(provider)
 
@@ -225,7 +225,7 @@ struct VerifyConnectionProvider {
         precondition(failure.summary == TestError.startFailed.localizedDescription)
 
         let stopBackend = RecordingConnectionBackend()
-        let stopProvider = BackendConnectionProvider(mode: .vpn, backend: stopBackend)
+        let stopProvider = BackendConnectionProvider(mode: .tun, backend: stopBackend)
         await awaitInitialState(stopProvider)
         try await stopProvider.connect(try makeRequest())
         stopBackend.stopError = TestError.stopFailed
@@ -249,7 +249,7 @@ struct VerifyConnectionProvider {
     private static func testProviderSerializesConcurrentConnects() async throws {
         let backend = RecordingConnectionBackend()
         await backend.startGate.enableBlocking()
-        let provider = BackendConnectionProvider(mode: .vpn, backend: backend)
+        let provider = BackendConnectionProvider(mode: .tun, backend: backend)
         let request = try makeRequest()
 
         let first = Task { try await provider.connect(request) }
@@ -398,7 +398,7 @@ struct VerifyConnectionProvider {
             store: store,
             connectionProviderFactory: ConnectionProviderFactory(
                 systemProxyProvider: { provider },
-                vpnProvider: { provider }
+                tunProvider: { provider }
             ),
             subscriptionClient: SubscriptionClient(),
             healthProbeService: ConnectionHealthProbeService(),
@@ -514,7 +514,7 @@ struct VerifyConnectionProvider {
         )
         precondition(
             ConnectionPresentation(
-                state: .connected(.init(id: UUID(), mode: .vpn, connectedAt: Date())),
+                state: .connected(.init(id: UUID(), mode: .tun, connectedAt: Date())),
                 hasConfiguration: true
             ) == ConnectionPresentation(connectionPhase: .running, proxyPhase: .enabled)
         )

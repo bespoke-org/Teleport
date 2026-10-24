@@ -6,7 +6,7 @@ import Foundation
 /// `ConnectionConfiguration`, whose `rawLink` keeps the original text verbatim
 /// because `AppViewModel` re-parses every stored `rawLink` on launch.
 ///
-/// The peer endpoint becomes `host`/`port` so the VPN backend's protected-route
+/// The peer endpoint becomes `host`/`port` so the TUN backend's protected-route
 /// derivation, the health probe and duplicate filtering stay protocol-neutral.
 /// The stream-layer fields (`security`, `transport`) are unused placeholders:
 /// Xray's WireGuard outbound carries its own transport and encryption.

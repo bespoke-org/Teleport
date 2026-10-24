@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-/// Owns the pf ruleset that keeps traffic off the physical uplink while a VPN
+/// Owns the pf ruleset that keeps traffic off the physical uplink while a TUN
 /// session is meant to be carrying it, and the lease that guarantees it comes
 /// back off.
 ///

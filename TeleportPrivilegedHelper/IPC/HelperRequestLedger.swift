@@ -2,10 +2,10 @@ import CryptoKit
 import Foundation
 
 struct HelperRequestFingerprint: Hashable, Sendable {
-    let command: VPNHelperCommand
+    let command: TUNHelperCommand
     let payloadDigest: Data
 
-    init(command: VPNHelperCommand, payload: Data) {
+    init(command: TUNHelperCommand, payload: Data) {
         self.command = command
         payloadDigest = Data(SHA256.hash(data: payload))
     }

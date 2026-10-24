@@ -1,8 +1,8 @@
 import Foundation
 
-nonisolated protocol VPNHelperTransport: Sendable {
+nonisolated protocol TUNHelperTransport: Sendable {
     func send(
-        command: VPNHelperCommand,
+        command: TUNHelperCommand,
         requestData: Data,
         timeout: TimeInterval
     ) async throws -> Data
@@ -10,7 +10,7 @@ nonisolated protocol VPNHelperTransport: Sendable {
     func invalidate()
 }
 
-nonisolated enum VPNHelperTransportError: Error, Equatable {
+nonisolated enum TUNHelperTransportError: Error, Equatable {
     case unavailable(String)
     case interrupted
     case invalidated

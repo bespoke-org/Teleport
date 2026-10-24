@@ -1,6 +1,6 @@
 import Foundation
 
-/// Holds the privileged leak guard across the whole span in which a VPN session is
+/// Holds the privileged leak guard across the whole span in which a TUN session is
 /// meant to be carrying traffic — including the parts where no session exists.
 ///
 /// A routed session is torn down and rebuilt whenever the uplink changes, and it

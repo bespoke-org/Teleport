@@ -20,7 +20,8 @@ enum ProxyPhase: String, Codable {
 
 enum ConnectionMode: String, Codable, CaseIterable, Identifiable {
     case systemProxy
-    case vpn
+    // The raw value stays "vpn": it is persisted in the settings snapshot.
+    case tun = "vpn"
 
     var id: String { rawValue }
 
@@ -28,8 +29,8 @@ enum ConnectionMode: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .systemProxy:
             return "System Proxy"
-        case .vpn:
-            return "VPN"
+        case .tun:
+            return "TUN"
         }
     }
 
@@ -37,7 +38,7 @@ enum ConnectionMode: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .systemProxy:
             return "Routes apps that respect macOS proxy settings through Xray."
-        case .vpn:
+        case .tun:
             return "Full-device Xray TUN tunnel. Requires administrator approval to start and stop."
         }
     }
@@ -818,7 +819,7 @@ struct AppSnapshot: Codable, Equatable {
     var splitTunnelProfiles: [SplitTunnelProfile]
     var selectedSplitTunnelProfileID: UUID?
     var isSplitTunnelEnabled: Bool
-    /// Whether VPN mode refuses to let traffic reach the physical uplink while a
+    /// Whether TUN mode refuses to let traffic reach the physical uplink while a
     /// session is meant to be carrying it. On by default: the windows it covers
     /// open without the user doing anything.
     var isLeakGuardEnabled: Bool
@@ -829,7 +830,7 @@ struct AppSnapshot: Codable, Equatable {
         subscriptionSources: [SubscriptionSource] = [],
         selectedConnectionID: UUID?,
         proxyEndpoint: ProxyEndpoint,
-        connectionMode: ConnectionMode = .vpn,
+        connectionMode: ConnectionMode = .tun,
         subscriptionConnectionSort: SubscriptionConnectionSort = .name,
         showsLatencyInMenuBarPicker: Bool = true,
         animatesMenuBarIcon: Bool = true,
@@ -876,7 +877,7 @@ struct AppSnapshot: Codable, Equatable {
         subscriptionSources = try container.decodeIfPresent([SubscriptionSource].self, forKey: .subscriptionSources) ?? []
         selectedConnectionID = try container.decodeIfPresent(UUID.self, forKey: .selectedConnectionID)
         proxyEndpoint = try container.decodeIfPresent(ProxyEndpoint.self, forKey: .proxyEndpoint) ?? .default
-        connectionMode = try container.decodeIfPresent(ConnectionMode.self, forKey: .connectionMode) ?? .vpn
+        connectionMode = try container.decodeIfPresent(ConnectionMode.self, forKey: .connectionMode) ?? .tun
         subscriptionConnectionSort = try container.decodeIfPresent(SubscriptionConnectionSort.self, forKey: .subscriptionConnectionSort) ?? .name
         showsLatencyInMenuBarPicker = try container.decodeIfPresent(Bool.self, forKey: .showsLatencyInMenuBarPicker) ?? true
         animatesMenuBarIcon = try container.decodeIfPresent(Bool.self, forKey: .animatesMenuBarIcon) ?? true

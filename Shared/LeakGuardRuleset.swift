@@ -1,6 +1,6 @@
 import Foundation
 
-/// The pf ruleset that keeps traffic off the physical uplink while a VPN session
+/// The pf ruleset that keeps traffic off the physical uplink while a TUN session
 /// is meant to be carrying it.
 ///
 /// A routed session is torn down and rebuilt whenever the uplink changes, and

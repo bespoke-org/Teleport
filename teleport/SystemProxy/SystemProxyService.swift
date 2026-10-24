@@ -45,10 +45,10 @@ nonisolated final class SystemProxyService: @unchecked Sendable {
         }
     }
 
-    /// Temporarily disables every system proxy while VPN routing is active, while
+    /// Temporarily disables every system proxy while TUN routing is active, while
     /// retaining a snapshot that can be restored after the tunnel stops.
-    func suspendProxyForVPN() throws {
-        log.info(Self.subsystem, "suspending system proxies for VPN routing")
+    func suspendProxyForTUN() throws {
+        log.info(Self.subsystem, "suspending system proxies for TUN routing")
         let hadSnapshot = hasSavedProxySnapshot()
         if !hadSnapshot {
             try persistCurrentProxyStateIfNeeded(endpoint: lastEnabledEndpoint ?? .default)
@@ -267,7 +267,7 @@ nonisolated final class SystemProxyService: @unchecked Sendable {
         try restoreProxySettings(settings, current: readSOCKSProxy(service: service, in: configurations), service: service, setCommand: "-setsocksfirewallproxy", stateCommand: "-setsocksfirewallproxystate")
     }
 
-    /// One read is cheaper than the two or three writes a restore takes, and in VPN
+    /// One read is cheaper than the two or three writes a restore takes, and in TUN
     /// mode most proxies were never touched, so they already match the snapshot.
     private func restoreProxySettings(_ settings: NetworkProxySettings, current: NetworkProxySettings, service: String, setCommand: String, stateCommand: String) throws {
         guard current != settings else { return }

@@ -162,7 +162,7 @@ struct XrayTunScriptBuilder: Sendable {
         done
 
         if [ -z "$tun_interface" ]; then
-            reason="Teleport VPN started Xray, but macOS did not create a TUN interface."
+            reason="Teleport TUN mode started Xray, but macOS did not create a TUN interface."
             printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$reason" >> "$CONTROL_LOG_FILE"
             ifconfig >> "$CONTROL_LOG_FILE" 2>&1 || true
             printf '%s\n' "$reason" >&2
@@ -179,7 +179,7 @@ struct XrayTunScriptBuilder: Sendable {
         route delete -net 0.0.0.0/1 >/dev/null 2>&1 || true
         route delete -net 128.0.0.0/1 >/dev/null 2>&1 || true
         if ! route add -net 0.0.0.0/1 -interface "$tun_interface" >> "$CONTROL_LOG_FILE" 2>&1; then
-            reason="Teleport VPN could not install the lower IPv4 default route through Teleport's TUN."
+            reason="Teleport TUN mode could not install the lower IPv4 default route through Teleport's TUN."
             printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$reason" >> "$CONTROL_LOG_FILE"
             printf '%s\n' "$reason" >&2
             kill "$pid" 2>/dev/null || true
@@ -194,7 +194,7 @@ struct XrayTunScriptBuilder: Sendable {
             exit 1
         fi
         if ! route add -net 128.0.0.0/1 -interface "$tun_interface" >> "$CONTROL_LOG_FILE" 2>&1; then
-            reason="Teleport VPN could not install the upper IPv4 default route through Teleport's TUN."
+            reason="Teleport TUN mode could not install the upper IPv4 default route through Teleport's TUN."
             printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$reason" >> "$CONTROL_LOG_FILE"
             printf '%s\n' "$reason" >&2
             kill "$pid" 2>/dev/null || true
@@ -217,7 +217,7 @@ struct XrayTunScriptBuilder: Sendable {
         if [ "$INSTALL_IPV6_ROUTES" -eq 1 ] && {
            ! route add -inet6 -net ::/1 -interface "$tun_interface" >> "$CONTROL_LOG_FILE" 2>&1 ||
            ! route add -inet6 -net 8000::/1 -interface "$tun_interface" >> "$CONTROL_LOG_FILE" 2>&1; }; then
-            reason="Teleport VPN could not install IPv6 default routes through Teleport's TUN."
+            reason="Teleport TUN mode could not install IPv6 default routes through Teleport's TUN."
             printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$reason" >> "$CONTROL_LOG_FILE"
             printf '%s\n' "$reason" >&2
             kill "$pid" 2>/dev/null || true
@@ -245,7 +245,7 @@ struct XrayTunScriptBuilder: Sendable {
         case "$public_interface_low" in
             utun*) ;;
             *)
-                reason="Teleport VPN started Xray, but macOS did not route lower-half public traffic through Teleport's TUN. Disconnect other VPN apps and try again."
+                reason="Teleport TUN mode started Xray, but macOS did not route lower-half public traffic through Teleport's TUN. Disconnect other VPN apps and try again."
                 printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$reason" >> "$CONTROL_LOG_FILE"
                 netstat -rn -f inet >> "$CONTROL_LOG_FILE" 2>&1 || true
                 printf '%s\n' "$reason" >&2
@@ -265,7 +265,7 @@ struct XrayTunScriptBuilder: Sendable {
         case "$public_interface_high" in
             utun*) ;;
             *)
-                reason="Teleport VPN started Xray, but macOS did not route upper-half public traffic through Teleport's TUN. Disconnect other VPN apps and try again."
+                reason="Teleport TUN mode started Xray, but macOS did not route upper-half public traffic through Teleport's TUN. Disconnect other VPN apps and try again."
                 printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$reason" >> "$CONTROL_LOG_FILE"
                 netstat -rn -f inet >> "$CONTROL_LOG_FILE" 2>&1 || true
                 printf '%s\n' "$reason" >&2
@@ -283,7 +283,7 @@ struct XrayTunScriptBuilder: Sendable {
         esac
 
         if [ -n "$tunneled_protected_host" ]; then
-            reason="Teleport VPN could not keep the proxy server route outside the tunnel. Disconnect other VPN apps and try again, or use System Proxy mode."
+            reason="Teleport TUN mode could not keep the proxy server route outside the tunnel. Disconnect other VPN apps and try again, or use System Proxy mode."
             printf '%s %s (%s)\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$reason" "$tunneled_protected_host" >> "$CONTROL_LOG_FILE"
             printf '%s\n' "$reason" >&2
             kill "$pid" 2>/dev/null || true

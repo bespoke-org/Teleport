@@ -50,7 +50,7 @@ enum GeodataUpdateError: LocalizedError {
 /// supplies by URL are kept separately from Teleport's bundled defaults; the
 /// "resolved" directory always contains exactly one usable file per kind
 /// (custom override if present, otherwise the bundled default) and is what
-/// gets delivered to the privileged helper for VPN mode.
+/// gets delivered to the privileged helper for TUN mode.
 nonisolated struct GeodataUpdateService {
     private struct ResolvedAssetStamp: Codable, Equatable {
         let sourcePath: String

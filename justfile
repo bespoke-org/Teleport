@@ -10,7 +10,7 @@ destination := "platform=macOS,arch=arm64"
 # Extra swiftc flags for the verify binaries; `coverage` sets the profiling ones.
 verify_flags := ""
 coverage_dir := "build/coverage"
-verify_sources := "teleport/TeleportModels.swift teleport/App/*.swift teleport/Connection/*.swift teleport/Parsing/*.swift teleport/Persistence/*.swift teleport/Subscriptions/*.swift teleport/XrayCore/*.swift teleport/SystemProxy/*.swift teleport/VPN/*.swift teleport/HelperInstallation/*.swift teleport/Geodata/*.swift teleport/Health/*.swift teleport/ViewModels/*.swift Shared/*.swift"
+verify_sources := "teleport/TeleportModels.swift teleport/App/*.swift teleport/Connection/*.swift teleport/Parsing/*.swift teleport/Persistence/*.swift teleport/Subscriptions/*.swift teleport/XrayCore/*.swift teleport/SystemProxy/*.swift teleport/TUN/*.swift teleport/HelperInstallation/*.swift teleport/Geodata/*.swift teleport/Health/*.swift teleport/ViewModels/*.swift Shared/*.swift"
 
 # List available recipes
 default:
@@ -197,7 +197,7 @@ verify-uplink-reconciliation:
 
 # Check the pf ruleset that keeps traffic off the uplink between sessions
 verify-leak-guard:
-    swiftc {{verify_flags}} Shared/LeakGuardRuleset.swift Shared/VPNHelperXPCProtocol.swift teleport/VPN/ProbeHostExemptions.swift scripts/verify_leak_guard.swift -o /tmp/teleport-verify-leak-guard
+    swiftc {{verify_flags}} Shared/LeakGuardRuleset.swift Shared/TUNHelperXPCProtocol.swift teleport/TUN/ProbeHostExemptions.swift scripts/verify_leak_guard.swift -o /tmp/teleport-verify-leak-guard
     /tmp/teleport-verify-leak-guard
 
 # Verify the shared privileged-helper XPC protocol and payload bounds
@@ -222,7 +222,7 @@ verify-helper-xpc-endpoint:
 
 # Verify app-side XPC connection ownership and transport races
 verify-xpc-transport:
-    swiftc {{verify_flags}} Shared/*.swift teleport/VPN/VPNHelperTransport.swift teleport/VPN/XPCVPNHelperTransport.swift scripts/verify_xpc_transport.swift -o /tmp/teleport-verify-xpc-transport
+    swiftc {{verify_flags}} Shared/*.swift teleport/TUN/TUNHelperTransport.swift teleport/TUN/XPCTUNHelperTransport.swift scripts/verify_xpc_transport.swift -o /tmp/teleport-verify-xpc-transport
     /tmp/teleport-verify-xpc-transport
 
 # Verify the typed privileged-helper client and bounded reconciliation

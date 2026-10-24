@@ -19,7 +19,7 @@ nonisolated struct ProbeHostExemptions: Equatable, Sendable {
     /// How many of a server's addresses one check may open. The helper refuses a
     /// request naming more hosts than it will route, and a refused request leaves
     /// the guard unrenewed — so a full probe queue has to fit inside
-    /// `VPNHelperProtocol.maximumProtectedHosts` alongside the session's own
+    /// `TUNHelperProtocol.maximumProtectedHosts` alongside the session's own
     /// servers. Enough for a name published over both families with a pair spare.
     static let maximumAddressesPerProbe = 4
 

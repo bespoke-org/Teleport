@@ -1,12 +1,12 @@
 import Foundation
 
-/// User-side coordinator for VPN-mode Xray. It installs the root helper when
+/// User-side coordinator for TUN-mode Xray. It installs the root helper when
 /// necessary, sends lifecycle commands over IPC, and keeps a user-readable cache
 /// of the last reported root session. The helper remains the real privilege and
 /// process boundary. `@unchecked Sendable` places synchronization responsibility
 /// on this implementation rather than on the compiler.
 final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
-    nonisolated static let subsystem = "vpn"
+    nonisolated static let subsystem = "tun"
     private let fileManager: FileManager
     private let paths: XrayTunRuntimePaths
     private let helperClient: PrivilegedHelperClient
@@ -344,9 +344,9 @@ enum XrayTunRuntimeError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case let .startFailed(summary, _):
-            return summary.isEmpty ? "Failed to start Teleport VPN" : summary
+            return summary.isEmpty ? "Failed to start TUN mode" : summary
         case let .stopFailed(summary, _):
-            return summary.isEmpty ? "Failed to stop Teleport VPN" : summary
+            return summary.isEmpty ? "Failed to stop TUN mode" : summary
         }
     }
 

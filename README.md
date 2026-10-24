@@ -21,10 +21,10 @@ You can support us with USDT. Check the network before sending: a transfer on a 
 
 - Connections from `vless://`, `trojan://` and `wireguard://` links and from WireGuard `[Interface]` configuration files.
 - Subscriptions from `http://` and `https://` URLs, with periodic refresh and duplicate filtering.
-- Two connection modes: **System Proxy** (no administrator rights) and **VPN** (TUN interface through a root helper).
+- Two connection modes: **System Proxy** (no administrator rights) and **TUN** (the whole machine is routed through a tunnel interface; needs a root helper).
 - Split tunneling: rules by domain, IP range, geosite category or geoip country, grouped in named profiles. A rule can send its traffic through a different saved connection, so one session can dial several servers.
 - Geodata (`geoip.dat`, `geosite.dat`) bundled, with optional downloads from a source of your choice.
-- A pf-based leak guard that keeps traffic off the physical network while a VPN session is being rebuilt.
+- A pf-based leak guard that keeps traffic off the physical network while a TUN session is being rebuilt.
 - TCP latency checks for every connection, shown in the menu bar picker.
 
 ## Requirements
@@ -32,7 +32,7 @@ You can support us with USDT. Check the network before sending: a transfer on a 
 - macOS 26 or later (the project's deployment target).
 - Apple Silicon. The bundled Xray executable is arm64 only.
 - To build: Xcode 26 or later, and optionally [just](https://github.com/casey/just) for the command-line recipes.
-- VPN mode asks for an administrator password once, to install the helper.
+- TUN mode asks for an administrator password once, to install the helper.
 
 ## Install
 
@@ -46,7 +46,7 @@ just build-release        # builds Release and copies Teleport.app into /Applica
 
 Or open `teleport.xcodeproj` in Xcode and run the `teleport` scheme.
 
-Without a `DEVELOPMENT_TEAM` the build is signed ad hoc. System Proxy mode works in such a build; VPN mode refuses to install the helper, because the app and the helper verify each other by Team ID (see Security model and Development > Signing).
+Without a `DEVELOPMENT_TEAM` the build is signed ad hoc. System Proxy mode works in such a build; TUN mode refuses to install the helper, because the app and the helper verify each other by Team ID (see Security model and Development > Signing).
 
 On first launch the app has no connections. Add a link or a subscription URL in Settings > Connections. The same page can add two community subscription lists that ship with the app (`packaging/bundled-connections.json`, from [igareck/vpn-configs-for-russia](https://github.com/igareck/vpn-configs-for-russia)). They are not added on their own: the servers in those lists are run by people nobody here knows, and everything sent through them can be read or altered by whoever operates them.
 
@@ -56,7 +56,7 @@ On first launch the app has no connections. Add a link or a subscription URL in 
 
 Starts the bundled Xray as the current user, listens on local HTTP and SOCKS5 ports (8080 and 1080 by default) and enables the macOS system proxy for the active network service. Applications that ignore the system proxy are not routed. No root access is involved, and the proxy settings are restored on disconnect, on quit, and on the next launch if the app did not get to it.
 
-### VPN
+### TUN
 
 Starts Xray as root through Teleport's privileged helper with a TUN inbound, and routes the machine through it:
 
@@ -68,13 +68,13 @@ Starts Xray as root through Teleport's privileged helper with a TUN inbound, and
 
 DNS is answered by Xray inside the tunnel; the helper publishes a resolver entry for it (`State:/Network/Service/dev.x.teleport/DNS`) and removes it on stop. Split-tunnel rules with the `direct` action leave through the physical interface. When the machine wakes from sleep or the network changes, the session is torn down and rebuilt on the new uplink.
 
-If another VPN owns the default `utun` route, Teleport refuses to start VPN mode. Disconnect it first, or use System Proxy mode.
+If another VPN owns the default `utun` route, Teleport refuses to start TUN mode. Disconnect it first, or use System Proxy mode.
 
 ## Security model
 
 ### What runs as root
 
-VPN mode installs a LaunchDaemon, `dev.x.teleport.PrivilegedHelper`, which runs as root and stays resident. Its whole code is in `TeleportPrivilegedHelper/`. It does six things on request: report status, start a session, stop a session, read its own logs, engage the leak guard, release the leak guard. Starting a session means running the root copy of Xray with a configuration the app sends over, installing the routes above and publishing the DNS entry. The shell it runs for this is generated in `Routing/XrayTunScriptBuilder.swift` with every value quoted; the app supplies data (the Xray configuration, the server addresses), not commands.
+TUN mode installs a LaunchDaemon, `dev.x.teleport.PrivilegedHelper`, which runs as root and stays resident. Its whole code is in `TeleportPrivilegedHelper/`. It does six things on request: report status, start a session, stop a session, read its own logs, engage the leak guard, release the leak guard. Starting a session means running the root copy of Xray with a configuration the app sends over, installing the routes above and publishing the DNS entry. The shell it runs for this is generated in `Routing/XrayTunScriptBuilder.swift` with every value quoted; the app supplies data (the Xray configuration, the server addresses), not commands.
 
 The helper accepts an XPC connection only when both hold:
 
@@ -100,7 +100,7 @@ The helper and its files:
 
 ### Leak guard
 
-While VPN mode is on, a pf ruleset in the anchor `com.apple/dev.x.teleport` blocks outbound traffic that would otherwise leave on the physical interface. It allows: loopback; the tunnel interface; DHCP; private, link-local and multicast IPv4 destinations; link-local, unique-local and multicast IPv6 destinations; DNS to any resolver on ports 53 and 853; the proxy servers of the current session; and, during a session, traffic of root processes, because Xray's `direct` outbound runs as root. Everything else outbound, IPv4 and IPv6, is dropped. Inbound traffic is not filtered.
+While TUN mode is on, a pf ruleset in the anchor `com.apple/dev.x.teleport` blocks outbound traffic that would otherwise leave on the physical interface. It allows: loopback; the tunnel interface; DHCP; private, link-local and multicast IPv4 destinations; link-local, unique-local and multicast IPv6 destinations; DNS to any resolver on ports 53 and 853; the proxy servers of the current session; and, during a session, traffic of root processes, because Xray's `direct` outbound runs as root. Everything else outbound, IPv4 and IPv6, is dropped. Inbound traffic is not filtered.
 
 The guard is held on a lease: the app renews it every 45 seconds and the helper drops it after 180 seconds without renewal, so a crashed app leaves the machine without network for at most three minutes. The helper also drops a guard it finds at its own start. The switch is in Settings > General.
 
@@ -136,7 +136,7 @@ Connection links, which contain credentials, are stored in the login Keychain (s
 
 ### Signing
 
-`DEVELOPMENT_TEAM` is the Apple Developer Team ID that signs the app and the helper. VPN mode needs it: the helper accepts only a caller whose certificate has the same Team ID in its `OU` field.
+`DEVELOPMENT_TEAM` is the Apple Developer Team ID that signs the app and the helper. TUN mode needs it: the helper accepts only a caller whose certificate has the same Team ID in its `OU` field.
 
 A free Personal Team is enough, since the project uses no entitlements that need a provisioning profile. Add your Apple ID in Xcode > Settings > Accounts; Xcode creates the team and an "Apple Development" certificate. The Team ID is the `OU` of that certificate:
 
@@ -182,13 +182,13 @@ just verify-xpc-protocol              # app/helper message contract
 just coverage                         # line coverage of the verify scripts
 ```
 
-The remaining recipes are listed by `just --list`. None of them needs root or a logged-in GUI session; VPN connect/disconnect, helper installation and leak-guard behaviour on a real network are checked by hand (see `docs/xray-bundling-and-release.md`).
+The remaining recipes are listed by `just --list`. None of them needs root or a logged-in GUI session; TUN connect/disconnect, helper installation and leak-guard behaviour on a real network are checked by hand (see `docs/xray-bundling-and-release.md`).
 
 ## Known limitations
 
 - No signed download yet, build from source.
 - Apple Silicon only, because of the bundled Xray executable.
-- Another VPN that owns the default `utun` route blocks VPN mode entirely.
+- Another VPN that owns the default `utun` route blocks TUN mode entirely.
 - The leak guard lets DNS queries reach any resolver, and during a session it passes traffic of any root process, not only Xray.
 
 ## Comparison with other clients

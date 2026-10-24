@@ -14,10 +14,10 @@ actor HelperCommandDispatcher {
     /// and a helper restart intentionally loses this observation.
     private var observedSessionID: UUID?
     private var queuedSessionID: UUID?
-    private var queuedPhase: VPNHelperSessionPhase?
+    private var queuedPhase: TUNHelperSessionPhase?
     private var observedFailureSummary: String?
     private var correlationGeneration: UInt64 = 0
-    private let onRequestAdmitted: @Sendable (VPNHelperCommand) -> Void
+    private let onRequestAdmitted: @Sendable (TUNHelperCommand) -> Void
 
     init(
         executor: any HelperCommandExecuting,
@@ -25,15 +25,15 @@ actor HelperCommandDispatcher {
             maximumEntries: 128,
             maximumAge: 10 * 60
         ),
-        onRequestAdmitted: @escaping @Sendable (VPNHelperCommand) -> Void = { _ in }
+        onRequestAdmitted: @escaping @Sendable (TUNHelperCommand) -> Void = { _ in }
     ) {
         self.executor = executor
         self.ledger = ledger
         self.onRequestAdmitted = onRequestAdmitted
     }
 
-    func dispatch(command: VPNHelperCommand, requestData: Data) async -> Data {
-        guard requestData.count <= VPNHelperProtocol.maximumRequestBytes else {
+    func dispatch(command: TUNHelperCommand, requestData: Data) async -> Data {
+        guard requestData.count <= TUNHelperProtocol.maximumRequestBytes else {
             return failureResponse(
                 command: command,
                 metadata: nil,
@@ -60,7 +60,7 @@ actor HelperCommandDispatcher {
 
         do {
             try Self.validateRequestShape(command: command, requestData: requestData)
-        } catch let protocolFailure as VPNHelperProtocolFailure {
+        } catch let protocolFailure as TUNHelperProtocolFailure {
             return failureResponse(command: command, metadata: metadata, failure: protocolFailure)
         } catch {
             return failureResponse(
@@ -103,7 +103,7 @@ actor HelperCommandDispatcher {
         do {
             switch command {
             case .status:
-                let request: VPNHelperRequestEnvelope<StatusRequest> = try VPNHelperCodec.decodeRequest(requestData)
+                let request: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(requestData)
                 let projectedSessionID = queuedSessionID ?? observedSessionID
                 let projectedPhase = queuedPhase ?? (observedFailureSummary == nil ? nil : .failed)
                 let projectedFailureSummary = observedFailureSummary
@@ -127,7 +127,7 @@ actor HelperCommandDispatcher {
                     return try executor.status(request: request.payload)
                 }
             case .startSession:
-                let request: VPNHelperRequestEnvelope<StartSessionRequest> = try VPNHelperCodec.decodeRequest(requestData)
+                let request: TUNHelperRequestEnvelope<StartSessionRequest> = try TUNHelperCodec.decodeRequest(requestData)
                 guard let sessionID = request.sessionID else {
                     throw failure(code: .malformedPayload, summary: "The start request requires a session identifier")
                 }
@@ -142,7 +142,7 @@ actor HelperCommandDispatcher {
                     try executor.start(request: request.payload, sessionID: sessionID)
                 }
             case .stopSession:
-                let request: VPNHelperRequestEnvelope<StopSessionRequest> = try VPNHelperCodec.decodeRequest(requestData)
+                let request: TUNHelperRequestEnvelope<StopSessionRequest> = try TUNHelperCodec.decodeRequest(requestData)
                 guard let sessionID = request.sessionID else {
                     throw failure(code: .malformedPayload, summary: "The stop request requires a session identifier")
                 }
@@ -164,7 +164,7 @@ actor HelperCommandDispatcher {
                     try executor.stop(request: request.payload, sessionID: sessionID)
                 }
             case .engageLeakGuard:
-                let request: VPNHelperRequestEnvelope<EngageLeakGuardRequest> = try VPNHelperCodec.decodeRequest(requestData)
+                let request: TUNHelperRequestEnvelope<EngageLeakGuardRequest> = try TUNHelperCodec.decodeRequest(requestData)
                 return try await execute(
                     command: command,
                     requestID: request.requestID,
@@ -176,7 +176,7 @@ actor HelperCommandDispatcher {
                     try executor.engageLeakGuard(request: request.payload)
                 }
             case .releaseLeakGuard:
-                let request: VPNHelperRequestEnvelope<ReleaseLeakGuardRequest> = try VPNHelperCodec.decodeRequest(requestData)
+                let request: TUNHelperRequestEnvelope<ReleaseLeakGuardRequest> = try TUNHelperCodec.decodeRequest(requestData)
                 return try await execute(
                     command: command,
                     requestID: request.requestID,
@@ -188,7 +188,7 @@ actor HelperCommandDispatcher {
                     try executor.releaseLeakGuard(request: request.payload)
                 }
             case .readDiagnostics:
-                let request: VPNHelperRequestEnvelope<ReadDiagnosticsRequest> = try VPNHelperCodec.decodeRequest(requestData)
+                let request: TUNHelperRequestEnvelope<ReadDiagnosticsRequest> = try TUNHelperCodec.decodeRequest(requestData)
                 return try await execute(
                     command: command,
                     requestID: request.requestID,
@@ -200,7 +200,7 @@ actor HelperCommandDispatcher {
                     try executor.readDiagnostics(request: request.payload)
                 }
             }
-        } catch let protocolFailure as VPNHelperProtocolFailure {
+        } catch let protocolFailure as TUNHelperProtocolFailure {
             return failureResponse(command: command, metadata: metadata, failure: protocolFailure)
         } catch {
             return failureResponse(
@@ -215,7 +215,7 @@ actor HelperCommandDispatcher {
     }
 
     private func execute<Response>(
-        command: VPNHelperCommand,
+        command: TUNHelperCommand,
         requestID: UUID,
         responseSessionID: UUID?,
         usesObservedSessionID: Bool,
@@ -230,7 +230,7 @@ actor HelperCommandDispatcher {
             return failureResponse(
                 command: command,
                 metadata: RequestMetadata(
-                    revision: VPNHelperProtocol.revision,
+                    revision: TUNHelperProtocol.revision,
                     requestID: requestID,
                     sessionID: responseSessionID
                 ),
@@ -260,15 +260,15 @@ actor HelperCommandDispatcher {
             await precedingExecution?.value
             do {
                 let payload = try operation()
-                let response = VPNHelperResponseEnvelope(
-                    revision: VPNHelperProtocol.revision,
+                let response = TUNHelperResponseEnvelope(
+                    revision: TUNHelperProtocol.revision,
                     requestID: requestID,
                     sessionID: effectiveResponseSessionID,
                     payload: payload,
                     failure: nil
                 )
-                return (try VPNHelperCodec.encodeResponse(response), true, nil)
-            } catch let protocolFailure as VPNHelperProtocolFailure {
+                return (try TUNHelperCodec.encodeResponse(response), true, nil)
+            } catch let protocolFailure as TUNHelperProtocolFailure {
                 return (
                     Self.encodeFailure(
                         requestID: requestID,
@@ -279,7 +279,7 @@ actor HelperCommandDispatcher {
                     false,
                     protocolFailure.summary
                 )
-            } catch let presentableError as any VPNHelperClientPresentableError {
+            } catch let presentableError as any TUNHelperClientPresentableError {
                 let summary = presentableError.clientSummary
                 return (
                     Self.encodeFailure(
@@ -335,9 +335,9 @@ actor HelperCommandDispatcher {
     }
 
     private func failureResponse(
-        command: VPNHelperCommand,
+        command: TUNHelperCommand,
         metadata: RequestMetadata?,
-        failure: VPNHelperProtocolFailure
+        failure: TUNHelperProtocolFailure
     ) -> Data {
         let requestID = metadata?.requestID ?? UUID()
         let sessionID = metadata?.sessionID
@@ -359,21 +359,21 @@ actor HelperCommandDispatcher {
         requestID: UUID,
         sessionID: UUID?,
         payloadType: Response.Type,
-        failure: VPNHelperProtocolFailure
+        failure: TUNHelperProtocolFailure
     ) -> Data where Response: Codable & Sendable & Equatable {
-        let response = VPNHelperResponseEnvelope<Response>(
-            revision: VPNHelperProtocol.revision,
+        let response = TUNHelperResponseEnvelope<Response>(
+            revision: TUNHelperProtocol.revision,
             requestID: requestID,
             sessionID: sessionID,
             payload: nil,
             failure: failure
         )
-        if let data = try? VPNHelperCodec.encodeResponse(response) {
+        if let data = try? TUNHelperCodec.encodeResponse(response) {
             return data
         }
 
-        let fallback = VPNHelperResponseEnvelope<Response>(
-            revision: VPNHelperProtocol.revision,
+        let fallback = TUNHelperResponseEnvelope<Response>(
+            revision: TUNHelperProtocol.revision,
             requestID: requestID,
             sessionID: sessionID,
             payload: nil,
@@ -383,7 +383,7 @@ actor HelperCommandDispatcher {
     }
 
     private nonisolated static func validateRequestShape(
-        command: VPNHelperCommand,
+        command: TUNHelperCommand,
         requestData: Data
     ) throws {
         guard let object = try JSONSerialization.jsonObject(with: requestData) as? [String: Any],
@@ -438,11 +438,11 @@ actor HelperCommandDispatcher {
     }
 
     private nonisolated static func failure(
-        code: VPNHelperFailureCode,
+        code: TUNHelperFailureCode,
         summary: String,
-        retryDisposition: VPNHelperRetryDisposition = .never
-    ) -> VPNHelperProtocolFailure {
-        VPNHelperProtocolFailure(
+        retryDisposition: TUNHelperRetryDisposition = .never
+    ) -> TUNHelperProtocolFailure {
+        TUNHelperProtocolFailure(
             code: code,
             summary: summary,
             details: nil,
@@ -451,10 +451,10 @@ actor HelperCommandDispatcher {
     }
 
     private func failure(
-        code: VPNHelperFailureCode,
+        code: TUNHelperFailureCode,
         summary: String,
-        retryDisposition: VPNHelperRetryDisposition = .never
-    ) -> VPNHelperProtocolFailure {
+        retryDisposition: TUNHelperRetryDisposition = .never
+    ) -> TUNHelperProtocolFailure {
         Self.failure(code: code, summary: summary, retryDisposition: retryDisposition)
     }
 }

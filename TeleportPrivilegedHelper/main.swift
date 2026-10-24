@@ -7,7 +7,7 @@ let controller = XrayTunController()
 controller.releaseStaleLeakGuard()
 let dispatcher = HelperCommandDispatcher(executor: controller)
 let delegate = HelperXPCListenerDelegate(dispatcher: dispatcher)
-let listener = NSXPCListener(machServiceName: VPNHelperProtocol.machServiceName)
+let listener = NSXPCListener(machServiceName: TUNHelperProtocol.machServiceName)
 listener.delegate = delegate
 listener.resume()
 withExtendedLifetime(delegate) {

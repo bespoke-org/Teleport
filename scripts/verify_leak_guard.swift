@@ -140,7 +140,7 @@ struct VerifyLeakGuard {
         }
         let sessionHosts = ["203.0.113.7", "203.0.113.8", "2001:db8::1"]
         precondition(
-            sessionHosts.count + exemptions.addresses.count <= VPNHelperProtocol.maximumProtectedHosts,
+            sessionHosts.count + exemptions.addresses.count <= TUNHelperProtocol.maximumProtectedHosts,
             "a full probe queue plus the session's own servers has to fit in what the helper accepts"
         )
     }

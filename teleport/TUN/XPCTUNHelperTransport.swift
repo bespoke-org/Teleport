@@ -1,13 +1,13 @@
 import Foundation
 import Synchronization
 
-nonisolated protocol VPNHelperXPCConnection: Sendable {
+nonisolated protocol TUNHelperXPCConnection: Sendable {
     func setRemoteObjectInterface(_ interface: NSXPCInterface)
     func setInterruptionHandler(_ handler: @escaping @Sendable () -> Void)
     func setInvalidationHandler(_ handler: @escaping @Sendable () -> Void)
     func remoteProxy(
         errorHandler: @escaping @Sendable (Error) -> Void
-    ) -> (any VPNHelperXPCProtocol)?
+    ) -> (any TUNHelperXPCProtocol)?
     func activate()
     func invalidate()
 }
@@ -15,12 +15,12 @@ nonisolated protocol VPNHelperXPCConnection: Sendable {
 /// `NSXPCConnection` is not declared Sendable by Foundation, although it owns a
 /// private serial queue for proxy calls and lifecycle handlers. The wrapped reference
 /// is immutable; transport-owned connection replacement remains protected by `state`.
-nonisolated final class FoundationVPNHelperXPCConnection: VPNHelperXPCConnection, @unchecked Sendable {
+nonisolated final class FoundationTUNHelperXPCConnection: TUNHelperXPCConnection, @unchecked Sendable {
     private let connection: NSXPCConnection
 
     init(
         connection: NSXPCConnection = NSXPCConnection(
-            machServiceName: VPNHelperProtocol.machServiceName,
+            machServiceName: TUNHelperProtocol.machServiceName,
             options: .privileged
         )
     ) {
@@ -41,8 +41,8 @@ nonisolated final class FoundationVPNHelperXPCConnection: VPNHelperXPCConnection
 
     func remoteProxy(
         errorHandler: @escaping @Sendable (Error) -> Void
-    ) -> (any VPNHelperXPCProtocol)? {
-        connection.remoteObjectProxyWithErrorHandler(errorHandler) as? VPNHelperXPCProtocol
+    ) -> (any TUNHelperXPCProtocol)? {
+        connection.remoteObjectProxyWithErrorHandler(errorHandler) as? TUNHelperXPCProtocol
     }
 
     func activate() {
@@ -54,18 +54,18 @@ nonisolated final class FoundationVPNHelperXPCConnection: VPNHelperXPCConnection
     }
 }
 
-nonisolated final class XPCVPNHelperTransport: VPNHelperTransport {
-    typealias ConnectionFactory = @Sendable () -> any VPNHelperXPCConnection
+nonisolated final class XPCTUNHelperTransport: TUNHelperTransport {
+    typealias ConnectionFactory = @Sendable () -> any TUNHelperXPCConnection
 
     private struct ConnectionRecord: Sendable {
-        let connection: any VPNHelperXPCConnection
+        let connection: any TUNHelperXPCConnection
         let generation: UInt64
     }
 
     private struct ConnectionCreation: Sendable {
         let generation: UInt64
         var record: ConnectionRecord?
-        var retirementError: VPNHelperTransportError?
+        var retirementError: TUNHelperTransportError?
     }
 
     private struct PendingRequest: Sendable {
@@ -81,17 +81,17 @@ nonisolated final class XPCVPNHelperTransport: VPNHelperTransport {
     }
 
     private final class Completion: Sendable {
-        private typealias Waiter = CheckedContinuation<Result<Data, VPNHelperTransportError>, Never>
+        private typealias Waiter = CheckedContinuation<Result<Data, TUNHelperTransportError>, Never>
 
         private struct Storage {
-            var result: Result<Data, VPNHelperTransportError>?
+            var result: Result<Data, TUNHelperTransportError>?
             var waiter: Waiter?
         }
 
         private let state = Mutex(Storage())
 
         @discardableResult
-        func resolve(_ result: Result<Data, VPNHelperTransportError>) -> Bool {
+        func resolve(_ result: Result<Data, TUNHelperTransportError>) -> Bool {
             let (didResolve, waiter) = state.withLock { storage -> (Bool, Waiter?) in
                 guard storage.result == nil else { return (false, nil) }
                 storage.result = result
@@ -115,7 +115,7 @@ nonisolated final class XPCVPNHelperTransport: VPNHelperTransport {
             defer { deadline.cancel() }
 
             let result = await withCheckedContinuation { (continuation: Waiter) in
-                let resolved = state.withLock { storage -> Result<Data, VPNHelperTransportError>? in
+                let resolved = state.withLock { storage -> Result<Data, TUNHelperTransportError>? in
                     if let result = storage.result { return result }
                     storage.waiter = continuation
                     return nil
@@ -134,19 +134,19 @@ nonisolated final class XPCVPNHelperTransport: VPNHelperTransport {
 
     init(
         connectionFactory: @escaping ConnectionFactory = {
-            FoundationVPNHelperXPCConnection()
+            FoundationTUNHelperXPCConnection()
         }
     ) {
         self.connectionFactory = connectionFactory
     }
 
     func send(
-        command: VPNHelperCommand,
+        command: TUNHelperCommand,
         requestData: Data,
         timeout: TimeInterval
     ) async throws -> Data {
-        guard requestData.count <= VPNHelperProtocol.maximumRequestBytes else {
-            throw VPNHelperTransportError.invalidResponse(
+        guard requestData.count <= TUNHelperProtocol.maximumRequestBytes else {
+            throw TUNHelperTransportError.invalidResponse(
                 "The privileged helper request exceeds the protocol limit"
             )
         }
@@ -165,7 +165,7 @@ nonisolated final class XPCVPNHelperTransport: VPNHelperTransport {
             return true
         }
         guard registered else {
-            throw VPNHelperTransportError.invalidated
+            throw TUNHelperTransportError.invalidated
         }
 
         let proxy = record.connection.remoteProxy { [weak self, completion] error in
@@ -217,7 +217,7 @@ nonisolated final class XPCVPNHelperTransport: VPNHelperTransport {
                 )))
                 return
             }
-            guard data.count <= VPNHelperProtocol.maximumResponseBytes else {
+            guard data.count <= TUNHelperProtocol.maximumResponseBytes else {
                 completion.resolve(.failure(.invalidResponse(
                     "The privileged helper response exceeds the protocol limit"
                 )))
@@ -292,7 +292,7 @@ nonisolated final class XPCVPNHelperTransport: VPNHelperTransport {
             }
             let connection = connectionFactory()
             let record = ConnectionRecord(connection: connection, generation: generation)
-            let initialError = state.withLock { state -> VPNHelperTransportError? in
+            let initialError = state.withLock { state -> TUNHelperTransportError? in
                 guard var creation = state.connectionCreation,
                       creation.generation == generation else {
                     return .invalidated
@@ -328,7 +328,7 @@ nonisolated final class XPCVPNHelperTransport: VPNHelperTransport {
             }
 
             let result = state.withLock {
-                state -> Result<ConnectionRecord, VPNHelperTransportError> in
+                state -> Result<ConnectionRecord, TUNHelperTransportError> in
                 guard let creation = state.connectionCreation,
                       creation.generation == generation else {
                     return .failure(.invalidated)
@@ -351,7 +351,7 @@ nonisolated final class XPCVPNHelperTransport: VPNHelperTransport {
 
     private func connectionCreationError(
         for generation: UInt64
-    ) -> VPNHelperTransportError? {
+    ) -> TUNHelperTransportError? {
         state.withLock { state in
             guard let creation = state.connectionCreation,
                   creation.generation == generation else {
@@ -362,9 +362,9 @@ nonisolated final class XPCVPNHelperTransport: VPNHelperTransport {
     }
 
     private static func proxyInvocationError(
-        for command: VPNHelperCommand,
+        for command: TUNHelperCommand,
         message: String
-    ) -> VPNHelperTransportError {
+    ) -> TUNHelperTransportError {
         switch command {
         case .startSession, .stopSession:
             // A proxy/reply-channel error does not prove whether a mutating
@@ -380,16 +380,16 @@ nonisolated final class XPCVPNHelperTransport: VPNHelperTransport {
     }
 
     private static func remoteInterface() -> NSXPCInterface {
-        let interface = NSXPCInterface(with: VPNHelperXPCProtocol.self)
+        let interface = NSXPCInterface(with: TUNHelperXPCProtocol.self)
         let dataClasses = NSSet(object: NSData.self) as! Set<AnyHashable>
         let errorClasses = NSSet(object: NSError.self) as! Set<AnyHashable>
         let methods = [
-            #selector(VPNHelperXPCProtocol.getStatus(_:withReply:)),
-            #selector(VPNHelperXPCProtocol.startSession(_:withReply:)),
-            #selector(VPNHelperXPCProtocol.stopSession(_:withReply:)),
-            #selector(VPNHelperXPCProtocol.readDiagnostics(_:withReply:)),
-            #selector(VPNHelperXPCProtocol.engageLeakGuard(_:withReply:)),
-            #selector(VPNHelperXPCProtocol.releaseLeakGuard(_:withReply:))
+            #selector(TUNHelperXPCProtocol.getStatus(_:withReply:)),
+            #selector(TUNHelperXPCProtocol.startSession(_:withReply:)),
+            #selector(TUNHelperXPCProtocol.stopSession(_:withReply:)),
+            #selector(TUNHelperXPCProtocol.readDiagnostics(_:withReply:)),
+            #selector(TUNHelperXPCProtocol.engageLeakGuard(_:withReply:)),
+            #selector(TUNHelperXPCProtocol.releaseLeakGuard(_:withReply:))
         ]
 
         for method in methods {
@@ -415,7 +415,7 @@ nonisolated final class XPCVPNHelperTransport: VPNHelperTransport {
 
     private func retireConnection(
         generation: UInt64,
-        error: VPNHelperTransportError,
+        error: TUNHelperTransportError,
         invalidatingConnection: Bool
     ) {
         let retired = state.withLock { state -> (ConnectionRecord?, [Completion]) in

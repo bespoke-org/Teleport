@@ -1001,14 +1001,14 @@ struct VerifySplitTunneling {
         let inbounds = (payload?["inbounds"] as? [[String: Any]]) ?? []
 
         guard let socksInbound = inbounds.first(where: { $0["tag"] as? String == "socks-in" }) else {
-            preconditionFailure("expected a socks-in inbound alongside the tun inbound in VPN mode")
+            preconditionFailure("expected a socks-in inbound alongside the tun inbound in TUN mode")
         }
         precondition(socksInbound["protocol"] as? String == "socks")
         precondition(socksInbound["listen"] as? String == "127.0.0.1")
         precondition(socksInbound["port"] as? Int == 1234)
 
         guard let httpInbound = inbounds.first(where: { $0["tag"] as? String == "http-in" }) else {
-            preconditionFailure("expected an http-in inbound alongside the tun inbound in VPN mode")
+            preconditionFailure("expected an http-in inbound alongside the tun inbound in TUN mode")
         }
         precondition(httpInbound["protocol"] as? String == "http")
         precondition(httpInbound["listen"] as? String == "127.0.0.1")

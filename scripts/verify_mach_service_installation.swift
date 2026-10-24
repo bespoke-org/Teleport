@@ -29,7 +29,7 @@ struct VerifyMachServiceInstallation {
             preconditionFailure("LaunchDaemon plist must expose MachServices")
         }
         require(machServices.count == 1, "LaunchDaemon must expose exactly one Mach service")
-        require(machServices[VPNHelperProtocol.machServiceName] as? Bool == true, "Expected Mach service must be enabled")
+        require(machServices[TUNHelperProtocol.machServiceName] as? Bool == true, "Expected Mach service must be enabled")
         require(PrivilegedHelperConstants.version == "11", "Installed helper compatibility version must be 11")
 
         print("verify_mach_service_installation: all checks passed")

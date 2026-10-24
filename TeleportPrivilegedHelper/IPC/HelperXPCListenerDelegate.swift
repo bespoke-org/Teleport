@@ -18,7 +18,7 @@ nonisolated final class HelperXPCListenerDelegate: NSObject, NSXPCListenerDelega
             return false
         }
 
-        let interface = NSXPCInterface(with: VPNHelperXPCProtocol.self)
+        let interface = NSXPCInterface(with: TUNHelperXPCProtocol.self)
         Self.configureAllowedClasses(on: interface)
         connection.exportedInterface = interface
         connection.exportedObject = service
@@ -30,10 +30,10 @@ nonisolated final class HelperXPCListenerDelegate: NSObject, NSXPCListenerDelega
         let dataClasses = NSSet(object: NSData.self) as! Set<AnyHashable>
         let errorClasses = NSSet(object: NSError.self) as! Set<AnyHashable>
         let methods = [
-            #selector(VPNHelperXPCProtocol.getStatus(_:withReply:)),
-            #selector(VPNHelperXPCProtocol.startSession(_:withReply:)),
-            #selector(VPNHelperXPCProtocol.stopSession(_:withReply:)),
-            #selector(VPNHelperXPCProtocol.readDiagnostics(_:withReply:))
+            #selector(TUNHelperXPCProtocol.getStatus(_:withReply:)),
+            #selector(TUNHelperXPCProtocol.startSession(_:withReply:)),
+            #selector(TUNHelperXPCProtocol.stopSession(_:withReply:)),
+            #selector(TUNHelperXPCProtocol.readDiagnostics(_:withReply:))
         ]
 
         for method in methods {

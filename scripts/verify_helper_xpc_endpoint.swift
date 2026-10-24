@@ -1,14 +1,14 @@
 import Foundation
 
 actor RecordingDispatcher: HelperCommandDispatching {
-    private(set) var commands: [VPNHelperCommand] = []
+    private(set) var commands: [TUNHelperCommand] = []
     private let responseData: Data
 
     init(responseData: Data) {
         self.responseData = responseData
     }
 
-    func dispatch(command: VPNHelperCommand, requestData: Data) async -> Data {
+    func dispatch(command: TUNHelperCommand, requestData: Data) async -> Data {
         commands.append(command)
         return responseData
     }
@@ -69,7 +69,7 @@ struct VerifyHelperXPCEndpoint {
         let authenticatorSource = try String(contentsOfFile: "TeleportPrivilegedHelper/IPC/ClientAuthenticator.swift", encoding: .utf8)
         let listenerSource = try String(contentsOfFile: "TeleportPrivilegedHelper/IPC/HelperXPCListenerDelegate.swift", encoding: .utf8)
 
-        precondition(mainSource.contains("NSXPCListener(machServiceName: VPNHelperProtocol.machServiceName)"))
+        precondition(mainSource.contains("NSXPCListener(machServiceName: TUNHelperProtocol.machServiceName)"))
         precondition(mainSource.contains("listener.resume()"))
         precondition(mainSource.contains("fputs(\"\\(helperLabel): XPC listener run loop exited unexpectedly\\n\", stderr)"))
         precondition(mainSource.contains("exit(1)"))
@@ -114,7 +114,7 @@ struct VerifyHelperXPCEndpoint {
         precondition(commands == [.status, .startSession, .stopSession, .readDiagnostics])
 
         let oversizedDispatcher = RecordingDispatcher(
-            responseData: Data(repeating: 0, count: VPNHelperProtocol.maximumResponseBytes + 1)
+            responseData: Data(repeating: 0, count: TUNHelperProtocol.maximumResponseBytes + 1)
         )
         let oversizedService = HelperXPCService(dispatcher: oversizedDispatcher)
         let oversized = await invoke { oversizedService.getStatus(request, withReply: $0) }

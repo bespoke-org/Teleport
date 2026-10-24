@@ -341,7 +341,7 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
             if required { throw HelperError("Missing protectedHosts") }
             return []
         }
-        guard values.count <= VPNHelperProtocol.maximumProtectedHosts else {
+        guard values.count <= TUNHelperProtocol.maximumProtectedHosts else {
             throw HelperError("Rejected too many protectedHosts")
         }
         return try values.map { try validatedProtectedHost($0, required: true) }

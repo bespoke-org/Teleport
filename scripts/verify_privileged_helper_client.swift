@@ -1,18 +1,18 @@
 import Foundation
 
-private final class ScriptedTransport: VPNHelperTransport, @unchecked Sendable {
-    typealias Handler = (VPNHelperCommand, Data, TimeInterval, Int) throws -> Data
+private final class ScriptedTransport: TUNHelperTransport, @unchecked Sendable {
+    typealias Handler = (TUNHelperCommand, Data, TimeInterval, Int) throws -> Data
 
     private let lock = NSLock()
     private let handler: Handler
-    private var recordedCalls: [(VPNHelperCommand, Data, TimeInterval)] = []
+    private var recordedCalls: [(TUNHelperCommand, Data, TimeInterval)] = []
     private var invalidationCount = 0
 
     init(handler: @escaping Handler) {
         self.handler = handler
     }
 
-    var calls: [(VPNHelperCommand, Data, TimeInterval)] {
+    var calls: [(TUNHelperCommand, Data, TimeInterval)] {
         lock.withLock { recordedCalls }
     }
 
@@ -20,7 +20,7 @@ private final class ScriptedTransport: VPNHelperTransport, @unchecked Sendable {
         lock.withLock { invalidationCount }
     }
 
-    func send(command: VPNHelperCommand, requestData: Data, timeout: TimeInterval) async throws -> Data {
+    func send(command: TUNHelperCommand, requestData: Data, timeout: TimeInterval) async throws -> Data {
         let index = lock.withLock { () -> Int in
             recordedCalls.append((command, requestData, timeout))
             return recordedCalls.count - 1
@@ -58,7 +58,7 @@ private final class RecoveryProbe: @unchecked Sendable {
     }
 }
 
-private final class LostStopReplyProxy: NSObject, VPNHelperXPCProtocol, @unchecked Sendable {
+private final class LostStopReplyProxy: NSObject, TUNHelperXPCProtocol, @unchecked Sendable {
     private let lock = NSLock()
     private let sessionID: UUID
     private let losesStopReply: Bool
@@ -90,7 +90,7 @@ private final class LostStopReplyProxy: NSObject, VPNHelperXPCProtocol, @uncheck
     func getStatus(_ request: Data, withReply reply: @escaping (Data?, NSError?) -> Void) {
         lock.withLock { statusCalls += 1 }
         do {
-            let envelope: VPNHelperRequestEnvelope<StatusRequest> = try VPNHelperCodec.decodeRequest(request)
+            let envelope: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(request)
             reply(try VerifyPrivilegedHelperClient.response(
                 requestID: envelope.requestID,
                 sessionID: sessionID,
@@ -124,7 +124,7 @@ private final class LostStopReplyProxy: NSObject, VPNHelperXPCProtocol, @uncheck
     }
 }
 
-private final class LostStopReplyConnection: VPNHelperXPCConnection, @unchecked Sendable {
+private final class LostStopReplyConnection: TUNHelperXPCConnection, @unchecked Sendable {
     private let proxy: LostStopReplyProxy
     private let lock = NSLock()
     private var invalidationHandler: (@Sendable () -> Void)?
@@ -138,7 +138,7 @@ private final class LostStopReplyConnection: VPNHelperXPCConnection, @unchecked 
     func setInvalidationHandler(_ handler: @escaping @Sendable () -> Void) {
         lock.withLock { invalidationHandler = handler }
     }
-    func remoteProxy(errorHandler: @escaping @Sendable (Error) -> Void) -> (any VPNHelperXPCProtocol)? {
+    func remoteProxy(errorHandler: @escaping @Sendable (Error) -> Void) -> (any TUNHelperXPCProtocol)? {
         proxy.setProxyErrorHandler(errorHandler)
         return proxy
     }
@@ -157,7 +157,7 @@ private final class LostStopReplyConnectionFactory: @unchecked Sendable {
         self.connections = connections
     }
 
-    func make() -> any VPNHelperXPCConnection {
+    func make() -> any TUNHelperXPCConnection {
         lock.withLock {
             precondition(!connections.isEmpty, "Unexpected XPC connection creation")
             return connections.removeFirst()
@@ -190,22 +190,22 @@ private enum VerifyPrivilegedHelperClient {
         let transport = ScriptedTransport { command, data, _, _ in
             switch command {
             case .status:
-                let request: VPNHelperRequestEnvelope<StatusRequest> = try VPNHelperCodec.decodeRequest(data)
+                let request: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(data)
                 return try response(
                     requestID: request.requestID,
                     sessionID: nil,
                     payload: StatusResponse(helperVersion: "8", phase: .idle, summary: nil, details: nil)
                 )
             case .readDiagnostics:
-                let request: VPNHelperRequestEnvelope<ReadDiagnosticsRequest> = try VPNHelperCodec.decodeRequest(data)
-                precondition(request.payload.maximumBytes == VPNHelperProtocol.maximumDiagnosticsBytes)
+                let request: TUNHelperRequestEnvelope<ReadDiagnosticsRequest> = try TUNHelperCodec.decodeRequest(data)
+                precondition(request.payload.maximumBytes == TUNHelperProtocol.maximumDiagnosticsBytes)
                 return try response(
                     requestID: request.requestID,
                     sessionID: nil,
                     payload: DiagnosticsResponse(log: request.payload.log, text: "diagnostic", metadata: "meta", wasTruncated: false)
                 )
             case .startSession:
-                let request: VPNHelperRequestEnvelope<StartSessionRequest> = try VPNHelperCodec.decodeRequest(data)
+                let request: TUNHelperRequestEnvelope<StartSessionRequest> = try TUNHelperCodec.decodeRequest(data)
                 precondition(request.sessionID == sessionID)
                 return try response(
                     requestID: request.requestID,
@@ -213,7 +213,7 @@ private enum VerifyPrivilegedHelperClient {
                     payload: StartSessionResponse(phase: .running, summary: nil, details: nil)
                 )
             case .stopSession:
-                let request: VPNHelperRequestEnvelope<StopSessionRequest> = try VPNHelperCodec.decodeRequest(data)
+                let request: TUNHelperRequestEnvelope<StopSessionRequest> = try TUNHelperCodec.decodeRequest(data)
                 precondition(request.sessionID == sessionID)
                 return try response(
                     requestID: request.requestID,
@@ -221,7 +221,7 @@ private enum VerifyPrivilegedHelperClient {
                     payload: StopSessionResponse(phase: .idle, summary: nil, details: nil)
                 )
             case .engageLeakGuard:
-                let request: VPNHelperRequestEnvelope<EngageLeakGuardRequest> = try VPNHelperCodec.decodeRequest(data)
+                let request: TUNHelperRequestEnvelope<EngageLeakGuardRequest> = try TUNHelperCodec.decodeRequest(data)
                 // The guard spans the teardown and rebuild a session change consists
                 // of, so it is deliberately not scoped to one session.
                 precondition(request.sessionID == nil)
@@ -231,7 +231,7 @@ private enum VerifyPrivilegedHelperClient {
                     payload: LeakGuardResponse(isEngaged: true)
                 )
             case .releaseLeakGuard:
-                let request: VPNHelperRequestEnvelope<ReleaseLeakGuardRequest> = try VPNHelperCodec.decodeRequest(data)
+                let request: TUNHelperRequestEnvelope<ReleaseLeakGuardRequest> = try TUNHelperCodec.decodeRequest(data)
                 precondition(request.sessionID == nil)
                 return try response(
                     requestID: request.requestID,
@@ -265,22 +265,22 @@ private enum VerifyPrivilegedHelperClient {
         let requestIDs = try transport.calls.map { command, data, _ -> UUID in
             switch command {
             case .status:
-                let request: VPNHelperRequestEnvelope<StatusRequest> = try VPNHelperCodec.decodeRequest(data)
+                let request: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(data)
                 return request.requestID
             case .readDiagnostics:
-                let request: VPNHelperRequestEnvelope<ReadDiagnosticsRequest> = try VPNHelperCodec.decodeRequest(data)
+                let request: TUNHelperRequestEnvelope<ReadDiagnosticsRequest> = try TUNHelperCodec.decodeRequest(data)
                 return request.requestID
             case .startSession:
-                let request: VPNHelperRequestEnvelope<StartSessionRequest> = try VPNHelperCodec.decodeRequest(data)
+                let request: TUNHelperRequestEnvelope<StartSessionRequest> = try TUNHelperCodec.decodeRequest(data)
                 return request.requestID
             case .stopSession:
-                let request: VPNHelperRequestEnvelope<StopSessionRequest> = try VPNHelperCodec.decodeRequest(data)
+                let request: TUNHelperRequestEnvelope<StopSessionRequest> = try TUNHelperCodec.decodeRequest(data)
                 return request.requestID
             case .engageLeakGuard:
-                let request: VPNHelperRequestEnvelope<EngageLeakGuardRequest> = try VPNHelperCodec.decodeRequest(data)
+                let request: TUNHelperRequestEnvelope<EngageLeakGuardRequest> = try TUNHelperCodec.decodeRequest(data)
                 return request.requestID
             case .releaseLeakGuard:
-                let request: VPNHelperRequestEnvelope<ReleaseLeakGuardRequest> = try VPNHelperCodec.decodeRequest(data)
+                let request: TUNHelperRequestEnvelope<ReleaseLeakGuardRequest> = try TUNHelperCodec.decodeRequest(data)
                 return request.requestID
             }
         }
@@ -290,7 +290,7 @@ private enum VerifyPrivilegedHelperClient {
     private static func verifyCommandSpecificSuccessPayloadValidation() async throws {
         let sessionID = UUID()
         let invalidStart = ScriptedTransport { _, data, _, _ in
-            let request: VPNHelperRequestEnvelope<StartSessionRequest> = try VPNHelperCodec.decodeRequest(data)
+            let request: TUNHelperRequestEnvelope<StartSessionRequest> = try TUNHelperCodec.decodeRequest(data)
             return try response(
                 requestID: request.requestID,
                 sessionID: sessionID,
@@ -304,7 +304,7 @@ private enum VerifyPrivilegedHelperClient {
         }
 
         let invalidStop = ScriptedTransport { _, data, _, _ in
-            let request: VPNHelperRequestEnvelope<StopSessionRequest> = try VPNHelperCodec.decodeRequest(data)
+            let request: TUNHelperRequestEnvelope<StopSessionRequest> = try TUNHelperCodec.decodeRequest(data)
             return try response(
                 requestID: request.requestID,
                 sessionID: sessionID,
@@ -318,7 +318,7 @@ private enum VerifyPrivilegedHelperClient {
         }
 
         let mismatchedDiagnostics = ScriptedTransport { _, data, _, _ in
-            let request: VPNHelperRequestEnvelope<ReadDiagnosticsRequest> = try VPNHelperCodec.decodeRequest(data)
+            let request: TUNHelperRequestEnvelope<ReadDiagnosticsRequest> = try TUNHelperCodec.decodeRequest(data)
             precondition(request.payload.log == .xray)
             return try response(
                 requestID: request.requestID,
@@ -348,7 +348,7 @@ private enum VerifyPrivilegedHelperClient {
 
         let expectedSessionID = UUID()
         let sessionMismatchTransport = ScriptedTransport { _, data, _, _ in
-            let request: VPNHelperRequestEnvelope<StartSessionRequest> = try VPNHelperCodec.decodeRequest(data)
+            let request: TUNHelperRequestEnvelope<StartSessionRequest> = try TUNHelperCodec.decodeRequest(data)
             return try response(
                 requestID: request.requestID,
                 sessionID: UUID(),
@@ -363,9 +363,9 @@ private enum VerifyPrivilegedHelperClient {
         } catch PrivilegedHelperClientError.invalidResponse {}
 
         let staleTransport = ScriptedTransport { _, data, _, _ in
-            let request: VPNHelperRequestEnvelope<StatusRequest> = try VPNHelperCodec.decodeRequest(data)
-            let stale = VPNHelperResponseEnvelope(
-                revision: VPNHelperProtocol.revision - 1,
+            let request: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(data)
+            let stale = TUNHelperResponseEnvelope(
+                revision: TUNHelperProtocol.revision - 1,
                 requestID: request.requestID,
                 sessionID: nil,
                 payload: StatusResponse(helperVersion: "7", phase: .idle, summary: nil, details: nil),
@@ -381,13 +381,13 @@ private enum VerifyPrivilegedHelperClient {
 
     private static func verifyStructuredCommandFailureMapping() async throws {
         let transport = ScriptedTransport { _, data, _, _ in
-            let request: VPNHelperRequestEnvelope<StatusRequest> = try VPNHelperCodec.decodeRequest(data)
-            return try VPNHelperCodec.encodeResponse(VPNHelperResponseEnvelope<StatusResponse>(
-                revision: VPNHelperProtocol.revision,
+            let request: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(data)
+            return try TUNHelperCodec.encodeResponse(TUNHelperResponseEnvelope<StatusResponse>(
+                revision: TUNHelperProtocol.revision,
                 requestID: request.requestID,
                 sessionID: nil,
                 payload: nil,
-                failure: VPNHelperProtocolFailure(
+                failure: TUNHelperProtocolFailure(
                     code: .commandFailed,
                     summary: "status failed",
                     details: "bounded details",
@@ -456,8 +456,8 @@ private enum VerifyPrivilegedHelperClient {
     private static func verifyUnavailableAndUnknownReconciliationAreIndeterminate() async throws {
         let unavailableSession = UUID()
         let unavailable = ScriptedTransport { command, _, _, _ in
-            if command == .startSession { throw VPNHelperTransportError.interrupted }
-            throw VPNHelperTransportError.unavailable("not running")
+            if command == .startSession { throw TUNHelperTransportError.interrupted }
+            throw TUNHelperTransportError.unavailable("not running")
         }
         try await assertIndeterminate(sessionID: unavailableSession) {
             _ = try await PrivilegedHelperClient(transport: unavailable).start(
@@ -511,15 +511,15 @@ private enum VerifyPrivilegedHelperClient {
         let transport = ScriptedTransport { command, data, _, _ in
             switch command {
             case .startSession:
-                let request: VPNHelperRequestEnvelope<StartSessionRequest> = try VPNHelperCodec.decodeRequest(data)
+                let request: TUNHelperRequestEnvelope<StartSessionRequest> = try TUNHelperCodec.decodeRequest(data)
                 let sessionID = request.sessionID!
                 probe.record(sessionID: sessionID)
-                return try VPNHelperCodec.encodeResponse(VPNHelperResponseEnvelope<StartSessionResponse>(
-                    revision: VPNHelperProtocol.revision,
+                return try TUNHelperCodec.encodeResponse(TUNHelperResponseEnvelope<StartSessionResponse>(
+                    revision: TUNHelperProtocol.revision,
                     requestID: request.requestID,
                     sessionID: sessionID,
                     payload: nil,
-                    failure: VPNHelperProtocolFailure(
+                    failure: TUNHelperProtocolFailure(
                         code: .commandFailed,
                         summary: "start failed",
                         details: nil,
@@ -527,7 +527,7 @@ private enum VerifyPrivilegedHelperClient {
                     )
                 ))
             case .stopSession:
-                let request: VPNHelperRequestEnvelope<StopSessionRequest> = try VPNHelperCodec.decodeRequest(data)
+                let request: TUNHelperRequestEnvelope<StopSessionRequest> = try TUNHelperCodec.decodeRequest(data)
                 precondition(request.sessionID == probe.sessionID)
                 return try response(
                     requestID: request.requestID,
@@ -535,7 +535,7 @@ private enum VerifyPrivilegedHelperClient {
                     payload: StopSessionResponse(phase: .idle, summary: nil, details: nil)
                 )
             case .readDiagnostics:
-                let request: VPNHelperRequestEnvelope<ReadDiagnosticsRequest> = try VPNHelperCodec.decodeRequest(data)
+                let request: TUNHelperRequestEnvelope<ReadDiagnosticsRequest> = try TUNHelperCodec.decodeRequest(data)
                 precondition(request.payload.log == .control)
                 return try response(
                     requestID: request.requestID,
@@ -584,9 +584,9 @@ private enum VerifyPrivilegedHelperClient {
         let probe = RecoveryProbe()
         let transport = ScriptedTransport { command, data, _, index in
             precondition(command == .stopSession)
-            let request: VPNHelperRequestEnvelope<StopSessionRequest> = try VPNHelperCodec.decodeRequest(data)
+            let request: TUNHelperRequestEnvelope<StopSessionRequest> = try TUNHelperCodec.decodeRequest(data)
             precondition(request.sessionID == sessionID)
-            if index == 0 { throw VPNHelperTransportError.unavailable("not running") }
+            if index == 0 { throw TUNHelperTransportError.unavailable("not running") }
             return try response(
                 requestID: request.requestID,
                 sessionID: sessionID,
@@ -615,7 +615,7 @@ private enum VerifyPrivilegedHelperClient {
             LostStopReplyConnection(proxy: mutatingProxy),
             LostStopReplyConnection(proxy: statusProxy)
         ])
-        let transport = XPCVPNHelperTransport(connectionFactory: { factory.make() })
+        let transport = XPCTUNHelperTransport(connectionFactory: { factory.make() })
         let client = PrivilegedHelperClient(transport: transport)
 
         try await client.stop(
@@ -636,7 +636,7 @@ private enum VerifyPrivilegedHelperClient {
         defer { removeTemporaryRuntimePaths(idlePaths) }
         let idleTransport = ScriptedTransport { command, data, _, _ in
             precondition(command == .status)
-            let request: VPNHelperRequestEnvelope<StatusRequest> = try VPNHelperCodec.decodeRequest(data)
+            let request: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(data)
             return try response(
                 requestID: request.requestID,
                 sessionID: nil,
@@ -657,14 +657,14 @@ private enum VerifyPrivilegedHelperClient {
         let runningTransport = ScriptedTransport { command, data, _, _ in
             switch command {
             case .status:
-                let request: VPNHelperRequestEnvelope<StatusRequest> = try VPNHelperCodec.decodeRequest(data)
+                let request: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(data)
                 return try response(
                     requestID: request.requestID,
                     sessionID: observedSessionID,
                     payload: StatusResponse(helperVersion: "8", phase: .running, summary: nil, details: nil)
                 )
             case .stopSession:
-                let request: VPNHelperRequestEnvelope<StopSessionRequest> = try VPNHelperCodec.decodeRequest(data)
+                let request: TUNHelperRequestEnvelope<StopSessionRequest> = try TUNHelperCodec.decodeRequest(data)
                 precondition(request.sessionID == observedSessionID)
                 return try response(
                     requestID: request.requestID,
@@ -687,14 +687,14 @@ private enum VerifyPrivilegedHelperClient {
         let cleanupTransport = ScriptedTransport { command, data, _, _ in
             switch command {
             case .status:
-                let request: VPNHelperRequestEnvelope<StatusRequest> = try VPNHelperCodec.decodeRequest(data)
+                let request: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(data)
                 return try response(
                     requestID: request.requestID,
                     sessionID: observedSessionID,
                     payload: StatusResponse(helperVersion: "8", phase: .running, summary: nil, details: nil)
                 )
             case .stopSession:
-                let request: VPNHelperRequestEnvelope<StopSessionRequest> = try VPNHelperCodec.decodeRequest(data)
+                let request: TUNHelperRequestEnvelope<StopSessionRequest> = try TUNHelperCodec.decodeRequest(data)
                 precondition(request.sessionID == observedSessionID)
                 return try response(
                     requestID: request.requestID,
@@ -715,7 +715,7 @@ private enum VerifyPrivilegedHelperClient {
         defer { removeTemporaryRuntimePaths(unidentifiedPaths) }
         let unidentifiedTransport = ScriptedTransport { command, data, _, _ in
             precondition(command == .status)
-            let request: VPNHelperRequestEnvelope<StatusRequest> = try VPNHelperCodec.decodeRequest(data)
+            let request: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(data)
             return try response(
                 requestID: request.requestID,
                 sessionID: nil,
@@ -738,7 +738,7 @@ private enum VerifyPrivilegedHelperClient {
         defer { removeTemporaryRuntimePaths(cleanupUnidentifiedPaths) }
         let cleanupUnidentifiedTransport = ScriptedTransport { command, data, _, _ in
             precondition(command == .status)
-            let request: VPNHelperRequestEnvelope<StatusRequest> = try VPNHelperCodec.decodeRequest(data)
+            let request: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(data)
             return try response(
                 requestID: request.requestID,
                 sessionID: nil,
@@ -774,7 +774,7 @@ private enum VerifyPrivilegedHelperClient {
 
         let transport = ScriptedTransport { command, data, _, _ in
             precondition(command == .stopSession)
-            let request: VPNHelperRequestEnvelope<StopSessionRequest> = try VPNHelperCodec.decodeRequest(data)
+            let request: TUNHelperRequestEnvelope<StopSessionRequest> = try TUNHelperCodec.decodeRequest(data)
             return try response(
                 requestID: request.requestID,
                 sessionID: sessionID,
@@ -822,12 +822,12 @@ private enum VerifyPrivilegedHelperClient {
     }
 
     private static func reconciliationTransport(
-        mutating command: VPNHelperCommand,
+        mutating command: TUNHelperCommand,
         sessionID: UUID,
-        phase: VPNHelperSessionPhase,
+        phase: TUNHelperSessionPhase,
         summary: String? = nil,
         details: String? = nil,
-        transportFailure: VPNHelperTransportError = .deadlineExceeded
+        transportFailure: TUNHelperTransportError = .deadlineExceeded
     ) -> ScriptedTransport {
         ScriptedTransport { actualCommand, data, _, index in
             precondition(index < 2)
@@ -835,7 +835,7 @@ private enum VerifyPrivilegedHelperClient {
                 throw transportFailure
             }
             precondition(actualCommand == .status)
-            let request: VPNHelperRequestEnvelope<StatusRequest> = try VPNHelperCodec.decodeRequest(data)
+            let request: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(data)
             precondition(request.sessionID == nil)
             return try response(
                 requestID: request.requestID,
@@ -869,8 +869,8 @@ private enum VerifyPrivilegedHelperClient {
         sessionID: UUID?,
         payload: Payload
     ) throws -> Data where Payload: Codable & Sendable & Equatable {
-        try VPNHelperCodec.encodeResponse(VPNHelperResponseEnvelope(
-            revision: VPNHelperProtocol.revision,
+        try TUNHelperCodec.encodeResponse(TUNHelperResponseEnvelope(
+            revision: TUNHelperProtocol.revision,
             requestID: requestID,
             sessionID: sessionID,
             payload: payload,

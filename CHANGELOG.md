@@ -8,9 +8,9 @@ Format is based on [_Keep a changelog_](https://keepachangelog.com) and uses
 - Split tunneling: destination rules, geosite category rules, custom geosite/geoip sources, named profiles with a per-profile default action, and a rule tester that matches against geodata. A rule can name the connection its traffic leaves through, and a session dials every connection the active rules route through.
 - WireGuard connections from `wireguard://` links and `[Interface]` files. Names routed to a peer are resolved through that peer's own DNS servers.
 - Saved connections can be renamed; the name survives subscription refreshes.
-- VPN mode routes IPv6 and DNS through the tunnel. IPv6 is only claimed when the uplink has global IPv6.
-- Leak guard: pf rules keep traffic off the physical uplink while a VPN session is being rebuilt, after a wake or an uplink change. Settings has a switch for it.
-- A VPN session is rebuilt when the machine wakes from sleep or the uplink changes, and torn down by the helper when its Xray exits.
+- TUN mode routes IPv6 and DNS through the tunnel. IPv6 is only claimed when the uplink has global IPv6.
+- Leak guard: pf rules keep traffic off the physical uplink while a TUN session is being rebuilt, after a wake or an uplink change. Settings has a switch for it.
+- A TUN session is rebuilt when the machine wakes from sleep or the uplink changes, and torn down by the helper when its Xray exits.
 - A log that outlives the session it describes, readable from the Nerd shit settings page.
 - The menu shows when a connect is installing the helper.
 - Plain-TLS links use a browser-like TLS fingerprint.
@@ -25,9 +25,10 @@ Format is based on [_Keep a changelog_](https://keepachangelog.com) and uses
 - The helper is installed before a connect changes anything else on the machine, and a failed install puts the previous installation back.
 - The start script undoes its routes and stops Xray on any failure, including one `set -e` stops on.
 - Xray owns DNS for the tunnel; QUIC is blocked in tunnel routing so domain rules see the name.
-- Proxy mode gives Xray the same geodata VPN mode gets.
+- Proxy mode gives Xray the same geodata TUN mode gets.
 - Saved state: a snapshot this build cannot read is never overwritten, a save is never the only copy, and backup copies live in the Keychain.
 - `just build-release` installs the Release build into /Applications; `just coverage` reports line coverage of the verify scripts.
+- The connection mode formerly called VPN is called TUN in the UI and the docs.
 
 ### Fixed
 - Health probes no longer report what they did not measure.

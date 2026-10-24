@@ -1,6 +1,6 @@
 import Foundation
 
-/// Provider facade for app-side orchestration of the current root-Xray VPN path.
+/// Provider facade for app-side orchestration of the current root-Xray TUN path.
 struct RootXrayConnectionProvider: ConnectionProvider, Sendable {
     private let coordinator: BackendConnectionProvider
 
@@ -10,7 +10,7 @@ struct RootXrayConnectionProvider: ConnectionProvider, Sendable {
 
     init(leakGuard: LeakGuardService) {
         coordinator = BackendConnectionProvider(
-            mode: .vpn,
+            mode: .tun,
             backend: XrayTunConnectionBackend(
                 runtimeManager: PrivilegedXrayRuntimeManager(),
                 routeInspector: XrayTunRouteInspector(),

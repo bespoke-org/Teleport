@@ -353,7 +353,7 @@ nonisolated struct XrayConfigurationWriter {
                         "routeOnly": !ownsDNS
                     ]
                 ],
-                // VPN mode already routes all device traffic through the TUN, but
+                // TUN mode already routes all device traffic through the TUN, but
                 // also exposing local SOCKS/HTTP ports lets tools that expect an
                 // explicit proxy (rather than relying on the default route) point
                 // at Teleport directly, same as System Proxy mode's inbounds.

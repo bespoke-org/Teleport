@@ -22,7 +22,7 @@ nonisolated final class XrayRuntimeManager: @unchecked Sendable {
 
     static let subsystem = "xray"
 
-    /// Assets come from the same resolver VPN mode uses, so both modes see one
+    /// Assets come from the same resolver TUN mode uses, so both modes see one
     /// geosite/geoip pair — the user's custom downloads when there are any, the
     /// bundled files otherwise. Asking the bundle directly does not work: the
     /// resource phase flattens the .dat files into Contents/Resources, so there is

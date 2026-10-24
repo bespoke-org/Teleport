@@ -5,7 +5,7 @@ import Security
 /// Geodata is delivered separately through the authenticated session request, so
 /// updating routing data does not require another administrator approval. This path
 /// runs only when installed executable content differs or the helper is
-/// unavailable; ordinary VPN lifecycle commands use `PrivilegedHelperClient`.
+/// unavailable; ordinary TUN lifecycle commands use `PrivilegedHelperClient`.
 nonisolated struct PrivilegedHelperInstaller: Sendable {
     /// Written next to the installed helper by the admin transaction. The helper's
     /// code-directory hash is what detects a rebuilt helper whose protocol version
@@ -162,7 +162,7 @@ nonisolated struct PrivilegedHelperInstaller: Sendable {
 
     private var administratorPrompt: String {
         """
-        Teleport needs administrator access to install or update its privileged helper for VPN mode.
+        Teleport needs administrator access to install or update its privileged helper for TUN mode.
 
         The helper lets Teleport start and stop Xray TUN and configure system routing. Your password is only used by macOS to approve this privileged install.
         """
@@ -295,7 +295,7 @@ nonisolated struct PrivilegedHelperInstaller: Sendable {
 
     /// The daemon runs as root by default because no `UserName` is specified.
     /// `KeepAlive` keeps the XPC service available; Xray itself is a separate child
-    /// launched only for an active VPN session.
+    /// launched only for an active TUN session.
     static func launchDaemonPlist() -> String {
         """
         <?xml version="1.0" encoding="UTF-8"?>
@@ -310,7 +310,7 @@ nonisolated struct PrivilegedHelperInstaller: Sendable {
             </array>
             <key>MachServices</key>
             <dict>
-                <key>\(VPNHelperProtocol.machServiceName)</key>
+                <key>\(TUNHelperProtocol.machServiceName)</key>
                 <true/>
             </dict>
             <key>RunAtLoad</key>
