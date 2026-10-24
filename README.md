@@ -30,13 +30,13 @@ There is no signed or notarized download yet. Build from source:
 git clone https://codeberg.org/chernigin/teleport.git
 cd teleport
 cp Config/Local.xcconfig.example Config/Local.xcconfig
-# edit Config/Local.xcconfig: set DEVELOPMENT_TEAM to the Team ID you sign with in Xcode
+# edit Config/Local.xcconfig: set DEVELOPMENT_TEAM (see Development > Signing)
 just build-release        # builds Release and copies Teleport.app into /Applications
 ```
 
 Or open `teleport.xcodeproj` in Xcode and run the `teleport` scheme.
 
-Without a `DEVELOPMENT_TEAM` the build is signed ad hoc. System Proxy mode works in such a build; VPN mode refuses to install the helper, because the app and the helper verify each other by Team ID (see Security model).
+Without a `DEVELOPMENT_TEAM` the build is signed ad hoc. System Proxy mode works in such a build; VPN mode refuses to install the helper, because the app and the helper verify each other by Team ID (see Security model and Development > Signing).
 
 On first launch the app has no connections. Add a link or a subscription URL in Settings > Connections. The same page can add two community subscription lists that ship with the app (`packaging/bundled-connections.json`, from [igareck/vpn-configs-for-russia](https://github.com/igareck/vpn-configs-for-russia)). They are not added on their own: the servers in those lists are run by people nobody here knows, and everything sent through them can be read or altered by whoever operates them.
 
@@ -122,7 +122,24 @@ Connection links, which contain credentials, are stored in the login Keychain (s
    A reboot also clears it, together with any routes a crashed session left behind.
 4. Remove the app and its data: `/Applications/Teleport.app`, `~/Library/Application Support/teleport/`, the `dev.x.teleport.configuration` items in Keychain Access, and the login item in System Settings > General > Login Items if it was enabled.
 
-## Building
+## Development
+
+### Signing
+
+`DEVELOPMENT_TEAM` is the Apple Developer Team ID that signs the app and the helper. VPN mode needs it: the helper accepts only a caller whose certificate has the same Team ID in its `OU` field.
+
+A free Personal Team is enough, since the project uses no entitlements that need a provisioning profile. Add your Apple ID in Xcode > Settings > Accounts; Xcode creates the team and an "Apple Development" certificate. The Team ID is the `OU` of that certificate:
+
+```bash
+security find-certificate -c "Apple Development" -p | openssl x509 -noout -subject
+# subject=UID=..., CN=Apple Development: you@example.com (K7LM2PQ9RS), OU=ABCDE12345, ...
+```
+
+Here the Team ID is `ABCDE12345`. The ten characters in parentheses in the certificate name identify the certificate, not the team.
+
+`Config/Local.xcconfig` (ignored by git) holds the per-developer `DEVELOPMENT_TEAM`; `Config/Teleport.xcconfig` includes it and is the base configuration of the project. There is no other place where the Team ID appears: the app and the helper derive the signature requirement from their own signatures at run time (`Shared/TeleportCodeSigning.swift`).
+
+### Building
 
 ```bash
 just --list                 # all recipes
@@ -131,8 +148,6 @@ just build-release          # Release build, copied into /Applications
 just package                # Release build plus a .dmg in build/dist
 just clean
 ```
-
-`Config/Local.xcconfig` (ignored by git) holds the per-developer `DEVELOPMENT_TEAM`; `Config/Teleport.xcconfig` includes it and is the base configuration of the project. There is no other place where the Team ID appears: the app and the helper derive the signature requirement from their own signatures at run time (`Shared/TeleportCodeSigning.swift`).
 
 To replace the bundled Xray with the official release build for a given version:
 
@@ -144,7 +159,7 @@ The script checks the archive against the digest XTLS publishes and the executab
 
 Formatting follows `.swift-format` (four-space indent, 160 columns). Check with `swift format lint -r teleport Shared TeleportPrivilegedHelper scripts`.
 
-## Tests
+### Tests
 
 There is no XCTest target. Each subsystem has a standalone program in `scripts/verify_*.swift` that is compiled with `swiftc` together with the sources it covers and run directly; a failed check stops the program with a message.
 
@@ -159,7 +174,7 @@ just coverage                         # line coverage of the verify scripts
 
 The remaining recipes are listed by `just --list`. None of them needs root or a logged-in GUI session; VPN connect/disconnect, helper installation and leak-guard behaviour on a real network are checked by hand (see `docs/xray-bundling-and-release.md`).
 
-## Project layout
+### Project layout
 
 - `teleport/` is the app: SwiftUI views, `ViewModels/AppViewModel` as the single orchestrator, `Parsing/` for links and geodata, `Subscriptions/`, `Health/`, `XrayCore/` for config generation, `SystemProxy/` and `VPN/` as the two connection providers, `HelperInstallation/` for the one code path that asks for a password.
 - `TeleportPrivilegedHelper/` is the root daemon: `IPC/` authenticates and decodes, `Session/` runs start/stop/status, `Routing/` generates the route and pf scripts, `Xray/` manages the root Xray process.
