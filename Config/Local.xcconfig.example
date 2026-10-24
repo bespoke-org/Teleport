@@ -1,0 +1,8 @@
+// Copy this file to Config/Local.xcconfig and fill in your own values.
+//
+// The Apple Developer Team ID that signs the app and the privileged helper.
+// Each executable reads it from its own signature to verify the other, so a
+// build signed by your team works without any source change. Without it the
+// build is signed ad hoc: System Proxy mode works, VPN mode refuses to install
+// the helper.
+DEVELOPMENT_TEAM = ABCDE12345

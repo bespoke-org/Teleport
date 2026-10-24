@@ -4,3 +4,4 @@ build/
 *.xcworkspace/xcuserdata/
 .claude
 .worktrees/
+Config/Local.xcconfig

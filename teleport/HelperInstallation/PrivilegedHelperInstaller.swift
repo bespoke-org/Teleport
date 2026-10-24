@@ -100,8 +100,11 @@ nonisolated struct PrivilegedHelperInstaller: Sendable {
     }
 
     private func install(helperURL: URL, runtimeURL: URL, manifest: InstallationManifest) async throws {
+        guard let requirement = artifactPolicy.codeSigningRequirement else {
+            throw PrivilegedHelperInstallerError.installFailed(BundledArtifactPolicy.missingTeamIdentifierMessage)
+        }
         let plist = Self.launchDaemonPlist()
-        let script = installScript(appBundleURL: bundle.bundleURL, helperURL: helperURL, runtimeURL: runtimeURL, manifest: manifest, plist: plist)
+        let script = installScript(appBundleURL: bundle.bundleURL, helperURL: helperURL, runtimeURL: runtimeURL, requirement: requirement, manifest: manifest, plist: plist)
         do {
             try await shellRunner.runAdministratorShellScript(script, prompt: administratorPrompt)
         } catch {
@@ -177,7 +180,7 @@ nonisolated struct PrivilegedHelperInstaller: Sendable {
     /// Installation goes through `launchctl` from an administrator shell rather
     /// than `SMAppService`, which requires a notarized, Developer ID-signed app to
     /// register a daemon; see the note on `verifyBundleArtifacts`.
-    private func installScript(appBundleURL: URL, helperURL: URL, runtimeURL: URL, manifest: InstallationManifest, plist: String) -> String {
+    private func installScript(appBundleURL: URL, helperURL: URL, runtimeURL: URL, requirement: String, manifest: InstallationManifest, plist: String) -> String {
         let q = PrivilegedShellRunner.shellQuote
         let manifestJSON = "{\"helperVersion\":\"\(manifest.helperVersion)\",\"helperCDHash\":\"\(manifest.helperCDHash)\",\"xraySHA256\":\"\(manifest.xraySHA256)\"}"
         return """
@@ -192,7 +195,7 @@ nonisolated struct PrivilegedHelperInstaller: Sendable {
         INSTALL_MANIFEST=\(q(manifestJSON))
         PLIST_DST=\(q(PrivilegedHelperClient.launchDaemonPlistPath))
         LABEL=\(q(PrivilegedHelperClient.label))
-        REQUIREMENT=\(q(artifactPolicy.codeSigningRequirement))
+        REQUIREMENT=\(q(requirement))
         EXPECTED_XRAY_SHA256=\(q(artifactPolicy.xraySHA256))
 
         verify_signature() {

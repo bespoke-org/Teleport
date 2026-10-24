@@ -1,0 +1,3 @@
+// Build settings shared by both targets. Values that differ per developer live
+// in Local.xcconfig, which git ignores; start from Local.xcconfig.example.
+#include? "Local.xcconfig"

@@ -23,6 +23,8 @@
 		C2F100232F98000000CCB832 /* SystemStateDump.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2F100212F98000000CCB832 /* SystemStateDump.swift */; };
 		C2F100312F98000000CCB832 /* LeakGuardRuleset.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2F100302F98000000CCB832 /* LeakGuardRuleset.swift */; };
 		C2F100322F98000000CCB832 /* LeakGuardRuleset.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2F100302F98000000CCB832 /* LeakGuardRuleset.swift */; };
+		C2F100342F98000000CCB832 /* TeleportCodeSigning.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2F100332F98000000CCB832 /* TeleportCodeSigning.swift */; };
+		C2F100352F98000000CCB832 /* TeleportCodeSigning.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2F100332F98000000CCB832 /* TeleportCodeSigning.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -46,6 +48,9 @@
 		C2F1001E2F98000000CCB832 /* TeleportLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TeleportLog.swift; sourceTree = "<group>"; };
 		C2F100212F98000000CCB832 /* SystemStateDump.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemStateDump.swift; sourceTree = "<group>"; };
 		C2F100302F98000000CCB832 /* LeakGuardRuleset.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LeakGuardRuleset.swift; sourceTree = "<group>"; };
+		C2F100332F98000000CCB832 /* TeleportCodeSigning.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TeleportCodeSigning.swift; sourceTree = "<group>"; };
+		C2C0F1012FAB000000CCB832 /* Teleport.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Teleport.xcconfig; sourceTree = "<group>"; };
+		C2C0F1022FAB000000CCB832 /* Local.xcconfig.example */ = {isa = PBXFileReference; lastKnownFileType = text; path = Local.xcconfig.example; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -85,6 +90,7 @@
 				C2DEAC0E2F96D9FB00CCB832 /* teleport */,
 				C2F1000A2F98000000CCB832 /* TeleportPrivilegedHelper */,
 				C2F1000E2F98000000CCB832 /* Shared */,
+				C2C0F1002FAB000000CCB832 /* Config */,
 				C2DEAC0D2F96D9FB00CCB832 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -98,6 +104,15 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		C2C0F1002FAB000000CCB832 /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				C2C0F1012FAB000000CCB832 /* Teleport.xcconfig */,
+				C2C0F1022FAB000000CCB832 /* Local.xcconfig.example */,
+			);
+			path = Config;
+			sourceTree = "<group>";
+		};
 		C2F1000E2F98000000CCB832 /* Shared */ = {
 			isa = PBXGroup;
 			children = (
@@ -105,6 +120,7 @@
 				C2F1001E2F98000000CCB832 /* TeleportLog.swift */,
 				C2F100212F98000000CCB832 /* SystemStateDump.swift */,
 				C2F100302F98000000CCB832 /* LeakGuardRuleset.swift */,
+				C2F100332F98000000CCB832 /* TeleportCodeSigning.swift */,
 				C2F1001B2F98000000CCB832 /* NetworkInterfaceInventory.swift */,
 				C2F100152F98000000CCB832 /* VPNHelperMessages.swift */,
 				C2F100182F98000000CCB832 /* VPNHelperProtocolError.swift */,
@@ -263,6 +279,7 @@
 				C2F1001F2F98000000CCB832 /* TeleportLog.swift in Sources */,
 				C2F100222F98000000CCB832 /* SystemStateDump.swift in Sources */,
 				C2F100312F98000000CCB832 /* LeakGuardRuleset.swift in Sources */,
+				C2F100342F98000000CCB832 /* TeleportCodeSigning.swift in Sources */,
 				C2F1001D2F98000000CCB832 /* NetworkInterfaceInventory.swift in Sources */,
 				C2F100172F98000000CCB832 /* VPNHelperMessages.swift in Sources */,
 				C2F1001A2F98000000CCB832 /* VPNHelperProtocolError.swift in Sources */,
@@ -278,6 +295,7 @@
 				C2F100202F98000000CCB832 /* TeleportLog.swift in Sources */,
 				C2F100232F98000000CCB832 /* SystemStateDump.swift in Sources */,
 				C2F100322F98000000CCB832 /* LeakGuardRuleset.swift in Sources */,
+				C2F100352F98000000CCB832 /* TeleportCodeSigning.swift in Sources */,
 				C2F1001C2F98000000CCB832 /* NetworkInterfaceInventory.swift in Sources */,
 				C2F100162F98000000CCB832 /* VPNHelperMessages.swift in Sources */,
 				C2F100192F98000000CCB832 /* VPNHelperProtocolError.swift in Sources */,
@@ -298,6 +316,7 @@
 /* Begin XCBuildConfiguration section */
 		C2DEAC152F96D9FE00CCB832 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = C2C0F1012FAB000000CCB832 /* Teleport.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
@@ -331,7 +350,6 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
-				DEVELOPMENT_TEAM = 9F6NMZV48L;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -362,6 +380,7 @@
 		};
 		C2DEAC162F96D9FE00CCB832 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = C2C0F1012FAB000000CCB832 /* Teleport.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
@@ -395,7 +414,6 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = 9F6NMZV48L;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -424,7 +442,6 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 3;
-				DEVELOPMENT_TEAM = 6RXJJA7GCX;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
@@ -457,7 +474,6 @@
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 3;
-				DEVELOPMENT_TEAM = 6RXJJA7GCX;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
@@ -487,7 +503,6 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 3;
-				DEVELOPMENT_TEAM = 6RXJJA7GCX;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
@@ -502,7 +517,6 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 3;
-				DEVELOPMENT_TEAM = 6RXJJA7GCX;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				MACOSX_DEPLOYMENT_TARGET = 26.0;

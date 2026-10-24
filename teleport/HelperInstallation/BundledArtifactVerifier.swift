@@ -14,12 +14,15 @@ nonisolated struct BundledArtifactVerifier: Sendable {
     }
 
     func verifyCodeSignature(at url: URL) throws {
+        guard let requirement = policy.codeSigningRequirement else {
+            throw PrivilegedHelperInstallerError.installFailed(BundledArtifactPolicy.missingTeamIdentifierMessage)
+        }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
         process.arguments = [
             "--verify",
             "--strict",
-            "--requirement", policy.codeSigningRequirement,
+            "--requirement", requirement,
             url.path
         ]
         let errorPipe = Pipe()
