@@ -54,6 +54,7 @@ struct SettingsView: View {
 
 private struct GeneralSettingsView: View {
     @ObservedObject var viewModel: AppViewModel
+    @State private var isConfirmingHelperUninstall = false
 
     var body: some View {
         Form {
@@ -183,6 +184,39 @@ private struct GeneralSettingsView: View {
                     Text("In TUN mode, keep traffic off the network while Teleport is rebuilding a session — after waking, or after changing Wi-Fi. Local networks and DNS still work. Turn this off to sign in to a hotel or airport Wi-Fi page.")
                 }
             }
+
+            Section {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Privileged helper")
+                        Text(viewModel.isHelperInstalled ? "Installed" : "Not installed")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button(viewModel.isUninstallingHelper ? "Uninstalling..." : "Uninstall...") {
+                        isConfirmingHelperUninstall = true
+                    }
+                    // Allowed while connected: the uninstall disconnects first.
+                    .disabled(!viewModel.isHelperInstalled || viewModel.isUninstallingHelper || viewModel.isOperationPending)
+                }
+                .confirmationDialog(
+                    "Uninstall Teleport's privileged helper?",
+                    isPresented: $isConfirmingHelperUninstall,
+                    titleVisibility: .visible
+                ) {
+                    Button("Uninstall", role: .destructive) {
+                        viewModel.uninstallHelper()
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("Any running session is disconnected first. The helper's LaunchDaemon, its Xray copy, its state and log under /Library and /var, and its packet filter rules are removed. Your connections and settings stay. TUN mode asks for administrator approval to install the helper again on the next connect; System Proxy mode is not affected.")
+                }
+            } header: {
+                Text("TUN mode helper")
+            } footer: {
+                Text(helperFooter)
+            }
         }
         .formStyle(.grouped)
         .padding(.top, -20)
@@ -191,7 +225,15 @@ private struct GeneralSettingsView: View {
         .navigationTitle("General")
         .onAppear {
             viewModel.refreshStartsAtLoginStatus()
+            viewModel.refreshHelperInstallationStatus()
         }
+    }
+
+    private var helperFooter: String {
+        if let message = viewModel.helperUninstallMessage {
+            return message
+        }
+        return "The root helper TUN mode installs with administrator approval. Removing it needs that approval once more."
     }
 
     private var proxyPortsFooter: String {

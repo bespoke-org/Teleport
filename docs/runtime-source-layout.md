@@ -39,7 +39,7 @@ This directory contains no root-executed code.
 
 ### `teleport/HelperInstallation`
 
-Owns bundled artifact verification and the current administrator-authorized installation path. `PrivilegedHelperInstaller` installs the helper/runtime/assets and a LaunchDaemon exposing the XPC Mach service. This installer remains transitional; `SMAppService` is not implemented in Phase 3.
+Owns bundled artifact verification and the current administrator-authorized installation path. `PrivilegedHelperInstaller` installs the helper/runtime/assets and a LaunchDaemon exposing the XPC Mach service. `PrivilegedHelperUninstaller` removes the same set through the same administrator shell, for Settings > General; `scripts/uninstall.sh` does it without the app. This installer remains transitional; `SMAppService` is not implemented in Phase 3.
 
 ### `teleport/Geodata`
 

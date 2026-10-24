@@ -22,6 +22,10 @@ nonisolated struct PrivilegedHelperInstaller: Sendable {
         let xraySHA256: String
     }
 
+    /// Where the LaunchDaemon sends the helper's stdout and stderr. Removed by
+    /// `PrivilegedHelperUninstaller` along with the rest of the installation.
+    static let launchDaemonLogPath = "/var/log/teleport-privileged-helper.log"
+
     private let bundle: Bundle
     private let shellRunner: PrivilegedShellRunner
     private let artifactPolicy: BundledArtifactPolicy
@@ -318,9 +322,9 @@ nonisolated struct PrivilegedHelperInstaller: Sendable {
             <key>KeepAlive</key>
             <true/>
             <key>StandardOutPath</key>
-            <string>/var/log/teleport-privileged-helper.log</string>
+            <string>\(launchDaemonLogPath)</string>
             <key>StandardErrorPath</key>
-            <string>/var/log/teleport-privileged-helper.log</string>
+            <string>\(launchDaemonLogPath)</string>
         </dict>
         </plist>
         """

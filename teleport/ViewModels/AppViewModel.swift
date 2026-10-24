@@ -58,6 +58,12 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var isSplitTunnelGeodataReady = false
     @Published private(set) var updatingGeodataKinds: Set<GeodataKind> = []
     @Published private(set) var startsAtLogin: Bool
+    /// Whether the privileged helper's files are on disk; see
+    /// `PrivilegedHelperUninstaller.isInstalled`. Read on demand, not watched.
+    @Published private(set) var isHelperInstalled = false
+    @Published private(set) var isUninstallingHelper = false
+    /// The outcome of the last uninstall, shown under the button that started it.
+    @Published private(set) var helperUninstallMessage: String?
     @Published private(set) var isOperationPending = false
     @Published private(set) var refreshingSubscriptionIDs: Set<UUID> = []
     @Published private(set) var refreshingHealthConnectionIDs: Set<UUID> = []
@@ -75,6 +81,7 @@ final class AppViewModel: ObservableObject {
     private let healthProbeService: ConnectionHealthProbeService
     private let splitTunnelGeodataMatcher = SplitTunnelGeodataMatcher()
     private let loginItemService = LoginItemService()
+    private let helperUninstaller = PrivilegedHelperUninstaller()
     private let persistenceQueue = DispatchQueue(label: "dev.x.teleport.persistence", qos: .utility)
     private let log: TeleportLog
     /// Only used to finish a proxy restore an earlier run could not complete.
@@ -1211,6 +1218,50 @@ final class AppViewModel: ObservableObject {
 
     func refreshStartsAtLoginStatus() {
         startsAtLogin = loginItemService.isEnabled
+    }
+
+    func refreshHelperInstallationStatus() {
+        isHelperInstalled = PrivilegedHelperUninstaller.isInstalled()
+    }
+
+    /// Removes the privileged helper after an administrator prompt. A running
+    /// session is torn down first and the leak guard released, while the helper is
+    /// still there to do both; the uninstall then flushes the guard's anchor anyway
+    /// in case the release did not reach it. Counted as a connection operation so
+    /// nothing connects, and in TUN mode reinstalls, halfway through.
+    func uninstallHelper() {
+        refreshHelperInstallationStatus()
+        guard isHelperInstalled else {
+            helperUninstallMessage = "Teleport's helper is not installed; there is nothing to remove."
+            return
+        }
+        guard !isUninstallingHelper, !isTerminating else { return }
+        isUninstallingHelper = true
+        helperUninstallMessage = nil
+        awaitsUplinkToReconnect = false
+        log.info(Self.subsystem, "helper uninstall requested: mode \(connectionMode), session \(hasActiveConnectionSession ? "active" : "none")")
+        let provider = connectionProvider
+        let leakGuard = leakGuard
+        let uninstaller = helperUninstaller
+        let operationID = UUID()
+        beginConnectionOperation()
+        Task { @MainActor [weak self] in
+            // A teardown that fails is not a reason to keep the helper: the user
+            // asked for it gone, and the lease and anchor flush cover what it left.
+            try? await provider.disconnect()
+            await leakGuard.disarm()
+            do {
+                try await uninstaller.uninstall()
+                self?.helperUninstallMessage = "Teleport's helper was removed. TUN mode will ask to install it again on the next connect."
+                self?.log.info(AppViewModel.subsystem, "helper uninstalled")
+            } catch {
+                self?.helperUninstallMessage = error.localizedDescription
+                self?.log.warn(AppViewModel.subsystem, "helper uninstall failed: \(LogFormat.error(error))")
+            }
+            self?.refreshHelperInstallationStatus()
+            self?.isUninstallingHelper = false
+            self?.finishConnectionOperation(operationID)
+        }
     }
 
     func setStartsAtLogin(_ startsAtLogin: Bool) {

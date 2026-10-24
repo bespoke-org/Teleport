@@ -110,27 +110,12 @@ Connection links, which contain credentials, are stored in the login Keychain (s
 
 ## Uninstall
 
-1. Disconnect and quit Teleport. This removes the routes, the DNS entry, the pf rules and the system proxy settings.
-2. Remove the helper:
+1. If you used TUN mode, remove the helper in Settings > General > TUN mode helper > Uninstall... It asks for an administrator password and also drops the leak guard rules.
+2. Quit Teleport and delete `/Applications/Teleport.app`.
 
-   ```bash
-   sudo launchctl bootout system/dev.x.teleport.PrivilegedHelper
-   sudo rm -f /Library/LaunchDaemons/dev.x.teleport.PrivilegedHelper.plist
-   sudo rm -f /Library/PrivilegedHelperTools/dev.x.teleport.PrivilegedHelper \
-              /Library/PrivilegedHelperTools/dev.x.teleport.xray \
-              /Library/PrivilegedHelperTools/dev.x.teleport.installation.json
-   sudo rm -rf /Library/PrivilegedHelperTools/dev.x.teleport.xray-assets /var/db/dev.x.teleport
-   sudo rm -f /var/log/teleport-privileged-helper.log
-   ```
+If the app is already gone, run `scripts/uninstall.sh` from a checkout (or `just uninstall-helper`). It removes the same files and lists what Teleport keeps in your home folder: `~/Library/Application Support/teleport/` and the `dev.x.teleport.configuration` item in Keychain.
 
-3. If the machine has no network after an abnormal exit, the leak guard is still loaded. It expires by itself within three minutes; to drop it now:
-
-   ```bash
-   sudo pfctl -a com.apple/dev.x.teleport -F all
-   ```
-
-   A reboot also clears it, together with any routes a crashed session left behind.
-4. Remove the app and its data: `/Applications/Teleport.app`, `~/Library/Application Support/teleport/`, the `dev.x.teleport.configuration` items in Keychain Access, and the login item in System Settings > General > Login Items if it was enabled.
+If the machine has no network after a crash, the leak guard is still loaded. It expires within three minutes, or drop it now with `sudo pfctl -a com.apple/dev.x.teleport -F all`.
 
 ## Development
 

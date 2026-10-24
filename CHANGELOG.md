@@ -15,6 +15,7 @@ Format is based on [_Keep a changelog_](https://keepachangelog.com) and uses
 - The menu shows when a connect is installing the helper.
 - Plain-TLS links use a browser-like TLS fingerprint.
 - `scripts/fetch-xray.sh` downloads the official Xray release and checks it against the pinned digest.
+- The privileged helper can be removed from Settings > General (disconnects first, one administrator prompt), or with `just uninstall-helper` / `scripts/uninstall.sh` when the app is already gone.
 
 ### Changed
 - The bundled community subscription lists are no longer imported on first launch. The Connections settings page offers them, with a note on who runs those servers.

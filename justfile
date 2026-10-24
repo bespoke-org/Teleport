@@ -246,3 +246,7 @@ coverage:
 reset-legacy-privileged-helper:
     sudo sh scripts/reset_legacy_privileged_helper.sh
 
+
+# Remove the installed privileged helper and its root-owned files (asks for sudo)
+uninstall-helper:
+    sudo bash scripts/uninstall.sh
