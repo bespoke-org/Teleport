@@ -5,7 +5,7 @@
 <h1 align="center">Teleport</h1>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/macOS-26%2B-000000?logo=apple&logoColor=white" alt="macOS 26+">
+  <img src="https://img.shields.io/badge/macOS-15%2B-000000?logo=apple&logoColor=white" alt="macOS 15+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--or--later-blue" alt="License: GPL-3.0-or-later"></a>
   <a href="#buy-us-some-tokens"><img src="https://img.shields.io/badge/donate-USDT-26A17B?logo=tether&logoColor=white" alt="Donate USDT"></a>
 </p>
