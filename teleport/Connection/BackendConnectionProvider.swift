@@ -32,7 +32,7 @@ nonisolated final class BackendConnectionProvider: ConnectionProvider, @unchecke
         self.stateStore = stateStore
         // `self` is not yet available to the closure, so a session found already
         // running is supervised once the queue reaches it, via the box below.
-        let selfBox = WeakBox<BackendConnectionProvider>()
+        let selfBox = WeakProviderBox()
         operationQueue = ConnectionOperationQueue { [backend, stateStore, mode] in
             if await backend.hasActiveRuntimeSession() {
                 stateStore.update(
@@ -203,10 +203,12 @@ nonisolated final class BackendConnectionProvider: ConnectionProvider, @unchecke
 
 }
 
-private final class WeakBox<T: AnyObject>: @unchecked Sendable {
+/// Not generic: Swift 6.3.3 (Xcode 26.6) crashes in EarlyPerfInliner on the
+/// deinit of a generic version of this class in Release builds.
+private final class WeakProviderBox: @unchecked Sendable {
     private let lock = NSLock()
-    private weak var stored: T?
-    var value: T? {
+    private weak var stored: BackendConnectionProvider?
+    var value: BackendConnectionProvider? {
         get { lock.lock(); defer { lock.unlock() }; return stored }
         set { lock.lock(); stored = newValue; lock.unlock() }
     }
