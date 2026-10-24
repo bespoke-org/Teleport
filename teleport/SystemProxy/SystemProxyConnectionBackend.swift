@@ -33,9 +33,11 @@ final class SystemProxyConnectionBackend: ConnectionBackend, @unchecked Sendable
     }
 
     func start(_ request: ConnectionRequest, reportPhase: @escaping @Sendable (ConnectionState) -> Void) async throws {
+        try Task.checkCancellation()
         do {
             try await tunRuntimeManager?.cleanupIfHelperAvailable(protectedHosts: [request.configuration.host])
             try await startRuntime(request)
+            try Task.checkCancellation()
             try await BlockingWork.run { [self] in
                 try proxyService.enableProxy(endpoint: request.localProxy)
             }
@@ -51,8 +53,10 @@ final class SystemProxyConnectionBackend: ConnectionBackend, @unchecked Sendable
                 try proxyService.disableProxy()
                 runtimeManager.stop()
             }
+            try Task.checkCancellation()
             try await tunRuntimeManager?.cleanupIfHelperAvailable(protectedHosts: [request.configuration.host])
             try await startRuntime(request)
+            try Task.checkCancellation()
             try await BlockingWork.run { [self] in
                 try proxyService.enableProxy(endpoint: request.localProxy)
             }
@@ -87,6 +91,7 @@ final class SystemProxyConnectionBackend: ConnectionBackend, @unchecked Sendable
     }
 
     private func startRuntime(_ request: ConnectionRequest) async throws {
+        try Task.checkCancellation()
         // Writing the config and spawning Xray block; waiting for its local ports to
         // accept connections no longer does.
         try await BlockingWork.run { [self] in
@@ -94,7 +99,9 @@ final class SystemProxyConnectionBackend: ConnectionBackend, @unchecked Sendable
                 .writeConfig(for: request.configuration)
             try runtimeManager.start(configURL: configURL)
         }
-        guard await runtimeManager.waitUntilLocalProxyReady(endpoint: request.localProxy) else {
+        let isReady = await runtimeManager.waitUntilLocalProxyReady(endpoint: request.localProxy)
+        try Task.checkCancellation()
+        guard isReady else {
             let detail = runtimeManager.capturedErrorOutput()?.trimmingCharacters(in: .whitespacesAndNewlines)
             throw XrayRuntimeManager.RuntimeError.startupTimedOut(detail)
         }

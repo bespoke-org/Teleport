@@ -104,6 +104,7 @@ nonisolated final class XrayRuntimeManager: @unchecked Sendable {
         let deadline = clock.now + .seconds(timeout)
 
         while clock.now < deadline {
+            guard !Task.isCancelled else { return false }
             guard process?.isRunning == true else { return false }
 
             if await Self.canOpenTCPConnection(host: endpoint.host, port: endpoint.httpPort, timeout: 0.2),
