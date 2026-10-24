@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   verify:
-    # macOS 26 arm64 image; its default Xcode is 26.x, which the macOS 26.0 deployment target needs.
+    # macOS 26 arm64 image; its default Xcode is 26.x, the version the project is developed with.
     # Without Config/Local.xcconfig the build is signed ad hoc.
     runs-on: macos-26
     steps:
