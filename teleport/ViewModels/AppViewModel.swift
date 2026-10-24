@@ -584,6 +584,46 @@ final class AppViewModel: ObservableObject {
         persistSettingError()
     }
 
+    /// Re-parses a hand-added connection in place, so a peer whose endpoint, DNS
+    /// or MTU changed does not have to be deleted and re-added — the identity the
+    /// rest of the app keys on (`id`, and with it the name and any split-tunnel
+    /// rule pointing at it) survives the edit. Subscription-imported connections
+    /// are excluded: the next refresh would overwrite the change.
+    @discardableResult
+    func updateConnection(id: UUID, from rawValue: String) -> Bool {
+        guard let index = savedConnections.firstIndex(where: { $0.id == id }) else { return false }
+
+        guard savedConnections[index].source == nil else {
+            setStoredError("Imported connections are replaced on refresh, so they cannot be edited")
+            return false
+        }
+
+        if (selectedConnectionID == id || routedConnections.contains { $0.id == id }) && hasActiveConnectionSession {
+            setStoredError("Disconnect before editing this connection")
+            return false
+        }
+
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            setStoredError("Paste a connection URL or configuration first")
+            return false
+        }
+
+        do {
+            savedConnections[index].configuration = try parser.parse(trimmed)
+            rebuildSavedConnectionIndexes()
+            healthChecksByConnectionID.removeValue(forKey: id)
+            setStoredError(nil)
+            updateMenuBarAnimation()
+            try persist()
+            enqueueHealthProbes(for: [id], force: true, priority: true)
+            return true
+        } catch {
+            setStoredError(error.localizedDescription)
+            return false
+        }
+    }
+
     func removeConnection(id: UUID) {
         guard let index = savedConnections.firstIndex(where: { $0.id == id }) else { return }
 

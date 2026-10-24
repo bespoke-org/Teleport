@@ -8,6 +8,8 @@ struct ConnectionsSettingsView: View {
     @State private var qrPayload: QRPayload?
     @State private var activeShareMenu: ShareMenuPayload?
     @State private var isShowingAddSheet = false
+    /// The manually added connection being edited in the sheet.
+    @State private var editingConnection: SavedConnection?
     @State private var isHoveringAddButton = false
     /// The connection being renamed, and the name being typed for it.
     @State private var renamingConnectionID: UUID?
@@ -111,6 +113,9 @@ struct ConnectionsSettingsView: View {
                 }
             )
         }
+        .sheet(item: $editingConnection) { connection in
+            EditConnectionSheet(viewModel: viewModel, connection: connection)
+        }
         .sheet(item: $qrPayload) { payload in
             QRCodeSheet(payload: payload)
         }
@@ -123,9 +128,6 @@ struct ConnectionsSettingsView: View {
         let health = viewModel.healthCheck(for: connection)
 
         HStack(spacing: 12) {
-            if renamingConnectionID == connection.id {
-                renameField(connection, isSelected: isSelected)
-            } else {
             Button {
                 viewModel.selectConnection(id: connection.id)
             } label: {
@@ -151,18 +153,17 @@ struct ConnectionsSettingsView: View {
             }
             .buttonStyle(.plain)
             .disabled(!viewModel.canChangeSelection && !isSelected)
-            }
 
-            // Renaming is a visible control, not a right-click discovery: the row's
+            // Editing is a visible control, not a right-click discovery: the row's
             // own button only changes the selection, so there is nowhere on the name
             // itself to click for this.
             Button {
-                beginRename(connection)
+                editingConnection = connection
             } label: {
                 Image(systemName: "pencil")
             }
             .buttonStyle(.borderless)
-            .help("Rename this connection")
+            .help("Edit this connection's name and configuration")
 
             Button {
                 viewModel.refreshConnectionHealth(id: connection.id)
@@ -191,7 +192,7 @@ struct ConnectionsSettingsView: View {
         // selection button is disabled, and a disabled control shows no context
         // menu — renaming has nothing to do with changing the selection.
         .contextMenu {
-            Button("Rename…") { beginRename(connection) }
+            Button("Edit…") { editingConnection = connection }
         }
     }
 
