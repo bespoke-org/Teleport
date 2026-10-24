@@ -1,144 +1,196 @@
 # Teleport
 
-Teleport is a small macOS menu bar app for running a local Xray-based proxy with VLESS, Trojan, WireGuard, and subscription-based connection imports.
+Teleport is a macOS menu bar client for the [Xray](https://github.com/XTLS/Xray-core) proxy core. It keeps a list of VLESS, Trojan and WireGuard connections, imports them from subscription URLs, and sends traffic through the selected one either by setting the macOS system proxy or by routing the whole machine through a TUN interface.
+
+<!-- Screenshot: the menu bar popover with the connection picker and the connect button. Add the image as docs/screenshot-menu.png and reference it here. -->
 
 ## Features
 
-- menu bar-only app
-- bundled Xray runtime
-- support for `vless://`, `trojan://` and `wireguard://` links, and WireGuard `[Interface]` configuration files
-- several connections in one session: a split-tunnel rule chooses which connection its traffic leaves through, and a WireGuard peer's own `DNS` resolvers answer for the names routed to that peer
-- support for `http://` and `https://` subscription URLs that fetch and import multiple configs
-- saved connections with persistent selection across launches
-- lightweight server health checks with persisted sampled TCP latency and availability state
-- dedicated Settings window for connection and subscription management
-- System Proxy mode for apps that respect macOS proxy settings
-- VPN mode using Xray's privileged TUN inbound for full-device IPv4 routing
+- Connections from `vless://`, `trojan://` and `wireguard://` links and from WireGuard `[Interface]` configuration files.
+- Subscriptions from `http://` and `https://` URLs, with periodic refresh and duplicate filtering.
+- Two connection modes: **System Proxy** (no administrator rights) and **VPN** (TUN interface through a root helper).
+- Split tunneling: rules by domain, IP range, geosite category or geoip country, grouped in named profiles. A rule can send its traffic through a different saved connection, so one session can dial several servers.
+- A pf-based leak guard that keeps traffic off the physical network while a VPN session is being rebuilt.
+- TCP latency checks for every connection, shown in the menu bar picker.
+- Geodata (`geoip.dat`, `geosite.dat`) bundled, with optional downloads from a source of your choice.
+- Settings window with General, Connections, Split tunneling, Geodata, Nerd shit (logs) and About pages.
+
+## Requirements
+
+- macOS 26 or later (the project's deployment target).
+- Apple Silicon. The bundled Xray executable is arm64 only.
+- To build: Xcode 26 or later, and optionally [just](https://github.com/casey/just) for the command-line recipes.
+- VPN mode asks for an administrator password once, to install the helper.
+
+## Install
+
+There is no signed or notarized download yet. Build from source:
+
+```bash
+git clone https://codeberg.org/chernigin/teleport.git
+cd teleport
+cp Config/Local.xcconfig.example Config/Local.xcconfig
+# edit Config/Local.xcconfig: set DEVELOPMENT_TEAM to the Team ID you sign with in Xcode
+just build-release        # builds Release and copies Teleport.app into /Applications
+```
+
+Or open `teleport.xcodeproj` in Xcode and run the `teleport` scheme.
+
+Without a `DEVELOPMENT_TEAM` the build is signed ad hoc. System Proxy mode works in such a build; VPN mode refuses to install the helper, because the app and the helper verify each other by Team ID (see Security model).
+
+On first launch the app has no connections. Add a link or a subscription URL in Settings > Connections. The same page can add two community subscription lists that ship with the app (`packaging/bundled-connections.json`, from [igareck/vpn-configs-for-russia](https://github.com/igareck/vpn-configs-for-russia)). They are not added on their own: the servers in those lists are run by people nobody here knows, and everything sent through them can be read or altered by whoever operates them.
 
 ## Connection modes
 
 ### System Proxy
 
-System Proxy mode starts the bundled Xray runtime as the current user, exposes local SOCKS/HTTP proxy ports, and enables macOS system proxy settings. It works for apps that honor system proxy configuration and does not require administrator approval.
+Starts the bundled Xray as the current user, listens on local HTTP and SOCKS5 ports (8080 and 1080 by default) and enables the macOS system proxy for the active network service. Applications that ignore the system proxy are not routed. No root access is involved, and the proxy settings are restored on disconnect, on quit, and on the next launch if the app did not get to it.
 
 ### VPN
 
-VPN mode starts Xray with its TUN inbound through Teleport's privileged helper. Teleport asks macOS for an admin password the first time it installs or updates the helper because creating a TUN interface and changing routes requires root access. After the helper is installed, normal connect/disconnect operations do not store or require the admin password.
-
-Normal privileged commands use an authenticated launchd XPC Mach service with an exact-revision typed protocol. The helper validates the active console user and Teleport code signature before accepting the connection. Requests and responses are size-bounded and correlated by UUID; after an indeterminate start/stop reply, the app performs one status query and never automatically repeats the mutation.
-
-VPN mode installs split default IPv4 routes:
+Starts Xray as root through Teleport's privileged helper with a TUN inbound, and routes the machine through it:
 
 ```text
-0.0.0.0/1   -> Xray utun
-128.0.0.0/1 -> Xray utun
+0.0.0.0/1, 128.0.0.0/1   -> Teleport's utun          (IPv4)
+::/1, 8000::/1           -> Teleport's utun          (IPv6, only when the uplink has global IPv6)
+<each proxy server>/32   -> the original gateway    (so Xray's own connection stays outside the tunnel)
 ```
 
-It also protects the selected proxy server with a host route through the original network gateway so Xray's own outbound connection does not loop back into the tunnel.
+DNS is answered by Xray inside the tunnel; the helper publishes a resolver entry for it (`State:/Network/Service/dev.x.teleport/DNS`) and removes it on stop. Split-tunnel rules with the `direct` action leave through the physical interface. When the machine wakes from sleep or the network changes, the session is torn down and rebuilt on the new uplink.
 
-Disconnect other VPN apps before using VPN mode. If another VPN owns the default `utun` route, Teleport refuses to start VPN mode; use System Proxy mode when another VPN must remain active.
+If another VPN owns the default `utun` route, Teleport refuses to start VPN mode. Disconnect it first, or use System Proxy mode.
 
-The helper accepts commands only from the active console user and verifies the Teleport app code signature before running privileged actions. It installs these root-owned files:
+## Security model
+
+### What runs as root
+
+VPN mode installs a LaunchDaemon, `dev.x.teleport.PrivilegedHelper`, which runs as root and stays resident. Its whole code is in `TeleportPrivilegedHelper/`. It does six things on request: report status, start a session, stop a session, read its own logs, engage the leak guard, release the leak guard. Starting a session means running the root copy of Xray with a configuration the app sends over, installing the routes above and publishing the DNS entry. The shell it runs for this is generated in `Routing/XrayTunScriptBuilder.swift` with every value quoted; the app supplies data (the Xray configuration, the server addresses), not commands.
+
+The helper accepts an XPC connection only when both hold:
+
+- the caller runs as the user currently at the console (not root, not another logged-in user);
+- the caller's code signature satisfies `identifier "dev.x.teleport" and anchor apple generic and certificate leaf[subject.OU] = <Team ID>`, where the Team ID is read from the helper's own signature.
+
+Requests and responses are typed, size-bounded messages; the helper refuses what does not parse. Each request carries an ID, and a repeated ID within ten minutes gets the first answer again instead of a second execution.
+
+### What the app checks before installing anything
+
+Before the administrator prompt, the app runs `codesign --verify --strict` against the same Team ID requirement on itself and on the bundled helper, and compares the bundled Xray against a SHA-256 pinned in `teleport/HelperInstallation/BundledArtifactPolicy.swift`. The install transaction repeats those checks on the staged copies as root. A failed install puts the previous installation back. These checks establish that what gets installed is what this build shipped; they say nothing about notarization, which the project does not have yet.
+
+The helper and its files:
 
 ```text
 /Library/PrivilegedHelperTools/dev.x.teleport.PrivilegedHelper
 /Library/PrivilegedHelperTools/dev.x.teleport.xray
+/Library/PrivilegedHelperTools/dev.x.teleport.installation.json
 /Library/LaunchDaemons/dev.x.teleport.PrivilegedHelper.plist
+/var/db/dev.x.teleport/                      (session state, config, logs; root only)
+/var/log/teleport-privileged-helper.log
 ```
 
-Runtime diagnostics for VPN mode are written under:
+### Leak guard
 
-```text
-~/Library/Application Support/teleport/xray.log
-~/Library/Application Support/teleport/xray-tun-session.json
-/var/db/dev.x.teleport/xray-tun.log
-/var/db/dev.x.teleport/xray-tun-control.log
-```
+While VPN mode is on, a pf ruleset in the anchor `com.apple/dev.x.teleport` blocks outbound traffic that would otherwise leave on the physical interface. It allows: loopback; the tunnel interface; DHCP; private, link-local and multicast IPv4 destinations; link-local, unique-local and multicast IPv6 destinations; DNS to any resolver on ports 53 and 853; the proxy servers of the current session; and, during a session, traffic of root processes, because Xray's `direct` outbound runs as root. Everything else outbound, IPv4 and IPv6, is dropped. Inbound traffic is not filtered.
 
-## Build
+The guard is held on a lease: the app renews it every 45 seconds and the helper drops it after 180 seconds without renewal, so a crashed app leaves the machine without network for at most three minutes. The helper also drops a guard it finds at its own start. The switch is in Settings > General.
 
-Use the included `justfile` for command-line builds and packaging:
+### Stored data
+
+Connection links, which contain credentials, are stored in the login Keychain (service `dev.x.teleport.configuration`), not in plain files. Logs are written under `~/Library/Application Support/teleport/` and, for the helper, under `/var/db/dev.x.teleport/`.
+
+## Uninstall
+
+1. Disconnect and quit Teleport. This removes the routes, the DNS entry, the pf rules and the system proxy settings.
+2. Remove the helper:
+
+   ```bash
+   sudo launchctl bootout system/dev.x.teleport.PrivilegedHelper
+   sudo rm -f /Library/LaunchDaemons/dev.x.teleport.PrivilegedHelper.plist
+   sudo rm -f /Library/PrivilegedHelperTools/dev.x.teleport.PrivilegedHelper \
+              /Library/PrivilegedHelperTools/dev.x.teleport.xray \
+              /Library/PrivilegedHelperTools/dev.x.teleport.installation.json
+   sudo rm -rf /Library/PrivilegedHelperTools/dev.x.teleport.xray-assets /var/db/dev.x.teleport
+   sudo rm -f /var/log/teleport-privileged-helper.log
+   ```
+
+3. If the machine has no network after an abnormal exit, the leak guard is still loaded. It expires by itself within three minutes; to drop it now:
+
+   ```bash
+   sudo pfctl -a com.apple/dev.x.teleport -F all
+   ```
+
+   A reboot also clears it, together with any routes a crashed session left behind.
+4. Remove the app and its data: `/Applications/Teleport.app`, `~/Library/Application Support/teleport/`, the `dev.x.teleport.configuration` items in Keychain Access, and the login item in System Settings > General > Login Items if it was enabled.
+
+## Building
 
 ```bash
-just build-debug
-just build-release
-just package
-```
-
-Useful recipes:
-
-```bash
-just --list
-just app-path Debug
-just version
+just --list                 # all recipes
+just build-debug            # Debug build into build/DerivedData
+just build-release          # Release build, copied into /Applications
+just package                # Release build plus a .dmg in build/dist
 just clean
 ```
 
-You can also open `teleport.xcodeproj` in Xcode and run the `teleport` scheme.
+`Config/Local.xcconfig` (ignored by git) holds the per-developer `DEVELOPMENT_TEAM`; `Config/Teleport.xcconfig` includes it and is the base configuration of the project. There is no other place where the Team ID appears: the app and the helper derive the signature requirement from their own signatures at run time (`Shared/TeleportCodeSigning.swift`).
 
-## Project structure
-
-Teleport is two executables plus a shared layer.
-
-### Targets
-
-- `teleport` — the menu bar app.
-- `TeleportPrivilegedHelper` — a separate root daemon launched by launchd, used only for VPN mode.
-- `Shared/` — compiled into both targets. Holds the XPC protocol with its exact revision number, the typed Codable request/response messages, payload size bounds, and their validation. This is the contract between app and root code.
-
-### App target, from UI down to transport
-
-- **UI**: `teleportApp.swift`, `MenuBarView`, `MenuBarIconView`, `ContentView`, `SettingsView`, and `Views/Settings/*` (connections, subscriptions, split tunneling with profiles and a rule tester, geodata, about, QR and share sheets).
-- **ViewModel**: `ViewModels/AppViewModel` is the single orchestrator. It owns CRUD for connections, subscriptions, and split-tunnel rules, picks the mode, and drives connect/disconnect. `ConnectionHealthProbeQueue` schedules latency checks.
-- **Models and persistence**: `TeleportModels.swift` defines the persisted snapshot (saved connections, subscriptions, split-tunnel rules). `Persistence/` stores it on disk and seeds it on first launch from `packaging/bundled-connections.json`.
-- **Input pipelines**: `Parsing/` parses `vless://`, `trojan://` and `wireguard://` links, WireGuard configuration files, and geodata formats, and holds the split-tunnel rule and geodata matchers. `Subscriptions/` fetches subscription URLs and imports configs with duplicate filtering. `Geodata/` downloads and resolves geoip/geosite assets. `Health/` runs TCP latency probes.
-- **Connection abstraction**: `Connection/` is the boundary the ViewModel talks to. `ConnectionProvider` exposes async connect/disconnect and one `ConnectionState` stream. `ConnectionRequest` carries mode-neutral inputs, including split-tunnel rules. `ConnectionProviderFactory` selects one of the two providers.
-- **Config generation**: `XrayCore/XrayConfigurationWriter` turns a request into Xray JSON for either mode, including routing rules derived from split tunneling. It never starts processes or touches system state.
-- **System Proxy mode**: `SystemProxy/` runs Xray as the current user, exposes local SOCKS/HTTP ports, and toggles macOS proxy settings. No root required.
-- **VPN mode**: `VPN/` is the app side of the root path: `RootXrayConnectionProvider` → `XrayTunConnectionBackend` → `PrivilegedXrayRuntimeManager` → `PrivilegedHelperClient` → `XPCVPNHelperTransport`. The client encodes typed messages and performs one bounded status query after an indeterminate reply. The transport owns the `NSXPCConnection`, deadlines, and interruption handling. `XrayTunSessionState` caches correlation IDs for a later stop.
-- **Helper installation**: `HelperInstallation/` verifies bundled artifacts and installs the helper, the root Xray binary, an installation manifest, and the LaunchDaemon plist through an admin-authorized shell. This is the only place that asks for a password. Geodata is not installed here; the helper reads the resolved geodata directory from the console user's Application Support at session start.
-
-### Privileged helper target, from ingress to system
-
-- `main.swift` starts an `NSXPCListener` on the Mach service name.
-- `IPC/` is the trust boundary. `ClientAuthenticator` checks the active console user and the app code signature. The listener delegate, `HelperXPCService`, and `HelperCommandDispatcher` decode typed commands and serialize them. `HelperRequestLedger` dedupes by request UUID (128 entries, ten minutes).
-- `Session/XrayTunController` validates fields and runs start/stop/status/diagnostics in order.
-- `Xray/ManagedXrayProcess` manages the root Xray process: PID files, SIGTERM, bounded wait, SIGKILL.
-- `Routing/XrayTunScriptBuilder` produces the shell commands for the utun, split default routes, the protected host route to the proxy server, DNS, and cleanup.
-- `Support/` holds helper configuration, platform lookups, and bounded shell execution.
-
-### Around the code
-
-- `scripts/verify_*.swift` — standalone verification scripts, one per subsystem, run via `just verify-*`.
-- `justfile` — build, DMG packaging, verification, and an architecture-layout check that keeps XPC details out of provider and UI layers.
-- `openspec/` — capability specs and in-progress changes.
-- `docs/` — source-layout reference and design specs.
-
-## Runtime architecture
-
-`AppViewModel` drives both connection modes through the asynchronous `ConnectionProvider` API and one shared `ConnectionState` stream. Mode-specific providers keep System Proxy and privileged root-Xray lifecycle details below that boundary. The VPN layer hides `NSXPCConnection`, helper revisions, request IDs, and privileged session payloads from providers and UI code.
-
-Phase 3 correlation and helper request deduplication are memory-bounded, not authoritative persisted root ownership. Authoritative sessions/route journals and `SMAppService` installation remain separate future phases.
-
-See [`docs/runtime-source-layout.md`](docs/runtime-source-layout.md) for the app/helper source boundaries, transitional backend adapters, current trust boundary, future-phase exclusions, dependency direction, and verification entry points.
-
-## Built-in subscriptions and configs
-
-Initial subscriptions and manual configs are defined in:
-
-```text
-packaging/bundled-connections.json
-```
-
-On first launch only, Teleport seeds a missing user state file from this bundled JSON. Subscription entries support `url`, `displayName`, `autoUpdateIntervalMinutes`, and `filterDuplicateImports`. Manual config entries support `link` and optional `displayName`.
-
-## Verification scripts
-
-Use the `justfile` to run focused verification scripts:
+To replace the bundled Xray with the official release build for a given version:
 
 ```bash
-just verify
-just verify-core
-just verify-subscription-support
-just verify-connection-health
+scripts/fetch-xray.sh v26.6.27
 ```
+
+The script checks the archive against the digest XTLS publishes and the executable against the pin in `BundledArtifactPolicy.swift`; when upgrading, update the pin to the digest it prints and run it again. Licenses of the bundled components are in `THIRD_PARTY_NOTICES.md`.
+
+Formatting follows `.swift-format` (four-space indent, 160 columns). Check with `swift format lint -r teleport Shared TeleportPrivilegedHelper scripts`.
+
+## Tests
+
+There is no XCTest target. Each subsystem has a standalone program in `scripts/verify_*.swift` that is compiled with `swiftc` together with the sources it covers and run directly; a failed check stops the program with a message.
+
+```bash
+just verify                           # Debug build, then every verify script
+just verify-core                      # link parsing and Xray config generation
+just verify-split-tunneling           # rule matching, routing, helper scripts
+just verify-leak-guard                # the pf ruleset
+just verify-xpc-protocol              # app/helper message contract
+just coverage                         # line coverage of the verify scripts
+```
+
+The remaining recipes are listed by `just --list`. None of them needs root or a logged-in GUI session; VPN connect/disconnect, helper installation and leak-guard behaviour on a real network are checked by hand (see `docs/xray-bundling-and-release.md`).
+
+## Project layout
+
+- `teleport/` is the app: SwiftUI views, `ViewModels/AppViewModel` as the single orchestrator, `Parsing/` for links and geodata, `Subscriptions/`, `Health/`, `XrayCore/` for config generation, `SystemProxy/` and `VPN/` as the two connection providers, `HelperInstallation/` for the one code path that asks for a password.
+- `TeleportPrivilegedHelper/` is the root daemon: `IPC/` authenticates and decodes, `Session/` runs start/stop/status, `Routing/` generates the route and pf scripts, `Xray/` manages the root Xray process.
+- `Shared/` is compiled into both: the XPC protocol and messages, the leak guard ruleset, the signature requirement, logging.
+- `scripts/` holds the verify programs, `fetch-xray.sh`, and a reset script for the helper.
+- `docs/runtime-source-layout.md` describes the boundaries between these parts in more detail.
+
+## Known limitations
+
+- Build from source only. The app is not notarized, so the helper is installed with `launchctl` from an administrator shell rather than through `SMAppService`.
+- Apple Silicon only, because of the bundled Xray executable.
+- On stop, the helper removes the half-default routes by destination rather than from a record of what the session installed, and a route it could not remove is not reported. A failed start undoes its own changes (see the EXIT trap in `XrayTunScriptBuilder.swift`).
+- The leak guard lets DNS reach any resolver, so the names being resolved can reach the uplink's resolver while no session exists; the address they are resolved from is what the guard protects. During a session it also passes traffic from any root process, not only Xray.
+- Split-tunnel domain rules rely on Xray sniffing the destination name. QUIC is blocked inside the tunnel so that HTTP/3 falls back to a connection whose name can be read.
+- Another VPN that owns the default `utun` route blocks VPN mode entirely.
+- The 33 MB Xray executable is committed to the repository.
+
+## Comparison with other clients
+
+Only what the other projects' own READMEs state is listed; a blank means the README does not say.
+
+| | Teleport | [V2rayU](https://github.com/yanue/V2rayU) | [Hiddify](https://github.com/hiddify/hiddify-app) | [v2rayN](https://github.com/2dust/v2rayN) |
+|---|---|---|---|---|
+| Platforms | macOS | macOS | Android, iOS, Windows, macOS, Linux | Windows, Linux, macOS |
+| Core | Xray | v2ray-core | sing-box | Xray, sing-box and others |
+| Whole-device routing on macOS | TUN through a root helper, plus pf leak guard | System proxy only; the README points to Proxifier for apps that ignore it | TUN mode listed, platform not specified | |
+| License | GPL-3.0-or-later | GPLv3 | GPL v3 with Hiddify's additional conditions (non-commercial use among them) | GPL-3.0 |
+| Distribution | Source only | | App Store, DMG, PKG | |
+
+## Credits
+
+Teleport is written by Michael Chernigin and Nikita Rydanov and licensed under the GNU General Public License v3.0 or later (`LICENSE`). It bundles [Xray-core](https://github.com/XTLS/Xray-core) (MPL-2.0) and routing data from the projects listed in `THIRD_PARTY_NOTICES.md`.
+
+Bug reports: https://codeberg.org/chernigin/teleport/issues
