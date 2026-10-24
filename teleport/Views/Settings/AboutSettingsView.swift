@@ -5,8 +5,8 @@ import SwiftUI
 struct AboutSettingsView: View {
     @State private var xrayVersion = "Checking\u{2026}"
 
-    private let sourceCodeURL = URL(string: "https://codeberg.org/chernigin/teleport")!
-    private let issuesURL = URL(string: "https://codeberg.org/chernigin/teleport/issues")!
+    private let sourceCodeURL = URL(string: "https://github.com/bespoke-org/Teleport")!
+    private let issuesURL = URL(string: "https://github.com/bespoke-org/Teleport/issues")!
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {

@@ -27,8 +27,6 @@ Teleport is a macOS menu bar client for the [Xray](https://github.com/XTLS/Xray-
 There is no signed or notarized download yet. Build from source:
 
 ```bash
-git clone https://codeberg.org/chernigin/teleport.git
-cd teleport
 cp Config/Local.xcconfig.example Config/Local.xcconfig
 # edit Config/Local.xcconfig: set DEVELOPMENT_TEAM (see Development > Signing)
 just build-release        # builds Release and copies Teleport.app into /Applications
@@ -204,8 +202,4 @@ Only what the other projects' own READMEs state is listed; a blank means the REA
 | License | GPL-3.0-or-later | GPLv3 | GPL v3 with Hiddify's additional conditions (non-commercial use among them) | GPL-3.0 |
 | Distribution | Source only | | App Store, DMG, PKG | |
 
-## Credits
-
-Teleport is written by Michael Chernigin and Nikita Rydanov and licensed under the GNU General Public License v3.0 or later (`LICENSE`). It bundles [Xray-core](https://github.com/XTLS/Xray-core) (MPL-2.0) and routing data from the projects listed in `THIRD_PARTY_NOTICES.md`.
-
-Bug reports: https://codeberg.org/chernigin/teleport/issues
+Bug reports: https://github.com/bespoke-org/Teleport/issues
