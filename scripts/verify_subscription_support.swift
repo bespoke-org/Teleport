@@ -6,7 +6,10 @@ struct VerifySubscriptionSupport {
         try testXrayJSONSubscription()
         try testMixedJSONAndSkipReasons()
         try testUnsupportedJSONSettingsAreNotLost()
+        try testLocalJSONSettings()
+        try testEmptyJSONServerNameAndHostValidation()
         try testJSONIdentityAndRefresh()
+        try testLegacyDuplicateRefresh()
         try testJSONTransportsAndRuntimeRoundTrip()
         try testPlainAndBase64SubscriptionPayloadParsing()
         try testVLESSTLSVisionParsing()
@@ -110,13 +113,13 @@ struct VerifySubscriptionSupport {
         multi["outbounds"] = outbounds
         var unresolved = try xrayProfile()
         unresolved["routing"] = ["rules": [["outboundTag": "missing"]]]
-        var policy = try xrayProfile()
-        policy["policy"] = ["levels": ["1": ["handshake": 10]]]
         let unsupported: [[String: Any]] = try [
-            multi, unresolved, policy,
+            multi, unresolved,
             changingProxy { $0["proxySettings"] = ["tag": "another-proxy"] },
             changingProxy { $0["mux"] = ["enabled": true] },
             changingProxy { $0["streamSettings"] = ["security": "tls", "sockopt": ["dialerProxy": "another-proxy"]] },
+            changingProxy { $0["streamSettings"] = ["security": "tls", "sockopt": ["interface": "en1"]] },
+            changingProxy { $0["streamSettings"] = ["security": "tls", "sockopt": ["domainStrategy": "UseIPv4"]] },
             changingProxy { $0["streamSettings"] = ["network": "tcp", "tcpSettings": ["header": ["type": "http"]]] },
             changingProxy { $0["streamSettings"] = ["security": "tls", "tlsSettings": ["pinnedPeerCertificateChainSha256": ["secret"]]] },
             changingProxy { $0["streamSettings"] = ["network": "ws", "wsSettings": ["headers": ["Authorization": "secret"]]] },
@@ -143,6 +146,122 @@ struct VerifySubscriptionSupport {
                 _ = try importPayload(Data(payload.utf8))
                 preconditionFailure("Malformed or empty payload must fail")
             } catch is SubscriptionError {}
+        }
+    }
+
+    private static func testLocalJSONSettings() throws {
+        let original = try importJSON(xrayProfile()).importedEntries[0].configuration
+        var profile = try changingProxy {
+            $0["mux"] = ["concurrency": 8]
+            var stream = $0["streamSettings"] as! [String: Any]
+            var reality = stream["realitySettings"] as! [String: Any]
+            reality["show"] = true
+            stream["realitySettings"] = reality
+            stream["sockopt"] = [String: Any]()
+            $0["streamSettings"] = stream
+            var settings = $0["settings"] as! [String: Any]
+            var endpoints = settings["vnext"] as! [[String: Any]]
+            var users = endpoints[0]["users"] as! [[String: Any]]
+            users[0]["level"] = 8
+            endpoints[0]["users"] = users
+            settings["vnext"] = endpoints
+            $0["settings"] = settings
+        }
+        profile["policy"] = ["levels": ["8": ["handshake": 10]]]
+        profile["stats"] = [String: Any]()
+        profile["api"] = ["tag": "api", "services": ["StatsService"]]
+        let imported = try importJSON(profile).importedEntries[0].configuration
+        precondition(imported == original, "Local runtime settings must not change the imported endpoint or identity")
+
+        for mux: [String: Any] in [[:], ["enabled": false], ["enabled": false, "concurrency": 8]] {
+            let variant = try changingProxy { $0["mux"] = mux }
+            let config = try importJSON(variant).importedEntries[0].configuration
+            precondition(config == original)
+        }
+        for level: Any in [0, 8, UInt32.max] {
+            let trojan = try changingProxy {
+                $0["protocol"] = "trojan"
+                $0["settings"] = ["servers": [["address": "vpn.example.com", "port": 443, "password": "test", "level": level]]]
+                $0["streamSettings"] = ["security": "tls", "tlsSettings": ["show": false]]
+            }
+            let config = try importJSON(trojan).importedEntries[0].configuration
+            precondition(config.trojanPassword == "test")
+        }
+        for level: Any in [true, -1, 1.5, "8", Double(UInt32.max) + 1] {
+            let invalid = try changingProxy {
+                $0["protocol"] = "trojan"
+                $0["settings"] = ["servers": [["address": "vpn.example.com", "port": 443, "password": "test", "level": level]]]
+            }
+            let result = try importJSON([try xrayProfile(), invalid])
+            precondition(result.skippedCount == 1)
+        }
+    }
+
+    private static func testEmptyJSONServerNameAndHostValidation() throws {
+        var configs: [ConnectionConfiguration] = []
+        for tls: [String: Any] in [[:], ["serverName": ""]] {
+            let profile = try changingProxy {
+                $0["settings"] = ["vnext": [["address": "vpn.example.com", "port": 443,
+                    "users": [["id": "123e4567-e89b-12d3-a456-426614174000", "flow": ""]]]]]
+                $0["streamSettings"] = ["security": "tls", "tlsSettings": tls]
+            }
+            let config = try importJSON(profile).importedEntries[0].configuration
+            configs.append(config)
+            precondition(config.serverName == nil && config.vlessFlow == nil)
+            let data = try XrayConfigurationWriter(proxyEndpoint: .default).tunnelConfigData(
+                for: config, interfaceName: "utun9", proxyServerAddress: "192.0.2.1"
+            )
+            let payload = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+            let outbound = (payload["outbounds"] as! [[String: Any]]).first { $0["tag"] as? String == "proxy" }!
+            let stream = outbound["streamSettings"] as! [String: Any]
+            precondition((stream["tlsSettings"] as! [String: Any])["serverName"] as? String == "vpn.example.com")
+            let endpoint = ((outbound["settings"] as! [String: Any])["vnext"] as! [[String: Any]])[0]
+            precondition(endpoint["address"] as? String == "192.0.2.1")
+        }
+        precondition(configs[0] == configs[1], "Empty optional fields must preserve canonical identity")
+
+        for host in ["a:b", "[a:b]", "[2001:db8::1", "2001:db8::1]", "fe80::1%en0", "[example.com]", "bad host", "example.com/path"] {
+            let invalid = try changingProxy {
+                $0["protocol"] = "trojan"
+                $0["settings"] = ["servers": [["address": host, "port": 443, "password": "test"]]]
+            }
+            let result = try importJSON([try xrayProfile(), invalid])
+            precondition(result.skippedCount == 1, "Malformed host must be rejected: \(host)")
+        }
+        for host in ["2001:db8::1", "[2001:db8::1]", "::1", "::ffff:192.0.2.1", "192.0.2.1", "vpn.example.com"] {
+            let valid = try changingProxy {
+                $0["protocol"] = "trojan"
+                $0["settings"] = ["servers": [["address": host, "port": 443, "password": "test"]]]
+            }
+            let config = try importJSON(valid).importedEntries[0].configuration
+            precondition(config.host == host.trimmingCharacters(in: CharacterSet(charactersIn: "[]")))
+        }
+    }
+
+    private static func testLegacyDuplicateRefresh() throws {
+        let sourceID = UUID()
+        let entryID = sampleLinks()[0]
+        let configuration = try ConnectionLinkParser().parse(entryID)
+        let source = ConnectionSourceMetadata(subscriptionSourceID: sourceID, subscriptionEntryID: entryID)
+        let first = SavedConnection(id: UUID(), configuration: configuration, savedAt: Date(timeIntervalSince1970: 100),
+            source: source, healthCheck: .unknown, customName: "First copy")
+        let second = SavedConnection(id: UUID(), configuration: configuration, savedAt: Date(timeIntervalSince1970: 200),
+            source: source, healthCheck: ConnectionHealthCheck(state: .reachable, checkedAt: Date(timeIntervalSince1970: 210),
+                latencyMilliseconds: 42, latencyKind: .tcpConnect, failureSummary: nil), customName: "Selected copy")
+        // Round-trip the old persisted state, including the duplicate entry IDs.
+        let restored = try JSONDecoder().decode([SavedConnection].self, from: JSONEncoder().encode([first, second]))
+        for selectedID in [nil, first.id, second.id] {
+            let expected = selectedID == second.id ? second : first
+            let result = SubscriptionConnectionReconciler().reconcile(
+                existingConnections: restored, sourceID: sourceID, selectedConnectionID: selectedID,
+                importedEntries: [ImportedSubscriptionEntry(sourceEntryID: entryID, configuration: configuration)],
+                fetchedAt: Date(), autoSelectFirstImported: false
+            )
+            precondition(result.savedConnections.count == 1)
+            let kept = result.savedConnections[0]
+            precondition(kept.id == expected.id && result.selectedConnectionID == expected.id)
+            precondition(kept.savedAt == expected.savedAt && kept.customName == expected.customName)
+            precondition(kept.healthCheck == expected.healthCheck)
         }
     }
 

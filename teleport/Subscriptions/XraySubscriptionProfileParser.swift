@@ -1,5 +1,6 @@
 import CoreFoundation
 import Foundation
+import Network
 
 nonisolated struct XraySubscriptionProfileError: Error {
     let reason: String
@@ -14,7 +15,9 @@ nonisolated struct XraySubscriptionProfileParser {
         if profile["observatory"] != nil || profile["burstObservatory"] != nil {
             throw unsupported("Balancer/observatory profiles are not supported")
         }
-        try checkKeys(profile, allowed: ["remarks", "outbounds", "inbounds", "dns", "log", "routing"], section: "profile")
+        try checkKeys(profile, allowed: ["remarks", "outbounds", "inbounds", "dns", "log", "routing", "policy", "stats", "api"], section: "profile")
+        // These configure the source client's runtime, not the remote endpoint.
+        for key in ["policy", "stats", "api"] { _ = try optionalObject(profile, key) }
         guard let outbounds = profile["outbounds"] as? [[String: Any]] else { throw invalid() }
         let routing = try optionalObject(profile, "routing")
         if let balancers = routing["balancers"] {
@@ -40,10 +43,10 @@ nonisolated struct XraySubscriptionProfileParser {
         try checkKeys(outbound, allowed: ["tag", "protocol", "settings", "streamSettings", "mux"], section: "outbound (including chaining)")
         if outbound["mux"] != nil {
             let mux = try optionalObject(outbound, "mux")
-            guard try boolean(mux, "enabled") == false else {
+            guard try boolean(mux, "enabled") != true else {
                 throw unsupported("Outbound multiplexing is not supported")
             }
-            // Other mux options are inactive when enabled is explicitly false.
+            // Xray defaults enabled to false when it is omitted.
         }
 
         let settings = try object(outbound["settings"])
@@ -62,7 +65,7 @@ nonisolated struct XraySubscriptionProfileParser {
             let encryption = try string(user, "encryption") ?? "none"
             guard encryption == "none" else { throw unsupported("VLESS encryption settings are not supported") }
             query["encryption"] = "none"
-            query["flow"] = try string(user, "flow")
+            query["flow"] = try string(user, "flow").flatMap { $0.isEmpty ? nil : $0 }
         } else {
             try checkKeys(settings, allowed: ["servers"], section: "Trojan settings")
             endpoint = try singleObject(settings["servers"])
@@ -71,6 +74,7 @@ nonisolated struct XraySubscriptionProfileParser {
             credential = try string(endpoint, "password", required: true)!
         }
         let host = try string(endpoint, "address", required: true)!
+        let uriHost = try validatedHost(host)
         guard let port = endpoint["port"] as? NSNumber,
             CFGetTypeID(port) != CFBooleanGetTypeID(),
             port.doubleValue == Double(port.intValue), (1...65535).contains(port.intValue)
@@ -86,7 +90,9 @@ nonisolated struct XraySubscriptionProfileParser {
         }
         let transportKey = network + "Settings"
         let securityKey = security + "Settings"
-        try checkKeys(stream, allowed: ["network", "security", transportKey, securityKey], section: "stream settings")
+        try checkKeys(stream, allowed: ["network", "security", transportKey, securityKey, "sockopt"], section: "stream settings")
+        let socketOptions = try optionalObject(stream, "sockopt")
+        try checkKeys(socketOptions, allowed: [], section: "socket options")
         query["type"] = network
         query["security"] = security
         let transport = try optionalObject(stream, transportKey)
@@ -116,27 +122,28 @@ nonisolated struct XraySubscriptionProfileParser {
         }
         let tls = try optionalObject(stream, securityKey)
         if security == "tls" {
-            try checkKeys(tls, allowed: ["serverName", "fingerprint", "alpn", "allowInsecure"], section: "TLS settings")
+            try checkKeys(tls, allowed: ["serverName", "fingerprint", "alpn", "allowInsecure", "show"], section: "TLS settings")
             if let alpn = tls["alpn"] {
                 guard let values = alpn as? [String], values.allSatisfy({ !$0.isEmpty && !$0.contains(",") }) else { throw invalid() }
                 query["alpn"] = values.joined(separator: ",")
             }
             if let insecure = try boolean(tls, "allowInsecure") { query["allowInsecure"] = insecure ? "1" : "0" }
         } else if security == "reality" {
-            try checkKeys(tls, allowed: ["serverName", "fingerprint", "publicKey", "shortId", "spiderX"], section: "REALITY settings")
+            try checkKeys(tls, allowed: ["serverName", "fingerprint", "publicKey", "shortId", "spiderX", "show"], section: "REALITY settings")
             query["pbk"] = try string(tls, "publicKey", required: true)
             query["sid"] = try string(tls, "shortId")
             query["spx"] = try string(tls, "spiderX")
         } else if !tls.isEmpty {
             throw unsupported("Unsupported settings for unencrypted transport")
         }
-        query["sni"] = try string(tls, "serverName", required: security == "reality")
+        _ = try boolean(tls, "show")
+        query["sni"] = try string(tls, "serverName", required: security == "reality").flatMap { $0.isEmpty ? nil : $0 }
         query["fp"] = try string(tls, "fingerprint")
 
         var components = URLComponents()
         components.scheme = proto
         components.user = credential
-        components.host = host.contains(":") && !host.hasPrefix("[") ? "[\(host)]" : host
+        components.host = uriHost
         components.port = port.intValue
         // Ordering is independent of JSON key order. The generated link also
         // serves as the refresh identity, just like an ordinary subscription URI.
@@ -162,10 +169,24 @@ nonisolated struct XraySubscriptionProfileParser {
     private func validateUserMetadata(_ user: [String: Any]) throws {
         _ = try string(user, "email")  // Labels do not affect the remote connection.
         if let level = user["level"] {
-            guard let number = level as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(), number.doubleValue == 0 else {
-                throw unsupported("Custom user policy levels are not supported")
+            // Levels select the source client's local policy, which we replace.
+            guard let number = level as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+                  number.doubleValue.rounded() == number.doubleValue,
+                  (0...Double(UInt32.max)).contains(number.doubleValue) else {
+                throw invalid()
             }
         }
+    }
+
+    private func validatedHost(_ host: String) throws -> String {
+        if host.contains(":") || host.contains("[") || host.contains("]") {
+            let address = host.hasPrefix("[") && host.hasSuffix("]") ? String(host.dropFirst().dropLast()) : host
+            guard !address.contains("%"), IPv6Address(address) != nil else { throw invalid() }
+            return "[\(address)]"
+        }
+        guard !host.contains(where: { $0.isWhitespace || $0.isNewline }),
+              host.rangeOfCharacter(from: CharacterSet(charactersIn: "/\\?#@%")) == nil else { throw invalid() }
+        return host
     }
 
     private func checkKeys(_ value: [String: Any], allowed: Set<String>, section: String) throws {

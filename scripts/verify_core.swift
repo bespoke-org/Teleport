@@ -10,6 +10,7 @@ struct VerifyCore {
         try testPercentEncodedHostIsDecoded()
         try testValidVLESSAdditionalTransports()
         try testValidTrojanParsingAndConfigGeneration()
+        try testPercentEncodedTrojanCredentialsAndNames()
         try testValidTrojanRealityParsingAndConfigGeneration()
         try testValidTrojanGRPCParsingAndConfigGeneration()
         try testWireGuardConfigurationFileParsingAndConfigGeneration()
@@ -190,6 +191,18 @@ struct VerifyCore {
         precondition(content.contains("secret-password"))
         precondition(content.contains("cdn.example.com"))
         precondition(content.contains("wsSettings"))
+    }
+
+    private static func testPercentEncodedTrojanCredentialsAndNames() throws {
+        for (encoded, expected) in [("100%25%20x", "100% x"), ("literal%2525", "literal%25")] {
+            let config = try ConnectionLinkParser().parse("trojan://\(encoded)@example.com:443?security=tls#Name%2525")
+            precondition(config.trojanPassword == expected)
+            precondition(config.remarks == "Name%25")
+            let saved = SavedConnection(id: UUID(), configuration: config, savedAt: Date(), source: nil)
+            let restored = try JSONDecoder().decode(SavedConnection.self, from: JSONEncoder().encode(saved))
+            let reparsed = try ConnectionLinkParser().parse(restored.configuration.rawLink)
+            precondition(reparsed == config)
+        }
     }
 
     private static func testValidTrojanRealityParsingAndConfigGeneration() throws {

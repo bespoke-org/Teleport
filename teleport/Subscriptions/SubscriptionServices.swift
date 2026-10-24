@@ -38,39 +38,23 @@ struct SubscriptionConnectionReconciler {
         let previousSelectedConnection = existingConnections.first { $0.id == selectedConnectionID }
         let previousImportedEntries = existingConnections.filter { $0.source?.subscriptionSourceID == sourceID }
 
-        let existingIDsByEntry: [String: UUID] = Dictionary(uniqueKeysWithValues: previousImportedEntries.compactMap { connection in
+        // Older imports could persist duplicate entry IDs. Keep one complete
+        // record so identity, name and health all come from the same copy.
+        let existingByEntry = Dictionary(previousImportedEntries.compactMap { connection -> (String, SavedConnection)? in
             guard let source = connection.source else { return nil }
-            return (source.subscriptionEntryID, connection.id)
-        })
-        let existingSavedAtByEntry: [String: Date] = Dictionary(uniqueKeysWithValues: previousImportedEntries.compactMap { connection in
-            guard let source = connection.source else { return nil }
-            return (source.subscriptionEntryID, connection.savedAt)
-        })
-        let existingHealthByEntry: [String: ConnectionHealthCheck] = Dictionary(uniqueKeysWithValues: previousImportedEntries.compactMap { connection in
-            guard let source = connection.source,
-                  let healthCheck = connection.healthCheck else {
-                return nil
-            }
-            return (source.subscriptionEntryID, healthCheck)
-        })
-        // A name the user gave an imported connection survives the refresh, like
-        // its identity and health do.
-        let existingNamesByEntry: [String: String] = Dictionary(uniqueKeysWithValues: previousImportedEntries.compactMap { connection in
-            guard let source = connection.source,
-                  let customName = connection.customName else {
-                return nil
-            }
-            return (source.subscriptionEntryID, customName)
+            return (source.subscriptionEntryID, connection)
+        }, uniquingKeysWith: { first, next in
+            next.id == selectedConnectionID ? next : first
         })
 
         let replacementConnections = importedEntries.map { entry in
             SavedConnection(
-                id: existingIDsByEntry[entry.sourceEntryID] ?? UUID(),
+                id: existingByEntry[entry.sourceEntryID]?.id ?? UUID(),
                 configuration: entry.configuration,
-                savedAt: existingSavedAtByEntry[entry.sourceEntryID] ?? fetchedAt,
+                savedAt: existingByEntry[entry.sourceEntryID]?.savedAt ?? fetchedAt,
                 source: ConnectionSourceMetadata(subscriptionSourceID: sourceID, subscriptionEntryID: entry.sourceEntryID),
-                healthCheck: existingHealthByEntry[entry.sourceEntryID],
-                customName: existingNamesByEntry[entry.sourceEntryID]
+                healthCheck: existingByEntry[entry.sourceEntryID]?.healthCheck,
+                customName: existingByEntry[entry.sourceEntryID]?.customName
             )
         }
         .sorted { lhs, rhs in
