@@ -56,12 +56,11 @@ struct AboutSettingsView: View {
 
     private var appVersion: String {
         let dictionary = Bundle.main.infoDictionary
-        return dictionary?["CFBundleShortVersionString"] as? String ?? "0.2.0"
+        return dictionary?["CFBundleShortVersionString"] as? String ?? "Unknown"
     }
 
     private var copyrightText: String {
-        let year = Calendar.current.component(.year, from: Date())
-        return "© \(year) Michael Chernigin"
+        "© 2026 Michael Chernigin, Nikita Rydanov"
     }
 
     private func aboutRow(_ title: String, _ value: String) -> some View {
