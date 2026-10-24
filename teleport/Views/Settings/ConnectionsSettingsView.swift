@@ -186,10 +186,10 @@ struct ConnectionsSettingsView: View {
                 Image(systemName: "trash")
             }
             .buttonStyle(.borderless)
-            .disabled(isSelected && !viewModel.canChangeSelection)
+            .disabled(viewModel.isConnectionInUse(id: connection.id))
         }
         .padding(.vertical, 4)
-        // On the row rather than on the name: while a session is running the row's
+        // On the row rather than on the name: during a disconnect the
         // selection button is disabled, and a disabled control shows no context
         // menu — renaming has nothing to do with changing the selection.
         .contextMenu {
@@ -454,7 +454,7 @@ struct ConnectionsSettingsView: View {
     }
 
     /// Replaces the row's selection button while renaming. It has to sit outside
-    /// that button: the button is disabled while a session is running, and a
+    /// that button: the button is disabled during a disconnect, and a
     /// disabled container refuses input for everything inside it, including a text
     /// field. Renaming does not change the selection, so it stays available.
     @ViewBuilder

@@ -89,6 +89,204 @@ final class ConnectionProviderTests: XCTestCase {
         XCTAssert(loaded?.configuration.rawLink == configuration.rawLink)
     }
 
+    @MainActor
+    func testSwitchingSelectedServerInSystemProxyMode() async throws {
+        try await checkSwitchingSelectedServer(mode: .systemProxy)
+    }
+
+    @MainActor
+    func testSwitchingSelectedServerInTUNMode() async throws {
+        try await checkSwitchingSelectedServer(mode: .tun)
+    }
+
+    @MainActor
+    private func checkSwitchingSelectedServer(mode: ConnectionMode) async throws {
+        let root = try makeIsolatedRoot("switch-\(mode.rawValue)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let log = TeleportLog(directoryURL: root, fileName: "verify.log")
+        let fileManager = TempFileManager(root: root)
+        let store = ConfigurationStore(
+            fileManager: fileManager,
+            keychainService: "dev.x.teleport.verify-connection-provider",
+            keychainAccount: "app-snapshot-switch-\(mode.rawValue)",
+            log: log
+        )
+        defer { store.deleteKeychainItemForTesting() }
+        let connections = try (1...3).map { index in
+            SavedConnection(
+                id: UUID(),
+                configuration: try ConnectionLinkParser().parse(
+                    "vless://123e4567-e89b-12d3-a456-426614174000@server\(index).example:443?security=tls&type=tcp#Server\(index)"
+                ),
+                savedAt: Date(),
+                healthCheck: ConnectionHealthCheck(
+                    state: .reachable, checkedAt: Date(), latencyMilliseconds: 10,
+                    latencyKind: .proxyRequest, failureSummary: nil
+                )
+            )
+        }
+        try store.save(AppSnapshot(
+            savedConnections: connections,
+            selectedConnectionID: connections[0].id,
+            proxyEndpoint: .default,
+            connectionMode: mode,
+            isLeakGuardEnabled: false
+        ))
+        let backend = RecordingConnectionBackend()
+        let provider = BackendConnectionProvider(mode: mode, backend: backend, supervisionInterval: 60)
+        let viewModel = AppViewModel(
+            parser: ConnectionLinkParser(), store: store,
+            connectionProviderFactory: ConnectionProviderFactory(
+                systemProxyProvider: { provider }, tunProvider: { provider }
+            ),
+            leakGuard: LeakGuardService(isEnabled: false, log: log),
+            subscriptionClient: SubscriptionClient(),
+            healthProbeService: ConnectionHealthProbeService(),
+            systemProxyService: SystemProxyService(fileManager: fileManager, log: log),
+            log: log
+        )
+        await waitUntil("selection is ready") { await MainActor.run { viewModel.canConnect } }
+        let first = connections[0].id
+        let second = connections[1].id
+        let third = connections[2].id
+
+        // A superseded pre-flight must finish by cancellation, without ever
+        // connecting. The replacement is the latest click, not every click.
+        for latest in [third, first] {
+            viewModel.selectConnection(id: first)
+            backend.cancellableConnectionID = first
+            viewModel.connect()
+            await waitUntil("the cancellable pre-flight starts") {
+                backend.requestedConnectionIDs() == [first]
+            }
+            viewModel.selectConnection(id: second)
+            viewModel.selectConnection(id: latest)
+            await waitUntil("the latest choice replaces the cancelled pre-flight") {
+                await MainActor.run { viewModel.isConnected && !viewModel.isOperationPending }
+            }
+            XCTAssert(backend.requestedConnectionIDs() == [first, latest])
+            XCTAssert(backend.recordedCalls() == ["start", "cancel", "start"])
+            XCTAssert(viewModel.selectedConnectionID == latest && viewModel.lastError == nil)
+            viewModel.disconnect()
+            await waitUntil("the cancellation test disconnects") {
+                await MainActor.run { viewModel.connectionState == .idle && !viewModel.isOperationPending }
+            }
+            backend.clearRecordedCalls()
+        }
+        viewModel.selectConnection(id: first)
+
+        // Picks during the very first connect are accepted immediately, but only
+        // the latest one reaches the backend after that connect settles.
+        await backend.startGate.enableBlocking()
+        viewModel.connect()
+        XCTAssert(viewModel.canChangeSelection, "servers must remain selectable while connecting in \(mode)")
+        await backend.startGate.waitUntilEntered()
+        viewModel.selectConnection(id: second)
+        viewModel.selectConnection(id: third)
+        XCTAssert(viewModel.selectedConnectionID == third && viewModel.lastError == nil)
+        XCTAssert(backend.requestedConnectionIDs() == [first])
+        XCTAssert(!viewModel.updateConnection(id: first, from: connections[1].configuration.rawLink))
+        viewModel.removeConnection(id: first)
+        XCTAssert(viewModel.savedConnections.contains { $0.id == first }, "the in-flight server must remain protected")
+        viewModel.selectConnection(id: third)
+        await backend.startGate.open()
+        await waitUntil("latest initial selection connects") {
+            await MainActor.run { viewModel.isConnected && !viewModel.isOperationPending }
+        }
+        XCTAssert(backend.requestedConnectionIDs() == [first, third])
+        XCTAssert(viewModel.canChangeSelection)
+        viewModel.selectConnection(id: third)
+        XCTAssert(!viewModel.isOperationPending, "selecting the current server must not reconnect")
+
+        await backend.reconnectGate.enableBlocking()
+        viewModel.selectConnection(id: second)
+        XCTAssert(viewModel.isOperationPending && viewModel.canChangeSelection)
+        // Coalesce rapid clicks even before the provider publishes its state.
+        viewModel.selectConnection(id: first)
+        viewModel.selectConnection(id: third)
+        viewModel.selectConnection(id: first)
+        XCTAssert(viewModel.selectedConnectionID == first)
+        await backend.reconnectGate.waitUntilEntered()
+        await waitUntil("the picker shows connection progress") {
+            await MainActor.run { viewModel.connectionPhase == .starting }
+        }
+        XCTAssert(viewModel.canChangeSelection && viewModel.lastError == nil)
+        XCTAssert(backend.requestedConnectionIDs() == [first, third, second])
+        await backend.reconnectGate.open()
+        await waitUntil("the latest replacement server connects") {
+            await MainActor.run { viewModel.isConnected && !viewModel.isOperationPending }
+        }
+        XCTAssert(backend.requestedConnectionIDs() == [first, third, second, first])
+        XCTAssert(viewModel.lastError == nil)
+
+        // Choosing the in-flight target again withdraws the pending switch.
+        await backend.reconnectGate.enableBlocking()
+        viewModel.selectConnection(id: second)
+        viewModel.selectConnection(id: third)
+        viewModel.selectConnection(id: second)
+        await backend.reconnectGate.waitUntilEntered()
+        await backend.reconnectGate.open()
+        await waitUntil("the original target connects without another switch") {
+            await MainActor.run { viewModel.isConnected && !viewModel.isOperationPending }
+        }
+        XCTAssert(backend.requestedConnectionIDs() == [first, third, second, first, second])
+
+        // A failure must not discard a newer selection.
+        backend.failingConnectionID = third
+        await backend.reconnectGate.enableBlocking()
+        viewModel.selectConnection(id: third)
+        await backend.reconnectGate.waitUntilEntered()
+        viewModel.selectConnection(id: first)
+        await backend.reconnectGate.open()
+        await waitUntil("a newer selection recovers from the previous failure") {
+            await MainActor.run { viewModel.isConnected && !viewModel.isOperationPending }
+        }
+        XCTAssert(viewModel.selectedConnectionID == first && viewModel.lastError == nil)
+        XCTAssert(Array(backend.requestedConnectionIDs().suffix(2)) == [third, first])
+
+        // With no pending choice, failure still settles and permits a manual retry.
+        viewModel.selectConnection(id: third)
+        await waitUntil("a failed switch settles") {
+            await MainActor.run { viewModel.connectionPhase == .failed && !viewModel.isOperationPending }
+        }
+        XCTAssert(viewModel.selectedConnectionID == third)
+        XCTAssert(viewModel.canChangeSelection && viewModel.canConnect && viewModel.lastError != nil)
+        backend.failingConnectionID = nil
+        viewModel.selectConnection(id: first)
+        XCTAssert(!viewModel.isOperationPending, "selection after failure must not start a hidden connection")
+        viewModel.connect()
+        await waitUntil("retry connects") {
+            await MainActor.run { viewModel.isConnected && !viewModel.isOperationPending }
+        }
+
+        // Disconnect wins over any pending selection.
+        await backend.reconnectGate.enableBlocking()
+        viewModel.selectConnection(id: second)
+        await backend.reconnectGate.waitUntilEntered()
+        viewModel.selectConnection(id: third)
+        let requestsBeforeDisconnect = backend.requestedConnectionIDs()
+        viewModel.disconnect()
+        XCTAssert(!viewModel.canChangeSelection)
+        await backend.reconnectGate.open()
+        await waitUntil("disconnect completes without starting the pending server") {
+            await MainActor.run { viewModel.connectionState == .idle && !viewModel.isOperationPending }
+        }
+        XCTAssert(backend.requestedConnectionIDs() == requestsBeforeDisconnect)
+        XCTAssert(backend.recordedCalls().last == "stop")
+        XCTAssert(viewModel.selectedConnectionID == third && viewModel.canConnect)
+
+        await backend.startGate.enableBlocking()
+        viewModel.connect()
+        await backend.startGate.waitUntilEntered()
+        viewModel.selectConnection(id: first)
+        let requestsBeforeQuit = backend.requestedConnectionIDs()
+        let terminated = Flag()
+        viewModel.handleAppTermination { terminated.set() }
+        await backend.startGate.open()
+        await waitUntil("quit completes without connecting the pending choice") { terminated.isSet }
+        XCTAssert(backend.requestedConnectionIDs() == requestsBeforeQuit)
+    }
+
     func testFactorySelectsProviderByMode() {
         let systemProxyProvider = SystemProxyConnectionProvider(
             coordinator: BackendConnectionProvider(mode: .systemProxy, backend: RecordingConnectionBackend())
@@ -535,6 +733,8 @@ final class ConnectionProviderTests: XCTestCase {
         private var shouldBlock = false
 
         func enableBlocking() {
+            entered = false
+            opened = false
             shouldBlock = true
         }
 
@@ -579,7 +779,10 @@ final class ConnectionProviderTests: XCTestCase {
     private final class RecordingConnectionBackend: ConnectionBackend, @unchecked Sendable {
         private let lock = NSLock()
         private var calls: [String] = []
+        private var connectionIDs: [UUID] = []
         var startError: Error?
+        var failingConnectionID: UUID?
+        var cancellableConnectionID: UUID?
         var stopError: Error?
         var hasRestorableStateValue = false
         var hasActiveRuntimeSessionValue = false
@@ -587,6 +790,7 @@ final class ConnectionProviderTests: XCTestCase {
         /// Stands in for a pre-flight that polls for cancellation.
         var startObservesCancellation = false
         let startGate = Gate()
+        let reconnectGate = Gate()
         let restoreGate = Gate()
         let stopGate = Gate()
 
@@ -618,6 +822,15 @@ final class ConnectionProviderTests: XCTestCase {
 
         func start(_ request: ConnectionRequest, reportPhase: @escaping @Sendable (ConnectionState) -> Void) async throws {
             record("start")
+            recordConnectionID(request.defaultConnection.id)
+            if request.defaultConnection.id == cancellableConnectionID {
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(2))
+                }
+                cancellableConnectionID = nil
+                record("cancel")
+                throw CancellationError()
+            }
             if startObservesCancellation {
                 while !Task.isCancelled {
                     try? await Task.sleep(nanoseconds: 2_000_000)
@@ -626,11 +839,15 @@ final class ConnectionProviderTests: XCTestCase {
             }
             await startGate.enter()
             if let startError { throw startError }
+            if request.defaultConnection.id == failingConnectionID { throw TestError.startFailed }
         }
 
         func reconnect(_ request: ConnectionRequest, reportPhase: @escaping @Sendable (ConnectionState) -> Void) async throws {
             record("reconnect")
+            recordConnectionID(request.defaultConnection.id)
+            await reconnectGate.enter()
             if let startError { throw startError }
+            if request.defaultConnection.id == failingConnectionID { throw TestError.startFailed }
         }
 
         func stop() async throws {
@@ -643,6 +860,25 @@ final class ConnectionProviderTests: XCTestCase {
             lock.lock()
             defer { lock.unlock() }
             return calls
+        }
+
+        func requestedConnectionIDs() -> [UUID] {
+            lock.lock()
+            defer { lock.unlock() }
+            return connectionIDs
+        }
+
+        func clearRecordedCalls() {
+            lock.lock()
+            calls.removeAll()
+            connectionIDs.removeAll()
+            lock.unlock()
+        }
+
+        private func recordConnectionID(_ id: UUID) {
+            lock.lock()
+            connectionIDs.append(id)
+            lock.unlock()
         }
 
         private func record(_ call: String) {

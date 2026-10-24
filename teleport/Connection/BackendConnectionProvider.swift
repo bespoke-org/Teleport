@@ -179,7 +179,13 @@ nonisolated final class BackendConnectionProvider: ConnectionProvider, @unchecke
         }
         setConnectTask(task)
         defer { clearConnectTask(task) }
-        try await task.value
+        try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            // Backends cancel pre-flight work or roll back their partial start;
+            // committed TUN operations still finish before the queue advances.
+            task.cancel()
+        }
     }
 
     func disconnect() async throws {

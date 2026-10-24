@@ -65,6 +65,8 @@ final class AppViewModel: ObservableObject {
     /// The outcome of the last uninstall, shown under the button that started it.
     @Published private(set) var helperUninstallMessage: String?
     @Published private(set) var isOperationPending = false
+    /// Kept until the connect call returns, even if its final state arrives first.
+    @Published private var connectingSelection: (operationID: UUID, connectionID: UUID)?
     @Published private(set) var refreshingSubscriptionIDs: Set<UUID> = []
     @Published private(set) var refreshingHealthConnectionIDs: Set<UUID> = []
     @Published private(set) var queuedHealthConnectionIDs: Set<UUID> = []
@@ -130,6 +132,9 @@ final class AppViewModel: ObservableObject {
     private var deferredProxyRestoreTask: Task<Void, Never>?
     private var deferredProxyRestoreFailedAt: SuspendingClock.Instant?
     private var pendingOperationCount = 0
+    /// Only the latest pick is retained while a connect is touching the machine.
+    private var pendingConnectionSelectionID: UUID?
+    private var connectionTask: (operationID: UUID, task: Task<Void, Never>)?
     private var hasObservedInitialConnectionState = false
     private var isTerminating = false
     private var persistWorkItem: DispatchWorkItem?
@@ -312,14 +317,27 @@ final class AppViewModel: ObservableObject {
     }
 
     var canChangeSelection: Bool {
-        !isTerminating
-            && hasObservedInitialConnectionState
-            && !isOperationPending
-            && connectionPresentation.canChangeSelection
+        guard !isTerminating, hasObservedInitialConnectionState else { return false }
+        if isOperationPending {
+            return connectingSelection != nil
+        }
+        return connectionPresentation.canChangeSelection
     }
 
     var hasActiveConnectionSession: Bool {
         isOperationPending || connectionPresentation.hasActiveConnectionSession
+    }
+
+    func isConnectionInUse(id: UUID) -> Bool {
+        guard hasActiveConnectionSession else { return false }
+        return selectedConnectionID == id
+            || connectingSelection?.connectionID == id
+            || routedConnections.contains { $0.id == id }
+            || inFlightConnectionRequest?.request.additionalConnections.contains { $0.id == id } == true
+    }
+
+    private func isSubscriptionInUse(id: UUID) -> Bool {
+        importedConnections(for: id).contains { isConnectionInUse(id: $0.id) }
     }
 
     var isConnected: Bool {
@@ -605,7 +623,7 @@ final class AppViewModel: ObservableObject {
             return false
         }
 
-        if (selectedConnectionID == id || routedConnections.contains { $0.id == id }) && hasActiveConnectionSession {
+        if isConnectionInUse(id: id) {
             setStoredError("Disconnect before editing this connection")
             return false
         }
@@ -634,7 +652,7 @@ final class AppViewModel: ObservableObject {
     func removeConnection(id: UUID) {
         guard let index = savedConnections.firstIndex(where: { $0.id == id }) else { return }
 
-        if (selectedConnectionID == id || routedConnections.contains { $0.id == id }) && hasActiveConnectionSession {
+        if isConnectionInUse(id: id) {
             setStoredError("Disconnect before removing the active connection")
             return
         }
@@ -656,8 +674,7 @@ final class AppViewModel: ObservableObject {
     func removeSubscription(id: UUID) {
         let affectedConnections = importedConnections(for: id)
 
-        if hasActiveConnectionSession,
-           affectedConnections.contains(where: { $0.id == selectedConnectionID }) {
+        if isSubscriptionInUse(id: id) {
             setStoredError("Disconnect before removing the active subscription")
             return
         }
@@ -693,7 +710,15 @@ final class AppViewModel: ObservableObject {
         persistSettingError()
         enqueueHealthProbes(for: [id], force: false, priority: true)
 
-        if shouldReconnect {
+        if let connectingSelection, isOperationPending {
+            // A cancelled attempt cannot be uncancelled. Picking its target again
+            // requests a fresh attempt if cancellation actually takes effect.
+            let wasCancelled = connectionTask?.task.isCancelled == true
+            pendingConnectionSelectionID = id == connectingSelection.connectionID && !wasCancelled ? nil : id
+            if pendingConnectionSelectionID != nil {
+                connectionTask?.task.cancel()
+            }
+        } else if shouldReconnect {
             reconnectToSelectedConnection()
         }
     }
@@ -718,9 +743,7 @@ final class AppViewModel: ObservableObject {
             let selectedConnectionSourceID = selectedConnectionID.flatMap { savedConnectionsByID[$0] }?.source?.subscriptionSourceID
             let selectionBelongsToUpdatedSource = selectedConnectionSourceID == id
 
-            if urlChanged,
-               hasActiveConnectionSession,
-               selectionBelongsToUpdatedSource {
+            if urlChanged, isSubscriptionInUse(id: id) {
                 setStoredError("Disconnect before changing the active subscription URL")
                 return
             }
@@ -1300,6 +1323,8 @@ final class AppViewModel: ObservableObject {
     /// asynchronous, could land in either order.
     private func tearDownSession() {
         guard !isTerminating else { return }
+        pendingConnectionSelectionID = nil
+        connectingSelection = nil
         awaitsUplinkToReconnect = false
         let provider = connectionProvider
         let operationID = UUID()
@@ -1333,6 +1358,8 @@ final class AppViewModel: ObservableObject {
         completion: @escaping () -> Void
     ) {
         isTerminating = true
+        pendingConnectionSelectionID = nil
+        connectingSelection = nil
         log.info(Self.subsystem, "terminating")
         let provider = connectionProvider
         let leakGuard = leakGuard
@@ -1696,13 +1723,20 @@ final class AppViewModel: ObservableObject {
         let request = makeConnectionRequest(configuration: configuration)
         let provider = connectionProvider
         let operationID = UUID()
+        connectingSelection = (operationID, request.defaultConnection.id)
         beginConnectionOperation()
         inFlightConnectionRequest = (operationID, request)
         setStoredError(nil)
 
-        Task { @MainActor [weak self] in
+        let task = Task { @MainActor [weak self] in
             do {
                 try await provider.connect(request)
+                // Past its commit point a backend may finish despite cancellation.
+                // If that is the latest choice again, it needs no second connect.
+                if self?.connectingSelection?.operationID == operationID,
+                   self?.pendingConnectionSelectionID == request.defaultConnection.id {
+                    self?.pendingConnectionSelectionID = nil
+                }
                 self?.finishConnectionOperation(operationID, discardPendingRequest: false)
                 self?.applyDeferredSplitTunnelRulesLiveIfNeeded()
             } catch {
@@ -1712,8 +1746,9 @@ final class AppViewModel: ObservableObject {
                    await provider.currentState().isTerminalFailure == false {
                     self?.applyConnectionError(error)
                 }
+                let hasPendingSelection = self?.pendingConnectionSelectionID != nil
                 self?.finishConnectionOperation(operationID, discardPendingRequest: true)
-                if afterUplinkChange {
+                if afterUplinkChange && !hasPendingSelection {
                     switch error as? XrayTunConnectionError {
                     case .proxyAddressResolutionFailed, .proxyRouteUnavailable:
                         self?.retryReconnectAfterUplinkChange()
@@ -1723,6 +1758,7 @@ final class AppViewModel: ObservableObject {
                 }
             }
         }
+        connectionTask = (operationID, task)
     }
 
     private func beginConnectionOperation() {
@@ -1731,11 +1767,21 @@ final class AppViewModel: ObservableObject {
     }
 
     private func finishConnectionOperation(_ operationID: UUID, discardPendingRequest: Bool = false) {
+        if connectionTask?.operationID == operationID {
+            connectionTask = nil
+        }
+        if connectingSelection?.operationID == operationID {
+            connectingSelection = nil
+        }
         if discardPendingRequest, inFlightConnectionRequest?.operationID == operationID {
             inFlightConnectionRequest = nil
         }
         pendingOperationCount = max(0, pendingOperationCount - 1)
         isOperationPending = pendingOperationCount > 0
+        guard !isOperationPending, !isTerminating, let pendingID = pendingConnectionSelectionID else { return }
+        pendingConnectionSelectionID = nil
+        guard pendingID == selectedConnectionID, savedConnectionsByID[pendingID] != nil else { return }
+        reconnectToSelectedConnection()
     }
 
     private func makeConnectionRequest(configuration: ConnectionConfiguration) -> ConnectionRequest {
@@ -1831,13 +1877,7 @@ final class AppViewModel: ObservableObject {
 
     private func refreshSubscription(id: UUID, autoSelectFirstImported: Bool) {
         guard let source = subscriptionSources.first(where: { $0.id == id }) else { return }
-        guard let selectedConnection else {
-            startSubscriptionRefresh(for: source, autoSelectFirstImported: autoSelectFirstImported)
-            return
-        }
-
-        if hasActiveConnectionSession,
-           selectedConnection.source?.subscriptionSourceID == id {
+        if isSubscriptionInUse(id: id) {
             setStoredError("Disconnect before refreshing the active subscription")
             return
         }
@@ -1911,9 +1951,7 @@ final class AppViewModel: ObservableObject {
         fetchedAt: Date,
         autoSelectFirstImported: Bool
     ) {
-        let selectedConnectionSourceID = selectedConnectionID.flatMap { savedConnectionsByID[$0] }?.source?.subscriptionSourceID
-        if hasActiveConnectionSession,
-           selectedConnectionSourceID == sourceID {
+        if isSubscriptionInUse(id: sourceID) {
             refreshingSubscriptionIDs.remove(sourceID)
             updateSubscriptionSource(sourceID) {
                 $0.lastError = "Disconnect before refreshing the active subscription"
