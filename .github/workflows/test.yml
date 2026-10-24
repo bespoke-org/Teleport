@@ -15,21 +15,33 @@ concurrency:
 jobs:
   test:
     # Foundation's behaviour differs between macOS releases, so the checks run on
-    # each supported one. The macos-15 image ships Xcode 26 but not as the default.
-    # The xcode-27 preview image runs macOS 27 and has only Xcode 27.
+    # each supported one, on arm64 and on x86_64. The macos-15 images ship
+    # Xcode 26 but not as the default. The xcode-27 preview image runs macOS 27,
+    # has only Xcode 27 and has no x86_64 variant.
     # Without Config/Local.xcconfig the build is signed ad hoc.
-    name: macOS ${{ matrix.macos }}
+    name: macOS ${{ matrix.macos }} (${{ matrix.arch }})
     strategy:
       fail-fast: false
       matrix:
         include:
           - macos: 15
+            arch: arm64
             runner: macos-15
             developer-dir: /Applications/Xcode_26.3.app/Contents/Developer
+          - macos: 15
+            arch: x86_64
+            runner: macos-15-intel
+            developer-dir: /Applications/Xcode_26.3.app/Contents/Developer
           - macos: 26
+            arch: arm64
             runner: macos-26
             developer-dir: /Applications/Xcode.app/Contents/Developer
+          - macos: 26
+            arch: x86_64
+            runner: macos-26-intel
+            developer-dir: /Applications/Xcode.app/Contents/Developer
           - macos: 27
+            arch: arm64
             runner: xcode-27
             developer-dir: /Applications/Xcode.app/Contents/Developer
     runs-on: ${{ matrix.runner }}
