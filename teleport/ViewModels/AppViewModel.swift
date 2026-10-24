@@ -2027,11 +2027,11 @@ final class AppViewModel: ObservableObject {
         let snapshot = makeSnapshot()
         persistWorkItem?.cancel()
 
-        let workItem = DispatchWorkItem { [store] in
+        let workItem = DispatchWorkItem { [store, weak self] in
             do {
                 try store.save(snapshot)
             } catch {
-                Task { @MainActor [weak self] in
+                Task { @MainActor in
                     self?.applyConnectionError(error)
                 }
             }
