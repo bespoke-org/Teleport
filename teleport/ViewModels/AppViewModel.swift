@@ -1375,7 +1375,7 @@ final class AppViewModel: ObservableObject {
         guard let currentUplink = SystemUplinkInventory.current(), currentUplink.routerAddress != nil else { return }
         awaitsUplinkToReconnect = false
         log.info(Self.subsystem, "uplink is back (\(currentUplink.summary)); reconnecting without waiting for the path to settle")
-        reconnectToSelectedConnection()
+        reconnectToSelectedConnection(afterUplinkChange: true)
     }
 
     private func reconcileSessionWithUplink() {
@@ -1387,7 +1387,7 @@ final class AppViewModel: ObservableObject {
             guard currentUplink != nil else { return }
             awaitsUplinkToReconnect = false
             log.info(Self.subsystem, "uplink is back (\(currentUplink?.summary ?? "<unknown>")); reconnecting")
-            reconnectToSelectedConnection()
+            reconnectToSelectedConnection(afterUplinkChange: true)
             return
         }
 
@@ -1444,7 +1444,7 @@ final class AppViewModel: ObservableObject {
                 self.awaitsUplinkToReconnect = true
                 return
             }
-            self.reconnectToSelectedConnection()
+            self.reconnectToSelectedConnection(afterUplinkChange: true)
         }
     }
 
@@ -1546,15 +1546,30 @@ final class AppViewModel: ObservableObject {
         return false
     }
 
-    private func reconnectToSelectedConnection() {
+    private func reconnectToSelectedConnection(afterUplinkChange: Bool = false) {
         guard let selectedConfiguration else {
             setStoredError("Add and select a connection first")
             return
         }
-        startConnection(using: selectedConfiguration)
+        startConnection(using: selectedConfiguration, afterUplinkChange: afterUplinkChange)
     }
 
-    private func startConnection(using configuration: ConnectionConfiguration) {
+    /// An uplink can have a router address before its resolver answers, and a
+    /// reconnect started on it then fails on the lookup of the proxy server. The
+    /// path has usually stopped changing by that time, so no further notification
+    /// would start another attempt, and the leak guard armed for the reconnect
+    /// would keep the machine off the network until the user stepped in.
+    private func retryReconnectAfterUplinkChange() {
+        awaitsUplinkToReconnect = true
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            // A connect or disconnect the user asked for in the meantime cleared
+            // the flag, and this does nothing.
+            self?.reconnectAsSoonAsAnUplinkAppears()
+        }
+    }
+
+    private func startConnection(using configuration: ConnectionConfiguration, afterUplinkChange: Bool = false) {
         guard !isTerminating else { return }
 
         // The helper pins routes to the gateway that is current when its script
@@ -1581,6 +1596,14 @@ final class AppViewModel: ObservableObject {
                     self?.applyConnectionError(error)
                 }
                 self?.finishConnectionOperation(operationID, discardPendingRequest: true)
+                if afterUplinkChange {
+                    switch error as? XrayTunConnectionError {
+                    case .proxyAddressResolutionFailed, .proxyRouteUnavailable:
+                        self?.retryReconnectAfterUplinkChange()
+                    default:
+                        break
+                    }
+                }
             }
         }
     }
