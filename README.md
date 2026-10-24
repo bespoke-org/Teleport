@@ -27,7 +27,7 @@ You can support us with USDT. Check the network before sending: a transfer on a 
 
 ## Requirements
 
-- macOS 26 or later (the project's deployment target).
+- macOS 15 or later. Tested on macOS 27.
 - Apple Silicon or Intel.
 - To build: Xcode 26 or later, and optionally [just](https://github.com/casey/just) for the command-line recipes.
 - TUN mode asks for an administrator password once, to install the helper.

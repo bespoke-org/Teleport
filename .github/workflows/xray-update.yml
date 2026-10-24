@@ -18,7 +18,7 @@ concurrency:
 jobs:
   updatecli:
     # macOS 26 arm64 image; its default Xcode (/Applications/Xcode.app) is 26.x,
-    # which the macOS 26.0 deployment target needs.
+    # the version the project is developed with.
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v7.0.1
