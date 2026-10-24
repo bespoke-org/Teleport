@@ -46,18 +46,54 @@ build configuration="Debug": fetch-xray
 build-debug:
     just build Debug
 
-# Build Release and install it into /Applications
+# Build Release
 build-release:
     just build Release
-    rm -rf "/Applications/{{app_name}}.app"
-    ditto "{{derived_data}}/Build/Products/Release/{{app_name}}.app" "/Applications/{{app_name}}.app"
+
+# Build Release and install it into /Applications, quitting and relaunching a running Teleport
+install: build-release
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    APP="{{derived_data}}/Build/Products/Release/{{app_name}}.app"
+    TARGET="/Applications/{{app_name}}.app"
+    STAGING="/Applications/.{{app_name}}.app.new"
+    EXECUTABLE="$TARGET/Contents/MacOS/{{app_name}}"
+
+    is_running() { pgrep -f "^$EXECUTABLE" >/dev/null; }
+
+    WAS_RUNNING=false
+    if is_running; then
+      WAS_RUNNING=true
+      # A quit removes the routes, DNS entry and system proxy settings the app set.
+      osascript -e 'tell application id "dev.x.teleport" to quit'
+      for _ in $(seq 1 20); do
+        is_running || break
+        sleep 0.5
+      done
+      if is_running; then
+        echo "{{app_name}} did not quit within 10 seconds; quit it and run just install again" >&2
+        exit 1
+      fi
+    fi
+
+    rm -rf "$STAGING"
+    trap 'rm -rf "$STAGING"' EXIT
+    ditto "$APP" "$STAGING"
+    rm -rf "$TARGET"
+    mv "$STAGING" "$TARGET"
+    trap - EXIT
+
+    if [[ "$WAS_RUNNING" == true ]]; then
+      open "$TARGET"
+    fi
 
 # Print the built .app path. Usage: just app-path [Debug|Release]
 app-path configuration="Release":
     @echo "{{derived_data}}/Build/Products/{{configuration}}/{{app_name}}.app"
 
 # Print the Release app version from the built bundle
-version: build-release
+version: (build "Release")
     @/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' '{{derived_data}}/Build/Products/Release/{{app_name}}.app/Contents/Info.plist'
 
 # Build and open the app. Usage: just run [Debug|Release]
@@ -65,7 +101,7 @@ run configuration="Debug": (build configuration)
     open "{{derived_data}}/Build/Products/{{configuration}}/{{app_name}}.app"
 
 # Build Release and create a versioned .app copy plus .dmg in build/dist
-package: build-release
+package: (build "Release")
     #!/usr/bin/env bash
     set -euo pipefail
 

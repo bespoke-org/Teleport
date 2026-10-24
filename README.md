@@ -41,7 +41,7 @@ There is no signed or notarized download yet. Build from source:
 ```bash
 cp Config/Local.xcconfig.example Config/Local.xcconfig
 # edit Config/Local.xcconfig: set DEVELOPMENT_TEAM (see Development > Signing)
-just build-release        # builds Release and copies Teleport.app into /Applications
+just install              # builds Release, installs Teleport.app into /Applications
 ```
 
 Or open `teleport.xcodeproj` in Xcode and run the `teleport` scheme.
@@ -139,7 +139,8 @@ Here the Team ID is `ABCDE12345`. The ten characters in parentheses in the certi
 ```bash
 just --list                 # all recipes
 just build-debug            # Debug build into build/DerivedData
-just build-release          # Release build, copied into /Applications
+just build-release          # Release build into build/DerivedData
+just install                # Release build, installed into /Applications
 just package                # Release build plus a .dmg in build/dist
 just clean
 ```
