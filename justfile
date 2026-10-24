@@ -300,3 +300,32 @@ reset-legacy-privileged-helper:
 # Remove the installed privileged helper and its root-owned files (asks for sudo)
 uninstall-helper:
     sudo bash scripts/uninstall.sh
+
+# Print the changelog section for the commits since the last tag (see cliff.toml)
+changelog:
+    git-cliff --unreleased
+
+# Prepend the generated section for an untagged version to CHANGELOG.md. Usage: just prepare-release 0.4.0
+prepare-release version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    [[ "{{version}}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Usage: just prepare-release X.Y.Z" >&2; exit 2; }
+    if git rev-parse -q --verify "refs/tags/v{{version}}" >/dev/null; then
+      echo "Tag v{{version}} already exists" >&2
+      exit 1
+    fi
+    if ! git diff --quiet HEAD -- CHANGELOG.md; then
+      echo "CHANGELOG.md has uncommitted changes" >&2
+      exit 1
+    fi
+    # --prepend would put the new section above a hand-written one, not replace it.
+    if grep -q '^## \[Unreleased\]' CHANGELOG.md; then
+      echo "CHANGELOG.md still has a hand-written [Unreleased] section; move or remove it first" >&2
+      exit 1
+    fi
+    git-cliff --unreleased --tag "v{{version}}" --prepend CHANGELOG.md
+
+# Fail on commits since a revision that are not Conventional Commits. Usage: just lint-commits [origin/main]
+lint-commits since="origin/main":
+    GIT_CLIFF__GIT__REQUIRE_CONVENTIONAL=true git-cliff "{{since}}..HEAD" -o /dev/null
