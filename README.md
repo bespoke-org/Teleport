@@ -4,8 +4,6 @@
 
 Teleport is a macOS menu bar client for the [Xray](https://github.com/XTLS/Xray-core) proxy core. It keeps a list of VLESS, Trojan and WireGuard connections, imports them from subscription URLs, and sends traffic through the selected one either by setting the macOS system proxy or by routing the whole machine through a TUN interface.
 
-<!-- Screenshot: the menu bar popover with the connection picker and the connect button. Add the image as docs/screenshot-menu.png and reference it here. -->
-
 ## Buy us some tokens
 
 Despite much of Teleport's code being written by LLMs, we usually read the code they produce, and keeping the project working takes our time and attention.
@@ -74,35 +72,19 @@ If another VPN owns the default `utun` route, Teleport refuses to start TUN mode
 
 ### What runs as root
 
-TUN mode installs a LaunchDaemon, `dev.x.teleport.PrivilegedHelper`, which runs as root and stays resident. Its whole code is in `TeleportPrivilegedHelper/`. It does six things on request: report status, start a session, stop a session, read its own logs, engage the leak guard, release the leak guard. Starting a session means running the root copy of Xray with a configuration the app sends over, installing the routes above and publishing the DNS entry. The shell it runs for this is generated in `Routing/XrayTunScriptBuilder.swift` with every value quoted; the app supplies data (the Xray configuration, the server addresses), not commands.
+TUN mode installs a LaunchDaemon (`dev.x.teleport.PrivilegedHelper`) that runs as root and stays resident. Source: `TeleportPrivilegedHelper/`.
 
-The helper accepts an XPC connection only when both hold:
+- It can only: report status, start or stop a session, read its own logs, engage or release the leak guard.
+- Starting a session runs the root copy of Xray with the configuration the app sends, installs the routes above and publishes the DNS entry. The app passes data, never commands.
+- It talks only to this app: the caller must be the user at the console and signed with the same Team ID as the helper.
 
-- the caller runs as the user currently at the console (not root, not another logged-in user);
-- the caller's code signature satisfies `identifier "dev.x.teleport" and anchor apple generic and certificate leaf[subject.OU] = <Team ID>`, where the Team ID is read from the helper's own signature.
+### Leak guard (optional, off by default)
 
-Requests and responses are typed, size-bounded messages; the helper refuses what does not parse. Each request carries an ID, and a repeated ID within ten minutes gets the first answer again instead of a second execution.
+Settings > General > Leak guard. When on, a pf ruleset (anchor `com.apple/dev.x.teleport`) drops any outbound traffic that would bypass the tunnel while TUN mode is active.
 
-### What the app checks before installing anything
-
-Before the administrator prompt, the app runs `codesign --verify --strict` against the same Team ID requirement on itself and on the bundled helper, and compares the bundled Xray against a SHA-256 pinned in `teleport/HelperInstallation/BundledArtifactPolicy.swift`. The install transaction repeats those checks on the staged copies as root. A failed install puts the previous installation back. These checks establish that what gets installed is what this build shipped; they say nothing about notarization, which the project does not have yet.
-
-The helper and its files:
-
-```text
-/Library/PrivilegedHelperTools/dev.x.teleport.PrivilegedHelper
-/Library/PrivilegedHelperTools/dev.x.teleport.xray
-/Library/PrivilegedHelperTools/dev.x.teleport.installation.json
-/Library/LaunchDaemons/dev.x.teleport.PrivilegedHelper.plist
-/var/db/dev.x.teleport/                      (session state, config, logs; root only)
-/var/log/teleport-privileged-helper.log
-```
-
-### Leak guard
-
-While TUN mode is on, a pf ruleset in the anchor `com.apple/dev.x.teleport` blocks outbound traffic that would otherwise leave on the physical interface. It allows: loopback; the tunnel interface; DHCP; private, link-local and multicast IPv4 destinations; link-local, unique-local and multicast IPv6 destinations; DNS to any resolver on ports 53 and 853; the proxy servers of the current session; and, during a session, traffic of root processes, because Xray's `direct` outbound runs as root. Everything else outbound, IPv4 and IPv6, is dropped. Inbound traffic is not filtered.
-
-The guard is held on a lease: the app renews it every 45 seconds and the helper drops it after 180 seconds without renewal, so a crashed app leaves the machine without network for at most three minutes. The helper also drops a guard it finds at its own start. The switch is in Settings > General; it is off by default.
+- Allowed: loopback, the tunnel interface, DHCP, local and link-local destinations, DNS (ports 53 and 853), the servers of the current session, and root processes (Xray's `direct` outbound runs as root).
+- Everything else outbound, IPv4 and IPv6, is dropped. Inbound traffic is not filtered.
+- The guard is held on a lease: the app renews it every 45 seconds, the helper releases it after 180 seconds without renewal. A crashed app leaves the machine offline for at most three minutes. The helper also releases a guard it finds at its own start.
 
 ### Stored data
 
@@ -157,18 +139,11 @@ Formatting follows `.swift-format` (four-space indent, 160 columns). Check with 
 
 ### Tests
 
-There is no XCTest target. Each subsystem has a standalone program in `scripts/verify_*.swift` that is compiled with `swiftc` together with the sources it covers and run directly; a failed check stops the program with a message.
-
 ```bash
-just verify                           # Debug build, then every verify script
-just verify-core                      # link parsing and Xray config generation
-just verify-split-tunneling           # rule matching, routing, helper scripts
-just verify-leak-guard                # the pf ruleset
-just verify-xpc-protocol              # app/helper message contract
-just coverage                         # line coverage of the verify scripts
+just test
 ```
 
-The remaining recipes are listed by `just --list`. None of them needs root or a logged-in GUI session; TUN connect/disconnect, helper installation and leak-guard behaviour on a real network are checked by hand (see `docs/xray-bundling-and-release.md`).
+Checks are standalone Swift programs in `scripts/verify_*.swift`; no XCTest. Run one with `just verify-<name>`. Connecting, helper installation and the leak guard on a real network are tested by hand.
 
 ## Known limitations
 

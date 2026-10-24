@@ -1,5 +1,7 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
+alias test := verify
+
 project := "teleport.xcodeproj"
 scheme := "teleport"
 app_name := "Teleport"

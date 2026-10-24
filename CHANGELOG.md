@@ -30,7 +30,7 @@ Format is based on [_Keep a changelog_](https://keepachangelog.com) and uses
 - Xray owns DNS for the tunnel; QUIC is blocked in tunnel routing so domain rules see the name.
 - Proxy mode gives Xray the same geodata TUN mode gets.
 - Saved state: a snapshot this build cannot read is never overwritten, a save is never the only copy, and backup copies live in the Keychain.
-- `just install` installs the Release build into /Applications, quitting and relaunching a running Teleport; `just build-release` only builds; `just coverage` reports line coverage of the verify scripts.
+- `just install` installs the Release build into /Applications, quitting and relaunching a running Teleport; `just build-release` only builds; `just coverage` reports line coverage of the verify scripts; `just test` is an alias for `just verify`.
 - The connection mode formerly called VPN is called TUN in the UI and the docs.
 
 ### Fixed
