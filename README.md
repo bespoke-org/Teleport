@@ -22,6 +22,18 @@ Teleport is a macOS menu bar client for the [Xray](https://github.com/XTLS/Xray-
 - An optional pf-based leak guard (off by default) that keeps traffic off the physical network while a TUN session is being rebuilt.
 - TCP latency checks for every connection, shown in the menu bar picker.
 
+## Comparison with other clients
+
+Only what the other projects' own READMEs state is listed; a blank means the README does not say.
+
+| | Teleport | [V2rayU](https://github.com/yanue/V2rayU) | [Hiddify](https://github.com/hiddify/hiddify-app) | [v2rayN](https://github.com/2dust/v2rayN) |
+|---|---|---|---|---|
+| Platforms | macOS | macOS | Android, iOS, Windows, macOS, Linux | Windows, Linux, macOS |
+| Core | Xray | v2ray-core | sing-box | Xray, sing-box and others |
+| Whole-device routing on macOS | TUN through a root helper, plus pf leak guard | System proxy only; the README points to Proxifier for apps that ignore it | TUN mode listed, platform not specified | |
+| License | GPL-3.0-or-later | GPLv3 | GPL v3 with Hiddify's additional conditions (non-commercial use among them) | GPL-3.0 |
+| Distribution | Source only | | App Store, DMG, PKG | |
+
 ## Requirements
 
 - macOS 15 or later. Tested on macOS 27.
@@ -96,6 +108,14 @@ If the app is already gone, run `scripts/uninstall.sh` from a checkout (or `just
 
 If the machine has no network after a crash, the leak guard is still loaded. It expires within three minutes, or drop it now with `sudo pfctl -a com.apple/dev.x.teleport -F all`.
 
+## Known limitations
+
+- No signed download yet, build from source.
+- Another VPN that owns the default `utun` route blocks TUN mode entirely.
+- The leak guard lets DNS queries reach any resolver, and during a session it passes traffic of any root process, not only Xray.
+
+Bug reports: https://github.com/bespoke-org/Teleport/issues
+
 ## Development
 
 ### Signing
@@ -142,26 +162,6 @@ just test
 
 Checks are standalone Swift programs in `scripts/test_*.swift`; no XCTest. Run one with `just test-<name>`. Connecting, helper installation and the leak guard on a real network are tested by hand.
 
-## Known limitations
-
-- No signed download yet, build from source.
-- Another VPN that owns the default `utun` route blocks TUN mode entirely.
-- The leak guard lets DNS queries reach any resolver, and during a session it passes traffic of any root process, not only Xray.
-
-## Comparison with other clients
-
-Only what the other projects' own READMEs state is listed; a blank means the README does not say.
-
-| | Teleport | [V2rayU](https://github.com/yanue/V2rayU) | [Hiddify](https://github.com/hiddify/hiddify-app) | [v2rayN](https://github.com/2dust/v2rayN) |
-|---|---|---|---|---|
-| Platforms | macOS | macOS | Android, iOS, Windows, macOS, Linux | Windows, Linux, macOS |
-| Core | Xray | v2ray-core | sing-box | Xray, sing-box and others |
-| Whole-device routing on macOS | TUN through a root helper, plus pf leak guard | System proxy only; the README points to Proxifier for apps that ignore it | TUN mode listed, platform not specified | |
-| License | GPL-3.0-or-later | GPLv3 | GPL v3 with Hiddify's additional conditions (non-commercial use among them) | GPL-3.0 |
-| Distribution | Source only | | App Store, DMG, PKG | |
-
-Bug reports: https://github.com/bespoke-org/Teleport/issues
-
 ## Buy us some tokens
 
 Despite much of Teleport's code being written by LLMs, we usually read the code they produce, and keeping the project working takes our time and attention.
@@ -172,3 +172,7 @@ You can support us with USDT. Check the network before sending: a transfer on a 
 |---|---|
 | TRON (TRC20) | `TFKx2Mhwqkx94LSq9zbYAXj27yxPcTwqG1` |
 | Ethereum (ERC20), BNB Chain (BEP20) | `0xe87761Cc781270389D2F55e2c7bA64E2cebb78E2` |
+
+## License
+
+Teleport is licensed under GPL-3.0-or-later, see [`LICENSE`](LICENSE). Copyright (C) 2026 Michael Chernigin, Nikita Rydanov. Licenses of the bundled components are in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
