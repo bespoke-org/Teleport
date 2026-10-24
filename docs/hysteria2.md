@@ -127,9 +127,9 @@ not report the server's UDP-disabled handshake flag to Teleport.
 Run from the repository root:
 
 ```sh
-just test-hysteria
-just test-subscription-support
-just test-persistence
+just test-one hysteria
+just test-one subscription-support
+just test-one persistence
 just test-hysteria-integration
 ```
 
@@ -153,7 +153,7 @@ port is configured, and that traffic changes destination port after an explicit
 five-second interval while TCP, HTTP, and UDP continue working. They cover plain
 TLS, Salamander, Gecko, migration from the obsolete hopping field, and a Gecko
 URI with the `mport`/`alpn`/`fp` extensions. Run only
-these checks after `just test-hysteria` with:
+these checks after `just test-one hysteria` with:
 
 ```sh
 python3 scripts/test_hysteria_integration.py /tmp/teleport-test-hysteria --hopping-only
