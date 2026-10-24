@@ -1,0 +1,70 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # Without Config/Local.xcconfig the build is signed ad hoc; see the note added to the release.
+    runs-on: macos-26
+    env:
+      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Install just and git-cliff
+        run: brew install just git-cliff
+
+      - run: just package
+
+      # v1.2.3 and v1.2.3-rc.1 both need MARKETING_VERSION 1.2.3.
+      - name: Check that the tag matches the app version
+        run: |
+          version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' build/DerivedData/Build/Products/Release/Teleport.app/Contents/Info.plist)
+          base=${TAG#v}
+          base=${base%%-*}
+          if [[ "$base" != "$version" ]]; then
+            echo "Tag $TAG does not match MARKETING_VERSION $version" >&2
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Archive the app
+        run: ditto -c -k --keepParent build/DerivedData/Build/Products/Release/Teleport.app "build/dist/Teleport-$VERSION.zip"
+
+      # A release takes its CHANGELOG.md section, written by just prepare-release. A pre-release
+      # gets the commits since the last release; cliff.toml's tag_pattern skips -rc tags.
+      - name: Write the release notes
+        run: |
+          if [[ "$TAG" == *-* ]]; then
+            git-cliff --unreleased --tag "$TAG" --strip header > notes.md
+          else
+            awk -v heading="## [$VERSION]" 'index($0, heading) == 1 { found = 1; next } found && /^## \[/ { exit } found' CHANGELOG.md > notes.md
+            if [[ ! -s notes.md ]]; then
+              echo "CHANGELOG.md has no section for $VERSION; run just prepare-release $VERSION" >&2
+              exit 1
+            fi
+          fi
+          cat >> notes.md <<'EOF'
+
+          ### Installing
+
+          This build is signed ad hoc, not with a Developer ID, so macOS blocks it after download. Move Teleport.app to /Applications and run `xattr -d com.apple.quarantine /Applications/Teleport.app`, or open it once and allow it in System Settings > Privacy & Security. TUN mode needs a build signed with a Team ID (see the README).
+          EOF
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=()
+          [[ "$TAG" == *-* ]] && flags+=(--prerelease)
+          gh release create "$TAG" "build/dist/Teleport-$VERSION.dmg" "build/dist/Teleport-$VERSION.zip" \
+            --title "Teleport ${TAG#v}" --notes-file notes.md --verify-tag "${flags[@]}"
