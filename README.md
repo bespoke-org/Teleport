@@ -1,19 +1,16 @@
-# Teleport
+<p align="center">
+  <img src="teleport/Assets.xcassets/AppIcon.appiconset/icon_256x256.png" width="128" height="128" alt="Teleport icon">
+</p>
 
-[![Buy us some tokens](https://img.shields.io/badge/buy%20us%20some%20tokens-USDT-26A17B)](#buy-us-some-tokens)
+<h1 align="center">Teleport</h1>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/macOS-26%2B-000000?logo=apple&logoColor=white" alt="macOS 26+">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--or--later-blue" alt="License: GPL-3.0-or-later"></a>
+  <a href="#buy-us-some-tokens"><img src="https://img.shields.io/badge/donate-USDT-26A17B?logo=tether&logoColor=white" alt="Donate USDT"></a>
+</p>
 
 Teleport is a macOS menu bar client for the [Xray](https://github.com/XTLS/Xray-core) proxy core. It keeps a list of VLESS, Trojan and WireGuard connections, imports them from subscription URLs, and sends traffic through the selected one either by setting the macOS system proxy or by routing the whole machine through a TUN interface.
-
-## Buy us some tokens
-
-Despite much of Teleport's code being written by LLMs, we usually read the code they produce, and keeping the project working takes our time and attention.
-
-You can support us with USDT. Check the network before sending: a transfer on a network not listed here can be lost.
-
-| Network | Address |
-|---|---|
-| TRON (TRC20) | `TFKx2Mhwqkx94LSq9zbYAXj27yxPcTwqG1` |
-| Ethereum (ERC20), BNB Chain (BEP20) | `0xe87761Cc781270389D2F55e2c7bA64E2cebb78E2` |
 
 ## Features
 
@@ -164,3 +161,14 @@ Only what the other projects' own READMEs state is listed; a blank means the REA
 | Distribution | Source only | | App Store, DMG, PKG | |
 
 Bug reports: https://github.com/bespoke-org/Teleport/issues
+
+## Buy us some tokens
+
+Despite much of Teleport's code being written by LLMs, we usually read the code they produce, and keeping the project working takes our time and attention.
+
+You can support us with USDT. Check the network before sending: a transfer on a network not listed here can be lost.
+
+| Network | Address |
+|---|---|
+| TRON (TRC20) | `TFKx2Mhwqkx94LSq9zbYAXj27yxPcTwqG1` |
+| Ethereum (ERC20), BNB Chain (BEP20) | `0xe87761Cc781270389D2F55e2c7bA64E2cebb78E2` |
