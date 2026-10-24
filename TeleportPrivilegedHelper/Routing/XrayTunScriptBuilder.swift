@@ -235,6 +235,7 @@ struct XrayTunScriptBuilder: Sendable {
         protect_host_routes
         protect_direct_routes "$gateway" "$direct_ipv6_gateway"
         protect_dns_routes
+        publish_tunnel_resolver
 
         public_interface_low=$(route -n get 1.1.1.1 2>/dev/null | awk '/interface:/{print $2; exit}' || true)
         public_interface_high=$(route -n get 129.0.0.1 2>/dev/null | awk '/interface:/{print $2; exit}' || true)
@@ -384,12 +385,23 @@ struct XrayTunScriptBuilder: Sendable {
                 done < "$PROTECTED_DNS_FILE"
             fi
             rm -f "$PROTECTED_DNS_FILE"
+            printf 'remove %s\\n' "$TUNNEL_RESOLVER_KEY" | /usr/sbin/scutil >/dev/null 2>&1 || true
         }
 
         # DNS follows the TUN default routes. Keep this no-op for shared start/stop
         # sequencing and to clean up bypass markers left by older helper versions.
         protect_dns_routes() {
             :
+        }
+
+        # mDNSResponder binds its queries to the interface of the resolver it uses,
+        # so queries to the uplink's resolvers leave through the uplink and never
+        # reach Xray. A resolver published without an interface is queried through
+        # the routing table, which leads into the TUN where Xray answers port 53.
+        # The address only has to be routed into the TUN; it is not contacted.
+        TUNNEL_RESOLVER_KEY="State:/Network/Service/dev.x.teleport/DNS"
+        publish_tunnel_resolver() {
+            printf 'd.init\\nd.add ServerAddresses * 1.1.1.1\\nd.add SupplementalMatchDomains * ""\\nset %s\\n' "$TUNNEL_RESOLVER_KEY" | /usr/sbin/scutil >> "$CONTROL_LOG_FILE" 2>&1 || true
         }
         """
     }
