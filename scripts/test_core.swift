@@ -578,7 +578,6 @@ struct TestCore {
         try Data().write(to: fileURL)
 
         let policy = BundledArtifactPolicy(
-            codeSigningRequirement: "unused-by-hash-test",
             xraySHA256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         )
         try BundledArtifactVerifier(policy: policy).verifyXrayHash(fileURL)

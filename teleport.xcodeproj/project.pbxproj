@@ -23,8 +23,8 @@
 		C2F100232F98000000CCB832 /* SystemStateDump.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2F100212F98000000CCB832 /* SystemStateDump.swift */; };
 		C2F100312F98000000CCB832 /* LeakGuardRuleset.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2F100302F98000000CCB832 /* LeakGuardRuleset.swift */; };
 		C2F100322F98000000CCB832 /* LeakGuardRuleset.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2F100302F98000000CCB832 /* LeakGuardRuleset.swift */; };
-		C2F100342F98000000CCB832 /* TeleportCodeSigning.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2F100332F98000000CCB832 /* TeleportCodeSigning.swift */; };
-		C2F100352F98000000CCB832 /* TeleportCodeSigning.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2F100332F98000000CCB832 /* TeleportCodeSigning.swift */; };
+		C2F100342F98000000CCB832 /* HelperInstallationManifest.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2F100332F98000000CCB832 /* HelperInstallationManifest.swift */; };
+		C2F100352F98000000CCB832 /* HelperInstallationManifest.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2F100332F98000000CCB832 /* HelperInstallationManifest.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -48,7 +48,7 @@
 		C2F1001E2F98000000CCB832 /* TeleportLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TeleportLog.swift; sourceTree = "<group>"; };
 		C2F100212F98000000CCB832 /* SystemStateDump.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemStateDump.swift; sourceTree = "<group>"; };
 		C2F100302F98000000CCB832 /* LeakGuardRuleset.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LeakGuardRuleset.swift; sourceTree = "<group>"; };
-		C2F100332F98000000CCB832 /* TeleportCodeSigning.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TeleportCodeSigning.swift; sourceTree = "<group>"; };
+		C2F100332F98000000CCB832 /* HelperInstallationManifest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HelperInstallationManifest.swift; sourceTree = "<group>"; };
 		C2C0F1012FAB000000CCB832 /* Teleport.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Teleport.xcconfig; sourceTree = "<group>"; };
 		C2C0F1022FAB000000CCB832 /* Local.xcconfig.example */ = {isa = PBXFileReference; lastKnownFileType = text; path = Local.xcconfig.example; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -120,7 +120,7 @@
 				C2F1001E2F98000000CCB832 /* TeleportLog.swift */,
 				C2F100212F98000000CCB832 /* SystemStateDump.swift */,
 				C2F100302F98000000CCB832 /* LeakGuardRuleset.swift */,
-				C2F100332F98000000CCB832 /* TeleportCodeSigning.swift */,
+				C2F100332F98000000CCB832 /* HelperInstallationManifest.swift */,
 				C2F1001B2F98000000CCB832 /* NetworkInterfaceInventory.swift */,
 				C2F100152F98000000CCB832 /* TUNHelperMessages.swift */,
 				C2F100182F98000000CCB832 /* TUNHelperProtocolError.swift */,
@@ -301,7 +301,7 @@
 				C2F1001F2F98000000CCB832 /* TeleportLog.swift in Sources */,
 				C2F100222F98000000CCB832 /* SystemStateDump.swift in Sources */,
 				C2F100312F98000000CCB832 /* LeakGuardRuleset.swift in Sources */,
-				C2F100342F98000000CCB832 /* TeleportCodeSigning.swift in Sources */,
+				C2F100342F98000000CCB832 /* HelperInstallationManifest.swift in Sources */,
 				C2F1001D2F98000000CCB832 /* NetworkInterfaceInventory.swift in Sources */,
 				C2F100172F98000000CCB832 /* TUNHelperMessages.swift in Sources */,
 				C2F1001A2F98000000CCB832 /* TUNHelperProtocolError.swift in Sources */,
@@ -317,7 +317,7 @@
 				C2F100202F98000000CCB832 /* TeleportLog.swift in Sources */,
 				C2F100232F98000000CCB832 /* SystemStateDump.swift in Sources */,
 				C2F100322F98000000CCB832 /* LeakGuardRuleset.swift in Sources */,
-				C2F100352F98000000CCB832 /* TeleportCodeSigning.swift in Sources */,
+				C2F100352F98000000CCB832 /* HelperInstallationManifest.swift in Sources */,
 				C2F1001C2F98000000CCB832 /* NetworkInterfaceInventory.swift in Sources */,
 				C2F100162F98000000CCB832 /* TUNHelperMessages.swift in Sources */,
 				C2F100192F98000000CCB832 /* TUNHelperProtocolError.swift in Sources */,

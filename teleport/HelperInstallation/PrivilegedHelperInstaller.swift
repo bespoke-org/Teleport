@@ -1,5 +1,4 @@
 import Foundation
-import Security
 
 /// Installs the helper, Xray binary, and LaunchDaemon into root-owned locations.
 /// Geodata is delivered separately through the authenticated session request, so
@@ -7,21 +6,6 @@ import Security
 /// runs only when installed executable content differs or the helper is
 /// unavailable; ordinary TUN lifecycle commands use `PrivilegedHelperClient`.
 nonisolated struct PrivilegedHelperInstaller: Sendable {
-    /// Written next to the installed helper by the admin transaction. The helper's
-    /// code-directory hash is what detects a rebuilt helper whose protocol version
-    /// did not change; the version alone would keep a stale root daemon running.
-    ///
-    /// The code-directory hash rather than a hash of the file: the file carries the
-    /// signature's signing time, so every re-sign changed its hash and cost an
-    /// administrator prompt on the next connect even when the code was identical.
-    /// The code directory covers the code, identifier, entitlements and
-    /// requirements, and not the signing time.
-    private struct InstallationManifest: Codable, Equatable {
-        let helperVersion: String
-        let helperCDHash: String
-        let xraySHA256: String
-    }
-
     /// Where the LaunchDaemon sends the helper's stdout and stderr. Removed by
     /// `PrivilegedHelperUninstaller` along with the rest of the installation.
     static let launchDaemonLogPath = "/var/log/teleport-privileged-helper.log"
@@ -60,12 +44,12 @@ nonisolated struct PrivilegedHelperInstaller: Sendable {
             return
         }
         beforeInstalling()
-        try verifyBundleArtifacts(helperURL: helperURL, runtimeURL: runtimeURL)
+        try verifyBundleArtifacts(helperURL: helperURL, runtimeURL: runtimeURL, manifest: manifest)
         try await install(helperURL: helperURL, runtimeURL: runtimeURL, manifest: manifest)
         try await waitUntilRunning()
     }
 
-    private func isInstalledAndRunning(expecting manifest: InstallationManifest) async -> Bool {
+    private func isInstalledAndRunning(expecting manifest: HelperInstallationManifest) async -> Bool {
         let fileManager = FileManager.default
         guard fileManager.isExecutableFile(atPath: PrivilegedHelperClient.installedToolPath),
               fileManager.isExecutableFile(atPath: PrivilegedHelperClient.installedXrayPath),
@@ -80,35 +64,26 @@ nonisolated struct PrivilegedHelperInstaller: Sendable {
 
     /// Read from the signature in-process on every connect, which is cheap and
     /// avoids spawning `codesign`.
-    private func expectedInstallationManifest(helperURL: URL) throws -> InstallationManifest {
-        var staticCode: SecStaticCode?
-        var signingInformation: CFDictionary?
-        guard SecStaticCodeCreateWithPath(helperURL as CFURL, [], &staticCode) == errSecSuccess,
-              let staticCode,
-              SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &signingInformation) == errSecSuccess,
-              let cdHash = (signingInformation as? [String: Any])?[kSecCodeInfoUnique as String] as? Data else {
-            throw PrivilegedHelperInstallerError.installFailed("Teleport could not read the privileged helper's code signature. Rebuild or reinstall Teleport.")
-        }
-        return InstallationManifest(
+    private func expectedInstallationManifest(helperURL: URL) throws -> HelperInstallationManifest {
+        let manifest = HelperInstallationManifest(
             helperVersion: PrivilegedHelperClient.expectedVersion,
-            helperCDHash: cdHash.map { String(format: "%02x", $0) }.joined(),
+            appCDHashes: try BundledArtifactVerifier.codeDirectoryHashes(at: bundle.bundleURL),
+            helperCDHashes: try BundledArtifactVerifier.codeDirectoryHashes(at: helperURL),
             xraySHA256: artifactPolicy.xraySHA256
         )
+        guard manifest.isValid else {
+            throw PrivilegedHelperInstallerError.installFailed("Teleport has an invalid code signature or artifact policy.")
+        }
+        return manifest
     }
 
-    private func installedManifest() -> InstallationManifest? {
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: PrivilegedHelperConstants.installationManifestPath)) else {
-            return nil
-        }
-        return try? JSONDecoder().decode(InstallationManifest.self, from: data)
+    private func installedManifest() -> HelperInstallationManifest? {
+        HelperInstallationManifest.loadApproved()
     }
 
-    private func install(helperURL: URL, runtimeURL: URL, manifest: InstallationManifest) async throws {
-        guard let requirement = artifactPolicy.codeSigningRequirement else {
-            throw PrivilegedHelperInstallerError.installFailed(BundledArtifactPolicy.missingTeamIdentifierMessage)
-        }
+    private func install(helperURL: URL, runtimeURL: URL, manifest: HelperInstallationManifest) async throws {
         let plist = Self.launchDaemonPlist()
-        let script = installScript(appBundleURL: bundle.bundleURL, helperURL: helperURL, runtimeURL: runtimeURL, requirement: requirement, manifest: manifest, plist: plist)
+        let script = try installScript(appBundleURL: bundle.bundleURL, helperURL: helperURL, runtimeURL: runtimeURL, manifest: manifest, plist: plist)
         do {
             try await shellRunner.runAdministratorShellScript(script, prompt: administratorPrompt)
         } catch {
@@ -116,22 +91,14 @@ nonisolated struct PrivilegedHelperInstaller: Sendable {
         }
     }
 
-    /// What this establishes, and what it does not. A local `codesign --verify`
-    /// against the team requirement and a pinned Xray hash prove that the helper
-    /// and runtime about to be installed as root are the ones this build shipped
-    /// with — the property the install transaction depends on. They do not prove
-    /// anything about distribution: that the app was signed with a Developer ID
-    /// certificate, passed Apple's notary service, and carries a stapled ticket.
-    /// Those are properties of the release artifact, not of this code, and are
-    /// listed as release checks in docs/xray-bundling-and-release.md. Until the
-    /// pipeline produces such an artifact, installation stays on `launchctl` from
-    /// an administrator shell, since `SMAppService` will not register a daemon
-    /// for an app that lacks them.
-    private func verifyBundleArtifacts(helperURL: URL, runtimeURL: URL) throws {
+    /// Verify the exact build being approved, including ad-hoc signatures.
+    /// Administrator approval establishes local trust; it does not notarize the app.
+    private func verifyBundleArtifacts(helperURL: URL, runtimeURL: URL, manifest: HelperInstallationManifest) throws {
         try artifactVerifier.verify(
             appBundleURL: bundle.bundleURL,
             helperURL: helperURL,
-            runtimeURL: runtimeURL
+            runtimeURL: runtimeURL,
+            manifest: manifest
         )
     }
 
@@ -168,7 +135,7 @@ nonisolated struct PrivilegedHelperInstaller: Sendable {
         """
         Teleport needs administrator access to install or update its privileged helper for TUN mode.
 
-        The helper lets Teleport start and stop Xray TUN and configure system routing. Your password is only used by macOS to approve this privileged install.
+        The helper lets Teleport start and stop Xray TUN and configure system routing. Your password is only used by macOS to approve this build and its privileged helper. A changed build needs approval again.
         """
     }
 
@@ -181,12 +148,13 @@ nonisolated struct PrivilegedHelperInstaller: Sendable {
     /// again, or, on a first install, removes what was placed. Only a script that
     /// reaches its last line leaves the new files behind.
     ///
-    /// Installation goes through `launchctl` from an administrator shell rather
-    /// than `SMAppService`, which requires a notarized, Developer ID-signed app to
-    /// register a daemon; see the note on `verifyBundleArtifacts`.
-    private func installScript(appBundleURL: URL, helperURL: URL, runtimeURL: URL, requirement: String, manifest: InstallationManifest, plist: String) -> String {
+    /// Installation uses the existing administrator-authorized launchctl path.
+    func installScript(appBundleURL: URL, helperURL: URL, runtimeURL: URL, manifest: HelperInstallationManifest, plist: String) throws -> String {
         let q = PrivilegedShellRunner.shellQuote
-        let manifestJSON = "{\"helperVersion\":\"\(manifest.helperVersion)\",\"helperCDHash\":\"\(manifest.helperCDHash)\",\"xraySHA256\":\"\(manifest.xraySHA256)\"}"
+        guard manifest.isValid else {
+            throw PrivilegedHelperInstallerError.installFailed("Invalid helper installation approval.")
+        }
+        let manifestJSON = String(decoding: try JSONEncoder().encode(manifest), as: UTF8.self)
         return """
         set -eu
         APP_BUNDLE=\(q(appBundleURL.path))
@@ -199,11 +167,12 @@ nonisolated struct PrivilegedHelperInstaller: Sendable {
         INSTALL_MANIFEST=\(q(manifestJSON))
         PLIST_DST=\(q(PrivilegedHelperClient.launchDaemonPlistPath))
         LABEL=\(q(PrivilegedHelperClient.label))
-        REQUIREMENT=\(q(requirement))
+        APP_REQUIREMENT=\(q(manifest.clientRequirement))
+        HELPER_REQUIREMENT=\(q(manifest.helperRequirement))
         EXPECTED_XRAY_SHA256=\(q(artifactPolicy.xraySHA256))
 
         verify_signature() {
-            /usr/bin/codesign --verify --strict --requirement "$REQUIREMENT" "$1"
+            /usr/bin/codesign --verify --strict --all-architectures "-R=$2" "$1"
         }
 
         verify_xray_hash() {
@@ -215,8 +184,8 @@ nonisolated struct PrivilegedHelperInstaller: Sendable {
         }
 
         verify_artifacts() {
-            verify_signature "$APP_BUNDLE"
-            verify_signature "$1"
+            verify_signature "$APP_BUNDLE" "$APP_REQUIREMENT"
+            verify_signature "$1" "$HELPER_REQUIREMENT"
             verify_xray_hash "$2"
         }
 
@@ -268,7 +237,7 @@ nonisolated struct PrivilegedHelperInstaller: Sendable {
         chown root:wheel "$tmp_helper" "$tmp_xray"
         chmod 755 "$tmp_helper" "$tmp_xray"
 
-        verify_signature "$tmp_helper"
+        verify_signature "$tmp_helper" "$HELPER_REQUIREMENT"
         verify_xray_hash "$tmp_xray"
 
         tmp_manifest="$tmp_dir/installation.json"

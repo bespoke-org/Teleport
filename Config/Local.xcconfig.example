@@ -1,8 +1,6 @@
 // Copy this file to Config/Local.xcconfig and fill in your own values.
 //
-// The Apple Developer Team ID that signs the app and the privileged helper.
-// Each executable reads it from its own signature to verify the other, so a
-// build signed by your team works without any source change. Without it the
-// build is signed ad hoc: System Proxy mode works, TUN mode refuses to install
-// the helper.
+// Optional Apple Developer Team ID for signing the app and helper.
+// Without it, builds are signed ad hoc. TUN mode works with either signature:
+// an administrator approves the exact app and helper build during installation.
 DEVELOPMENT_TEAM = ABCDE12345

@@ -201,7 +201,12 @@ package-open: package
 
 # Run all verification scripts after an Xcode build, so the privileged helper target
 # and app copy/sign phases are checked alongside the lightweight Swift scripts.
-test: build-debug test-core test-subscription-support test-hysteria test-connection-health test-connection-provider test-split-tunneling test-geodata test-persistence test-uplink-reconciliation test-leak-guard test-xpc-protocol test-helper-request-ledger test-helper-command-dispatch test-helper-xpc-endpoint test-xpc-transport test-privileged-helper-client test-mach-service-installation
+test: build-debug test-core test-subscription-support test-hysteria test-connection-health test-connection-provider test-split-tunneling test-geodata test-persistence test-uplink-reconciliation test-leak-guard test-xpc-protocol test-helper-request-ledger test-helper-command-dispatch test-helper-xpc-endpoint test-xpc-transport test-privileged-helper-client test-mach-service-installation test-build-approval
+
+# Check approval against signed app/helper artifacts and reject changed builds.
+test-build-approval: build-debug
+    swiftc {{test_flags}} {{test_sources}} scripts/test_build_approval.swift -o /tmp/teleport-test-build-approval
+    /tmp/teleport-test-build-approval
 
 # Run core parser/config verification
 test-core:

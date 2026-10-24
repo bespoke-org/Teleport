@@ -27,21 +27,19 @@ Teleport is a macOS menu bar client for the [Xray](https://github.com/XTLS/Xray-
 - macOS 15 or later. Tested on macOS 27.
 - Apple Silicon or Intel.
 - To build: Xcode 26 or later, and optionally [just](https://github.com/casey/just) for the command-line recipes.
-- TUN mode asks for an administrator password once, to install the helper.
+- TUN mode asks for an administrator password to install the helper and approve a changed build.
 
 ## Install
 
 There is no signed or notarized download yet. Build from source:
 
 ```bash
-cp Config/Local.xcconfig.example Config/Local.xcconfig
-# edit Config/Local.xcconfig: set DEVELOPMENT_TEAM (see Development > Signing)
 just install              # builds Release, installs Teleport.app into /Applications
 ```
 
 Or open `teleport.xcodeproj` in Xcode and run the `teleport` scheme.
 
-Without a `DEVELOPMENT_TEAM` the build is signed ad hoc. System Proxy mode works in such a build; TUN mode refuses to install the helper, because the app and the helper verify each other by Team ID (see Security model and Development > Signing).
+Without a `DEVELOPMENT_TEAM` the build is signed ad hoc. Both System Proxy and TUN modes work. TUN mode asks an administrator to approve the app and helper build; updating either can require approval again.
 
 On first launch the app has no connections. Add a link or a subscription URL in Settings > Connections. The same page can add two community subscription lists that ship with the app (`packaging/bundled-connections.json`, from [igareck/vpn-configs-for-russia](https://github.com/igareck/vpn-configs-for-russia)). They are not added on their own: the servers in those lists are run by people nobody here knows, and everything sent through them can be read or altered by whoever operates them.
 
@@ -81,7 +79,7 @@ TUN mode installs a LaunchDaemon (`dev.x.teleport.PrivilegedHelper`) that runs a
 
 - It can only: report status, start or stop a session, read its own logs, engage or release the leak guard.
 - Starting a session runs the root copy of Xray with the configuration the app sends, installs the routes above and publishes the DNS entry. The app passes data, never commands.
-- It talks only to this app: the caller must be the user at the console and signed with the same Team ID as the helper.
+- The caller must be the user at the console and match the app code-signing hash approved during installation. Approval is stored in a root-owned manifest; a changed build needs approval again.
 
 ### Stored data
 
@@ -108,18 +106,9 @@ Bug reports: https://github.com/bespoke-org/Teleport/issues
 
 ### Signing
 
-`DEVELOPMENT_TEAM` is the Apple Developer Team ID that signs the app and the helper. TUN mode needs it: the helper accepts only a caller whose certificate has the same Team ID in its `OU` field.
+No Apple account or Team ID is required for local TUN mode. The installer verifies the app and helper code signatures and the pinned Xray digest, then repeats verification during administrator-authorized installation. The helper accepts only the approved app build running as the active console user. Approval does not notarize the app for distribution.
 
-A free Personal Team is enough, since the project uses no entitlements that need a provisioning profile. Add your Apple ID in Xcode > Settings > Accounts; Xcode creates the team and an "Apple Development" certificate. The Team ID is the `OU` of that certificate:
-
-```bash
-security find-certificate -c "Apple Development" -p | openssl x509 -noout -subject
-# subject=UID=..., CN=Apple Development: you@example.com (K7LM2PQ9RS), OU=ABCDE12345, ...
-```
-
-Here the Team ID is `ABCDE12345`. The ten characters in parentheses in the certificate name identify the certificate, not the team.
-
-`Config/Local.xcconfig` (ignored by git) holds the per-developer `DEVELOPMENT_TEAM`; `Config/Teleport.xcconfig` includes it and is the base configuration of the project. There is no other place where the Team ID appears: the app and the helper derive the signature requirement from their own signatures at run time (`Shared/TeleportCodeSigning.swift`).
+To use an Apple signing certificate, copy `Config/Local.xcconfig.example` to `Config/Local.xcconfig` and set `DEVELOPMENT_TEAM`. The optional file is ignored by git and applies to both targets. Ad hoc and Apple-signed builds use the same approval mechanism.
 
 ### Building
 

@@ -30,7 +30,7 @@ struct TestMachServiceInstallation {
         }
         require(machServices.count == 1, "LaunchDaemon must expose exactly one Mach service")
         require(machServices[TUNHelperProtocol.machServiceName] as? Bool == true, "Expected Mach service must be enabled")
-        require(PrivilegedHelperConstants.version == "11", "Installed helper compatibility version must be 11")
+        require(PrivilegedHelperConstants.version == "12", "Installed helper compatibility version must be 12")
 
         try verifyUninstall(logPath: plist["StandardOutPath"] as? String ?? "")
 

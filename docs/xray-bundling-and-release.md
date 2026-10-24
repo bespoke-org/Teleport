@@ -36,28 +36,37 @@ The bundled executable is a `lipo` of the `xray` files from the official `Xray-m
 - Preserve executable permissions inside the app bundle.
 - App, helper, and bundled executable content require valid release signing.
 - Validate hardened runtime and notarization with the bundled Xray binary.
-- Release trust-boundary testing must use the production Developer ID requirement rather than assuming an Apple Development identity.
+- Release testing must check Developer ID signing and notarization separately from local administrator approval.
 - The current installer still requests administrator authorization and writes the LaunchDaemon/helper/runtime directly; it is intentionally transitional.
 
 ### Signing and notarization: what the code checks, and what it cannot
 
-The installer verifies two things locally before anything is written as root: the helper and app satisfy the team code-signing requirement in `BundledArtifactPolicy`, and the bundled Xray matches the pinned SHA-256. Those checks establish that the files about to be installed are the ones this build shipped with. They establish nothing about distribution trust, which lives in the release artifact rather than in the code:
+The installer verifies the app and helper against their exact code-directory
+hashes, and Xray against the SHA-256 pinned in `BundledArtifactPolicy`. It repeats
+signature verification in the administrator transaction and verifies the staged
+helper before installation. Administrator approval records both code hashes in
+`/Library/PrivilegedHelperTools/dev.x.teleport.installation.json` alongside the
+helper version and Xray hash. The manifest is installed atomically as root-owned,
+mode 0644, and participates in installation rollback.
 
-- every executable in the bundle signed with a Developer ID Application certificate and the hardened runtime;
-- the app or DMG submitted to Apple's notary service, and the ticket stapled;
-- the final artifact verified with `spctl --assess --type execute` and `stapler validate`.
+The helper rejects missing, invalid, outdated, symlinked, non-root-owned, or
+writable approval files and unsafe parent directories. Each new XPC connection
+must come from the active console user and satisfy the approved app's `cdhash`
+requirement. Ad-hoc builds are supported. A changed app or helper needs approval
+again; legacy manifests without an app hash require reinstallation.
 
-Two consequences follow until the pipeline produces such an artifact:
-
-- installation must keep going through `launchctl` from an administrator shell, because `SMAppService` refuses to register a daemon for an app that is not notarized and Developer ID-signed; the matching unregister path is likewise deferred;
-- a build signed with an Apple Development identity passes the local checks and installs, so release trust-boundary testing has to use the production requirement, as the manual checks below say.
+This local approval does not establish distribution trust. Published artifacts
+still need Developer ID signing, hardened runtime, notarization, and a stapled
+ticket, checked with `spctl --assess --type execute` and `stapler validate`.
+Installation continues to use the existing administrator-authorized `launchctl`
+transaction.
 
 ## Manual release checks
 
 Automated verification does not replace real macOS checks for:
 
 1. explicit legacy-helper reset, fresh installation, and upgrade/cutover installation;
-2. acceptance using the production Developer ID requirement and rejection of unsigned/wrong-team clients;
+2. acceptance of the approved build and rejection of unsigned or different-build clients, including clients with the same bundle identifier;
 3. System Proxy connect/disconnect;
 4. TUN connect/disconnect and current IPv4 route cleanup;
 5. WireGuard connect/disconnect against a real peer in both modes, including a large-transfer check for the MTU the peer advertises;

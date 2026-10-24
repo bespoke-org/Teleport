@@ -6,7 +6,7 @@ import Foundation
 nonisolated enum PrivilegedHelperConstants {
     /// Installation/protocol compatibility version, not the user-facing app version.
     /// Bump this whenever an older helper cannot safely serve the current client.
-    static let version = "11"
+    static let version = "12"
     static let label = "dev.x.teleport.PrivilegedHelper"
 
     /// Root-owned runtime state. The regular app process cannot read this directory directly.
