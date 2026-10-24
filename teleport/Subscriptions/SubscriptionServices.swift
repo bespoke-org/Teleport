@@ -41,8 +41,8 @@ struct SubscriptionConnectionReconciler {
         // Older imports could persist duplicate entry IDs. Keep one complete
         // record so identity, name and health all come from the same copy.
         let existingByEntry = Dictionary(previousImportedEntries.compactMap { connection -> (String, SavedConnection)? in
-            guard let source = connection.source else { return nil }
-            return (source.subscriptionEntryID, connection)
+            guard let entryID = normalizedEntryID(for: connection) else { return nil }
+            return (entryID, connection)
         }, uniquingKeysWith: { first, next in
             next.id == selectedConnectionID ? next : first
         })
@@ -67,7 +67,7 @@ struct SubscriptionConnectionReconciler {
         let resolvedSelectedConnectionID: UUID?
         if let previousSelectedConnection,
            previousSelectedConnection.source?.subscriptionSourceID == sourceID {
-            let previousEntryID = previousSelectedConnection.source?.subscriptionEntryID
+            let previousEntryID = normalizedEntryID(for: previousSelectedConnection)
             if let previousEntryID,
                let matched = replacementConnections.first(where: { $0.source?.subscriptionEntryID == previousEntryID }) {
                 resolvedSelectedConnectionID = matched.id
@@ -91,6 +91,19 @@ struct SubscriptionConnectionReconciler {
             savedConnections: updatedConnections,
             selectedConnectionID: resolvedSelectedConnectionID
         )
+    }
+
+    private func normalizedEntryID(for connection: SavedConnection) -> String? {
+        guard let entryID = connection.source?.subscriptionEntryID else { return nil }
+        // Early Hysteria imports used the old quicParams.udpHop JSON shape as
+        // their identity. Normalize that source identity too, so a schema
+        // migration preserves UUIDs, custom names, health and selection. Use
+        // the source identity rather than any locally edited configuration.
+        if connection.configuration.protocolType == .hysteria,
+           let configuration = try? ConnectionLinkParser().parse(entryID) {
+            return configuration.duplicateFilterIdentity
+        }
+        return entryID
     }
 }
 

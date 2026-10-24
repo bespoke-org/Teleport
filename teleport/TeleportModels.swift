@@ -116,11 +116,14 @@ nonisolated enum ConnectionProtocolType: String, Codable, CaseIterable {
     case vless
     case trojan
     case wireguard
+    case hysteria
 
     var displayName: String {
         switch self {
         case .wireguard:
             return "WireGuard"
+        case .hysteria:
+            return "Hysteria 2"
         case .vless, .trojan:
             return rawValue.uppercased()
         }
@@ -216,6 +219,7 @@ nonisolated enum ConnectionTransport: String, Codable, CaseIterable {
     case grpc
     case xhttp
     case raw
+    case hysteria
 }
 
 nonisolated enum ConnectionSecurity: String, Codable, CaseIterable {
@@ -249,6 +253,7 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
     /// Present exactly when `protocolType` is `.wireguard`; the stream-layer
     /// fields above are unused placeholders for that protocol.
     let wireguard: WireGuardParameters?
+    let hysteria: HysteriaParameters?
 
     nonisolated var displayName: String {
         if let remarks, !remarks.isEmpty {
@@ -312,6 +317,10 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
     }
 
     nonisolated var duplicateFilterIdentity: String {
+        if protocolType == .hysteria {
+            // Canonical JSON includes every supported setting, without the name.
+            return withDisplayName("").rawLink
+        }
         let components: [String] = [
             protocolType.rawValue,
             host.lowercased(),
@@ -364,7 +373,8 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
             allowsInsecureTLS: allowsInsecureTLS,
             grpcServiceName: grpcServiceName,
             transportMode: transportMode,
-            wireguard: wireguard
+            wireguard: wireguard,
+            hysteria: hysteria
         )
     }
 
@@ -380,6 +390,8 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
             return "xHTTP"
         case .raw:
             return "RAW"
+        case .hysteria:
+            return "QUIC"
         }
     }
 
@@ -406,6 +418,7 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
         case grpcServiceName
         case transportMode
         case wireguard
+        case hysteria
     }
 
     nonisolated init(
@@ -430,7 +443,8 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
         allowsInsecureTLS: Bool = false,
         grpcServiceName: String? = nil,
         transportMode: String? = nil,
-        wireguard: WireGuardParameters? = nil
+        wireguard: WireGuardParameters? = nil,
+        hysteria: HysteriaParameters? = nil
     ) {
         self.rawLink = rawLink
         self.protocolType = protocolType
@@ -454,6 +468,7 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
         self.grpcServiceName = grpcServiceName
         self.transportMode = transportMode
         self.wireguard = wireguard
+        self.hysteria = hysteria
     }
 
     init(from decoder: Decoder) throws {
@@ -480,6 +495,7 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
         grpcServiceName = try container.decodeIfPresent(String.self, forKey: .grpcServiceName)
         transportMode = try container.decodeIfPresent(String.self, forKey: .transportMode)
         wireguard = try container.decodeIfPresent(WireGuardParameters.self, forKey: .wireguard)
+        hysteria = try container.decodeIfPresent(HysteriaParameters.self, forKey: .hysteria)
     }
 }
 
@@ -488,6 +504,13 @@ private extension String {
     /// is not a URL: its name is the leading comment, and splitting it on the first
     /// "#" would cut the file off at that comment.
     nonisolated func withConnectionName(_ name: String) -> String {
+        if let data = data(using: .utf8),
+           var profile = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+            profile["remarks"] = name.isEmpty ? nil : name
+            if let renamed = try? JSONSerialization.data(withJSONObject: profile, options: [.sortedKeys, .withoutEscapingSlashes]) {
+                return String(decoding: renamed, as: UTF8.self)
+            }
+        }
         guard WireGuardConfigurationParser.looksLikeConfigurationFile(self) else {
             return withFragment(name)
         }
@@ -547,6 +570,10 @@ nonisolated struct SavedConnection: Codable, Equatable, Identifiable {
     /// The link to share: the user's name is applied to it here, so a shared link
     /// carries the visible name without the stored link ever being rewritten.
     var shareableLink: String {
+        if configuration.protocolType == .hysteria {
+            let named = configuration.withDisplayName(displayName)
+            return named.hysteriaShareLink ?? named.rawLink
+        }
         guard let customName, !customName.isEmpty else { return configuration.rawLink }
         return configuration.withDisplayName(customName).rawLink
     }
@@ -922,11 +949,13 @@ enum ConfigurationError: LocalizedError, Equatable {
     case malformedQuery
     case invalidWireGuardKey(String)
     case multipleWireGuardPeers
+    case invalidXrayJSON
+    case invalidHysteria(String)
 
     var errorDescription: String? {
         switch self {
         case .invalidScheme:
-            return "Paste a vless://, trojan:// or wireguard:// link, or a WireGuard [Interface] configuration"
+            return "Paste a vless://, trojan://, hy2:// or wireguard:// link, Xray JSON, or a WireGuard [Interface] configuration"
         case .missingHost:
             return "Server host is missing"
         case .invalidPort:
@@ -951,6 +980,10 @@ enum ConfigurationError: LocalizedError, Equatable {
             return "WireGuard \(name) must be a base64-encoded 32-byte key"
         case .multipleWireGuardPeers:
             return "WireGuard configurations with more than one peer are not supported"
+        case .invalidXrayJSON:
+            return "Invalid Xray JSON configuration"
+        case let .invalidHysteria(reason):
+            return reason
         }
     }
 }

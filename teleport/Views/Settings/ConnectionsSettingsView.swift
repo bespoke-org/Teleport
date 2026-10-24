@@ -176,7 +176,8 @@ struct ConnectionsSettingsView: View {
             shareButton(
                 title: connection.displayName,
                 value: connection.shareableLink,
-                copyTitle: shareCopyTitle(for: connection.configuration)
+                copyTitle: shareCopyTitle(for: connection.configuration),
+                exportNote: connection.configuration.shareExportNote
             )
 
             Button(role: .destructive) {
@@ -370,7 +371,8 @@ struct ConnectionsSettingsView: View {
             shareButton(
                 title: connection.displayName,
                 value: connection.shareableLink,
-                copyTitle: shareCopyTitle(for: configuration)
+                copyTitle: shareCopyTitle(for: configuration),
+                exportNote: configuration.shareExportNote
             )
         }
         .padding(.vertical, 6)
@@ -501,11 +503,11 @@ struct ConnectionsSettingsView: View {
 
     /// A WireGuard peer is shared as its configuration file rather than a URL.
     private func shareCopyTitle(for configuration: ConnectionConfiguration) -> String {
-        configuration.protocolType == .wireguard ? "Copy configuration" : "Copy URL"
+        configuration.protocolType == .wireguard || configuration.shareExportNote != nil ? "Copy configuration" : "Copy URL"
     }
 
     @ViewBuilder
-    private func shareButton(title: String, value: String, copyTitle: String = "Copy URL") -> some View {
+    private func shareButton(title: String, value: String, copyTitle: String = "Copy URL", exportNote: String? = nil) -> some View {
         let payload = ShareMenuPayload(title: title, value: value)
         let isPresented = Binding(
             get: { activeShareMenu == payload },
@@ -523,6 +525,7 @@ struct ConnectionsSettingsView: View {
         .popover(isPresented: isPresented, attachmentAnchor: .rect(.bounds), arrowEdge: .bottom) {
             ShareActionPopover(
                 copyTitle: copyTitle,
+                exportNote: exportNote,
                 onCopy: {
                     copyToClipboard(value)
                     activeShareMenu = nil

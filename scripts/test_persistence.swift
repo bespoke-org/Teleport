@@ -7,6 +7,7 @@ struct TestPersistence {
         try testKeychainReadStatusClassification()
         try testFreshStoreHasNoSnapshotAndNoLoadError()
         try testSaveAndLoadRoundTrip()
+        try testHysteriaSaveAndLoad()
         try testLegacyStateFileMigratesToKeychain()
         try testLoadFailureRefusesToOverwriteExistingSnapshot()
         try testSessionConnectionsSurviveAndOldSnapshotsStaySingleConnection()
@@ -210,6 +211,19 @@ struct TestPersistence {
             let loaded = store.load()
             precondition(store.lastLoadError == nil, "a successful save/load round trip should not report a load error")
             precondition(loaded.showsLatencyInMenuBarPicker == false, "expected the round-tripped snapshot to match what was saved")
+        }
+    }
+
+    private static func testHysteriaSaveAndLoad() throws {
+        try withIsolatedStore(name: "hysteria") { store, _ in
+            let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("fixtures/subscriptions/hysteria2.json")
+            let configuration = try ConnectionLinkParser().parse(String(contentsOf: fixture, encoding: .utf8))
+            let connection = SavedConnection(id: UUID(), configuration: configuration, savedAt: Date(), customName: "My Hysteria server")
+            try store.save(AppSnapshot(savedConnections: [connection], subscriptionSources: [], selectedConnectionID: connection.id, proxyEndpoint: .default))
+            let loaded = store.load()
+            precondition(store.lastLoadError == nil && loaded.savedConnections == [connection])
+            let reparsed = try ConnectionLinkParser().parse(loaded.savedConnections[0].configuration.rawLink)
+            precondition(reparsed == configuration, "Extended Hysteria settings must survive Keychain storage and startup reparsing")
         }
     }
 

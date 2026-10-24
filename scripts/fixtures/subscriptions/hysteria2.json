@@ -1,0 +1,35 @@
+{
+  "remarks": "Example Hysteria 2",
+  "outbounds": [{
+    "tag": "proxy",
+    "protocol": "hysteria",
+    "settings": {"version": 2, "address": "vpn.example.com", "port": 443},
+    "streamSettings": {
+      "network": "hysteria",
+      "security": "tls",
+      "tlsSettings": {"serverName": "tls.example.com", "alpn": ["h3"], "fingerprint": "firefox"},
+      "hysteriaSettings": {"version": 2, "auth": "sanitized-auth", "udpIdleTimeout": 60},
+      "finalmask": {
+        "udp": [
+          {"type": "salamander", "settings": {"password": "sanitized-obfs"}},
+          {"type": "udphop", "settings": {"mode": "intervalremote", "remotePorts": "20000-20010,443", "interval": "5-10"}}
+        ],
+        "quicParams": {
+          "congestion": "brutal",
+          "bbrProfile": "standard",
+          "brutalUp": "20 mbps",
+          "brutalDown": "100 mbps",
+          "initStreamReceiveWindow": 8388608,
+          "maxStreamReceiveWindow": 8388608,
+          "initConnectionReceiveWindow": 20971520,
+          "maxConnectionReceiveWindow": 20971520,
+          "maxIdleTimeout": 30,
+          "keepAlivePeriod": 10,
+          "disablePathMTUDiscovery": false,
+          "maxIncomingStreams": 1024
+        }
+      }
+    }
+  }, {"tag": "direct", "protocol": "freedom"}],
+  "routing": {"rules": [{"outboundTag": "proxy", "network": "tcp,udp"}]}
+}

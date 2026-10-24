@@ -6,10 +6,21 @@ struct ConnectionLinkParser {
     nonisolated func parse(_ rawLink: String) throws -> ConnectionConfiguration {
         let trimmed = rawLink.trimmingCharacters(in: .whitespacesAndNewlines)
 
+        if trimmed.hasPrefix("{") {
+            guard let data = trimmed.data(using: .utf8), let profile = try? JSONSerialization.jsonObject(with: data) else {
+                throw ConfigurationError.invalidXrayJSON
+            }
+            return try XraySubscriptionProfileParser().parseConfiguration(profile)
+        }
+
         // A WireGuard configuration file is not a URL, so it is recognised before
         // the scheme dispatch below rather than inside it.
         if WireGuardConfigurationParser.looksLikeConfigurationFile(trimmed) {
             return try wireGuardParser.parseConfigurationFile(trimmed)
+        }
+
+        if trimmed.lowercased().hasPrefix("hy2://") || trimmed.lowercased().hasPrefix("hysteria2://") {
+            return try HysteriaConfigurationParser().parseLink(trimmed)
         }
 
         guard let components = URLComponents(string: trimmed),
@@ -18,6 +29,8 @@ struct ConnectionLinkParser {
         }
 
         switch scheme {
+        case "hysteria":
+            throw ConfigurationError.invalidHysteria("Hysteria 1 links are not supported; use a Hysteria 2 profile")
         case ConnectionProtocolType.vless.rawValue:
             return try parseVLESS(trimmed, components: components)
         case ConnectionProtocolType.trojan.rawValue:
@@ -241,7 +254,7 @@ struct ConnectionLinkParser {
 
     nonisolated private func parseTransport(query: [String: String]) throws -> ConnectionTransport {
         let transportRaw = (query["type"] ?? ConnectionTransport.tcp.rawValue).lowercased()
-        guard let transport = ConnectionTransport(rawValue: transportRaw) else {
+        guard let transport = ConnectionTransport(rawValue: transportRaw), transport != .hysteria else {
             throw ConfigurationError.unsupportedTransport(transportRaw)
         }
         return transport

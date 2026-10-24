@@ -12,11 +12,11 @@ struct AddConnectionSheet: View {
             Text("Add connection")
                 .font(.headline)
 
-            Text("Paste a VLESS, Trojan, WireGuard, or subscription link, or a WireGuard configuration.")
+            Text("Paste a VLESS, Trojan, Hysteria 2, WireGuard, or subscription link, Xray JSON, or a WireGuard configuration.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
-            TextField("vless://, trojan://, wireguard://, https://subscription…, or [Interface]…", text: $draftLink, axis: .vertical)
+            TextField("vless://, trojan://, hy2://, wireguard://, https://subscription…, or configuration…", text: $draftLink, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .font(.caption.monospaced())
                 .lineLimit(3...12)
@@ -74,7 +74,7 @@ struct AddConnectionSheet: View {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
-        panel.message = "Choose a WireGuard configuration file"
+        panel.message = "Choose an Xray JSON or WireGuard configuration file"
 
         guard panel.runModal() == .OK,
               let url = panel.url else {

@@ -13,11 +13,19 @@ struct ShareMenuPayload: Equatable {
 
 struct ShareActionPopover: View {
     let copyTitle: String
+    var exportNote: String? = nil
     let onCopy: () -> Void
     let onShowQR: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
+            if let exportNote {
+                Text(exportNote)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.bottom, 6)
+            }
             Button {
                 onCopy()
             } label: {
@@ -33,8 +41,9 @@ struct ShareActionPopover: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .buttonStyle(.plain)
+            .disabled(exportNote != nil)
         }
         .padding(10)
-        .frame(width: 180)
+        .frame(width: exportNote == nil ? 180 : 260)
     }
 }

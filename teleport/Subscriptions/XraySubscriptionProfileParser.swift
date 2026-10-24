@@ -2,8 +2,9 @@ import CoreFoundation
 import Foundation
 import Network
 
-nonisolated struct XraySubscriptionProfileError: Error {
+nonisolated struct XraySubscriptionProfileError: LocalizedError {
     let reason: String
+    var errorDescription: String? { reason }
 }
 
 /// Imports server settings, not the provider's runtime configuration. Teleport
@@ -11,6 +12,10 @@ nonisolated struct XraySubscriptionProfileError: Error {
 /// routing dependencies, balancers and unknown transport options cannot be lost.
 nonisolated struct XraySubscriptionProfileParser {
     func parse(_ value: Any) throws -> String {
+        try parseConfiguration(value).rawLink
+    }
+
+    func parseConfiguration(_ value: Any) throws -> ConnectionConfiguration {
         let profile = try object(value)
         if profile["observatory"] != nil || profile["burstObservatory"] != nil {
             throw unsupported("Balancer/observatory profiles are not supported")
@@ -34,8 +39,7 @@ nonisolated struct XraySubscriptionProfileParser {
         let outbound = proxies[0]
         let proto = try string(outbound, "protocol", required: true)!
         switch proto {
-        case "vless", "trojan": break
-        case "hysteria": throw unsupported("Hysteria is not supported")
+        case "vless", "trojan", "hysteria": break
         case "shadowsocks": throw unsupported("Shadowsocks is not supported")
         default: throw unsupported("Unsupported Xray outbound protocol")
         }
@@ -47,6 +51,10 @@ nonisolated struct XraySubscriptionProfileParser {
                 throw unsupported("Outbound multiplexing is not supported")
             }
             // Xray defaults enabled to false when it is omitted.
+        }
+
+        if proto == "hysteria" {
+            return try HysteriaConfigurationParser().parseOutbound(outbound, remarks: string(profile, "remarks"))
         }
 
         let settings = try object(outbound["settings"])
@@ -150,7 +158,7 @@ nonisolated struct XraySubscriptionProfileParser {
         components.queryItems = query.keys.sorted().map { URLQueryItem(name: $0, value: query[$0]) }
         components.percentEncodedFragment = try string(profile, "remarks")?.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed)
         guard let link = components.string else { throw invalid() }
-        return link
+        return try ConnectionLinkParser().parse(link)
     }
 
     private func validateRouting(_ routing: [String: Any], outbounds: [[String: Any]]) throws {
