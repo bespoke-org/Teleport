@@ -1,7 +1,7 @@
 import Foundation
 
 @main
-struct VerifySplitTunneling {
+struct TestSplitTunneling {
     static func main() throws {
         try testClassifiesValidDomainAndIPValues()
         try testRejectsInvalidValues()
@@ -40,7 +40,7 @@ struct VerifySplitTunneling {
         try testLegacySnapshotWithoutSplitTunnelFieldsDefaults()
         try testSnapshotRoundTripPreservesSplitTunnelProfiles()
         try testSelectingUnknownProfileIDFallsBackToFirstProfile()
-        print("verify_split_tunneling: all checks passed")
+        print("test_split_tunneling: all checks passed")
     }
 
     private static func testClassifiesValidDomainAndIPValues() throws {

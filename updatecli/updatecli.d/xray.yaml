@@ -38,8 +38,8 @@ targets:
     spec:
       # The release tag is appended as the last argument. The script prints to
       # stdout only when it changed (or under `diff` would change) a file, and
-      # with --verify fails when `just verify` fails, so nothing is committed.
-      command: scripts/bump-xray.sh --verify
+      # with --test fails when `just test` fails, so nothing is committed.
+      command: scripts/bump-xray.sh --test
 
 actions:
   pullrequest:

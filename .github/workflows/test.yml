@@ -1,4 +1,4 @@
-name: Verify
+name: Test
 
 on:
   pull_request:
@@ -9,16 +9,16 @@ permissions:
   contents: read
 
 concurrency:
-  group: verify-${{ github.ref }}
+  group: test-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  verify:
+  test:
     # Foundation's behaviour differs between macOS releases, so the checks run on
     # each supported one. The macos-15 image ships Xcode 26 but not as the default.
     # The xcode-27 preview image runs macOS 27 and has only Xcode 27.
     # Without Config/Local.xcconfig the build is signed ad hoc.
-    name: verify (macOS ${{ matrix.macos }})
+    name: macOS ${{ matrix.macos }}
     strategy:
       fail-fast: false
       matrix:
@@ -46,4 +46,4 @@ jobs:
       - name: Install just
         run: brew install just
 
-      - run: just verify
+      - run: just test

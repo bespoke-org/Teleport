@@ -1,6 +1,6 @@
 # Opens a pull request when XTLS/Xray-core publishes a new stable release.
-# Updatecli (updatecli/updatecli.d/xray.yaml) runs scripts/bump-xray.sh --verify
-# in its own clone, so `just verify` has to pass before anything is committed.
+# Updatecli (updatecli/updatecli.d/xray.yaml) runs scripts/bump-xray.sh --test
+# in its own clone, so `just test` has to pass before anything is committed.
 name: Xray update
 
 on:

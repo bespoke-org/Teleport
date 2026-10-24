@@ -9,14 +9,14 @@ private final class MutableTestClock {
 }
 
 @main
-private enum VerifyHelperRequestLedger {
+private enum TestHelperRequestLedger {
     static func main() throws {
         try verifyLookupLifecycleAndConflicts()
         try verifyCountEvictsOldestCompletedEntry()
         try verifyAgeEvictsExpiredEntries()
         try verifyInProgressEntriesAgeOnlyAfterCompletion()
         try verifyCapacityPreservesInProgressEntries()
-        print("verify_helper_request_ledger: all checks passed")
+        print("test_helper_request_ledger: all checks passed")
     }
 
     private static func verifyLookupLifecycleAndConflicts() throws {

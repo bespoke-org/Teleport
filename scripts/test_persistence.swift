@@ -2,7 +2,7 @@ import Foundation
 import Security
 
 @main
-struct VerifyPersistence {
+struct TestPersistence {
     static func main() throws {
         try testKeychainReadStatusClassification()
         try testFreshStoreHasNoSnapshotAndNoLoadError()
@@ -14,7 +14,7 @@ struct VerifyPersistence {
         try testShrinkingSaveKeepsThePreviousSnapshot()
         try testRetainedSnapshotsArePruned()
         try testUndecodableSnapshotIsKeptAndSavingIsRefused()
-        print("verify_persistence: all checks passed")
+        print("test_persistence: all checks passed")
     }
 
     /// Redirects the Application Support base directory to a throwaway location so
@@ -314,7 +314,7 @@ struct VerifyPersistence {
             fileManager: TempFileManager(root: root),
             keychainService: "dev.x.teleport.configuration.verify",
             keychainAccount: "verify-\(name)-\(UUID().uuidString)",
-            // Into the throwaway root, so a verify run does not write test noise
+            // Into the throwaway root, so a test run does not write test noise
             // into the log a real incident is read from.
             log: TeleportLog(directoryURL: root, fileName: "verify.log")
         )

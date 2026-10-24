@@ -285,7 +285,7 @@ private final class StoredReply: @unchecked Sendable {
 }
 
 @main
-private enum VerifyXPCTransport {
+private enum TestXPCTransport {
     static func main() async throws {
         try await verifiesExplicitAllowedClassesConfiguration()
         try await verifiesCommandRoutingAndNormalReplies()
@@ -297,7 +297,7 @@ private enum VerifyXPCTransport {
         try await verifiesInvalidationCreatesOneReplacement()
         try await verifiesDeadlineAndIgnoresLateReply()
         await verifiesInvalidResponseMapping()
-        print("verify_xpc_transport: all checks passed")
+        print("test_xpc_transport: all checks passed")
     }
 
     private static func verifiesExplicitAllowedClassesConfiguration() async throws {

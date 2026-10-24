@@ -1,7 +1,7 @@
 import Foundation
 
 @main
-struct VerifyConnectionProvider {
+struct TestConnectionProvider {
     static func main() async throws {
         testConnectionPresentationMapping()
         await testConnectionStateStorePublishesInitialAndUpdatedStates()
@@ -16,13 +16,13 @@ struct VerifyConnectionProvider {
         try await testLostRuntimeFailsTheSessionAndRestoresSettings()
         testFactorySelectsProviderByMode()
         try await testStoredNameSurvivesLoading()
-        print("verify_connection_provider: all checks passed")
+        print("test_connection_provider: all checks passed")
     }
 
     /// Loading re-parses each stored link to pick up parser fixes, but everything
     /// else the connection carries belongs to the stored connection. A rebuild that
     /// forgets a field drops it on every launch — which is what happened to names.
-    /// Redirects Application Support to a throwaway root, so a verify run neither
+    /// Redirects Application Support to a throwaway root, so a test run neither
     /// reads nor prunes the retained snapshots of the real installation.
     private final class TempFileManager: FileManager {
         let root: URL

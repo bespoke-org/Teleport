@@ -135,7 +135,7 @@ private final class RecordingExecutor: HelperCommandExecuting, @unchecked Sendab
 }
 
 @main
-private enum VerifyHelperCommandDispatch {
+private enum TestHelperCommandDispatch {
     static func main() async throws {
         try await verifyMatchingCommandsDispatchOnlyTheirExecutorMethod()
         try await verifyMalformedOversizedAndMismatchedRequestsNeverExecute()
@@ -151,7 +151,7 @@ private enum VerifyHelperCommandDispatch {
         try await verifyCompletedDuplicateReturnsExactBytesOnce()
         try await verifyInProgressDuplicateIsDeterministic()
         try await verifyChangedDuplicateConflicts()
-        print("verify_helper_command_dispatch: all checks passed")
+        print("test_helper_command_dispatch: all checks passed")
     }
 
     private static func verifyMatchingCommandsDispatchOnlyTheirExecutorMethod() async throws {

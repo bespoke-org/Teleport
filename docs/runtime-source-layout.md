@@ -115,7 +115,7 @@ Phase 4 is responsible for authoritative persisted helper sessions, reconciliati
 Run:
 
 ```bash
-just verify
+just test
 ```
 
-`verify-architecture-layout` requires the XPC source boundaries, rejects legacy socket symbols/files, and prevents XPC details from crossing into provider/UI layers.
+`test-architecture-layout` requires the XPC source boundaries, rejects legacy socket symbols/files, and prevents XPC details from crossing into provider/UI layers.

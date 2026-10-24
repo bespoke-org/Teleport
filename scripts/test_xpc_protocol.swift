@@ -11,7 +11,7 @@ struct XPCProtocolVerification {
         try verifyConfigurationBounds()
         try verifyDiagnosticsBounds()
         try verifyLeakGuardRoundTripAndBounds()
-        print("verify_xpc_protocol: all checks passed")
+        print("test_xpc_protocol: all checks passed")
     }
 
     private static func verifyExactRevisionAndStartRoundTrip() throws {

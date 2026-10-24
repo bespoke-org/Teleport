@@ -20,6 +20,6 @@ prepare-release X.Y.Z`), committed before the tag.
 
 ## Tests
 
-Run only the `just verify-*` recipes that cover the code you changed; `just verify` builds the app
-and runs every script, which is slow, and CI runs the rest. Run the full `just verify` before a
+Run only the `just test-*` recipes that cover the code you changed; `just test` builds the app
+and runs every script, which is slow, and CI runs the rest. Run the full `just test` before a
 release or when asked.

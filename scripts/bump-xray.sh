@@ -15,17 +15,17 @@
 # With DRY_RUN=true (set by `updatecli pipeline diff`) the change is reported
 # but not written.
 #
-# Usage: scripts/bump-xray.sh [--verify] vX.Y.Z
-#   --verify   run `just verify` after writing a change; a failure fails the script
+# Usage: scripts/bump-xray.sh [--test] vX.Y.Z
+#   --test     run `just test` after writing a change; a failure fails the script
 set -euo pipefail
 
-verify=false
-if [ "${1:-}" = "--verify" ]; then
-    verify=true
+run_tests=false
+if [ "${1:-}" = "--test" ]; then
+    run_tests=true
     shift
 fi
 if [ $# -ne 1 ] || ! [[ "$1" =~ ^v[0-9]+(\.[0-9]+)*$ ]]; then
-    echo "Usage: $0 [--verify] vX.Y.Z" >&2
+    echo "Usage: $0 [--test] vX.Y.Z" >&2
     exit 1
 fi
 
@@ -118,8 +118,8 @@ for file in $changed_files; do
 done
 install -m 755 "$xray" "$REPO_ROOT/teleport/Resources/xray"
 
-if [ "$verify" = true ]; then
-    (cd "$REPO_ROOT" && just verify) >&2
+if [ "$run_tests" = true ]; then
+    (cd "$REPO_ROOT" && just test) >&2
 fi
 
 echo "Updated Xray from $current_version to $VERSION:$changed_files"

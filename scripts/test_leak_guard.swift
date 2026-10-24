@@ -5,7 +5,7 @@ import Foundation
 /// is a pure function and this covers it directly — then hands the result to
 /// `pfctl -n`, which is the only authority on whether pf would accept it.
 @main
-struct VerifyLeakGuard {
+struct TestLeakGuard {
     static func main() throws {
         try testStandbyHasNoTunnelOrRootException()
         try testSessionPassesItsOwnTunnel()
@@ -17,7 +17,7 @@ struct VerifyLeakGuard {
         try testAProbeOpensItsServerAndClosesItAgain()
         try testConcurrentProbesDoNotCloseEachOthersPath()
         try testProbeAddressesStayInsideTheHelpersBound()
-        print("verify_leak_guard: all checks passed")
+        print("test_leak_guard: all checks passed")
     }
 
     private static let standby = LeakGuardRuleset.rules(
