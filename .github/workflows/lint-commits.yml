@@ -1,0 +1,21 @@
+name: Lint commits
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-commits:
+    runs-on: ubuntu-latest
+    steps:
+      # The PR head, not GitHub's merge commit, whose "Merge ... into ..." subject is not conventional.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just,git-cliff
+      - run: just lint-commits ${{ github.event.pull_request.base.sha }}
