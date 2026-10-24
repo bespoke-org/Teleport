@@ -201,7 +201,7 @@ package-open: package
 
 # Run all verification scripts after an Xcode build, so the privileged helper target
 # and app copy/sign phases are checked alongside the lightweight Swift scripts.
-test: build-debug test-core test-subscription-support test-connection-health test-connection-provider test-split-tunneling test-geodata test-persistence test-uplink-reconciliation test-leak-guard test-xpc-protocol test-helper-request-ledger test-helper-command-dispatch test-helper-xpc-endpoint test-xpc-transport test-privileged-helper-client test-mach-service-installation
+test: build-debug test-core test-subscription-support test-hysteria test-connection-health test-connection-provider test-split-tunneling test-geodata test-persistence test-uplink-reconciliation test-leak-guard test-xpc-protocol test-helper-request-ledger test-helper-command-dispatch test-helper-xpc-endpoint test-xpc-transport test-privileged-helper-client test-mach-service-installation
 
 # Run core parser/config verification
 test-core:
@@ -212,6 +212,15 @@ test-core:
 test-subscription-support:
     swiftc {{test_flags}} {{test_sources}} scripts/test_subscription_support.swift -o /tmp/teleport-test-subscription-support
     /tmp/teleport-test-subscription-support
+
+# Verify Hysteria 2 import, persistence, sharing and bundled-core configuration
+test-hysteria: fetch-xray
+    swiftc {{test_flags}} {{test_sources}} scripts/test_hysteria.swift -o /tmp/teleport-test-hysteria
+    /tmp/teleport-test-hysteria
+
+# Exercise TCP/UDP through a local Hysteria 2 server without changing macOS networking
+test-hysteria-integration: test-hysteria
+    python3 scripts/test_hysteria_integration.py /tmp/teleport-test-hysteria
 
 # Run connection health metadata verification
 test-connection-health:
@@ -286,7 +295,7 @@ test-mach-service-installation:
 # Line coverage of the test scripts over the sources they compile (views and most helper sources are not among them)
 coverage:
     rm -rf "{{coverage_dir}}" && mkdir -p "{{coverage_dir}}"
-    LLVM_PROFILE_FILE="{{coverage_dir}}/%m.profraw" just test_flags="-profile-generate -profile-coverage-mapping" test-core test-subscription-support test-connection-health test-connection-provider test-split-tunneling test-geodata test-persistence test-uplink-reconciliation test-leak-guard test-xpc-protocol test-helper-request-ledger test-helper-command-dispatch test-helper-xpc-endpoint test-xpc-transport test-privileged-helper-client test-mach-service-installation
+    LLVM_PROFILE_FILE="{{coverage_dir}}/%m.profraw" just test_flags="-profile-generate -profile-coverage-mapping" test-core test-subscription-support test-hysteria test-connection-health test-connection-provider test-split-tunneling test-geodata test-persistence test-uplink-reconciliation test-leak-guard test-xpc-protocol test-helper-request-ledger test-helper-command-dispatch test-helper-xpc-endpoint test-xpc-transport test-privileged-helper-client test-mach-service-installation
     xcrun llvm-profdata merge -sparse "{{coverage_dir}}"/*.profraw -o "{{coverage_dir}}/merged.profdata"
     xcrun llvm-cov report $(for binary in /tmp/teleport-test-*; do printf -- '-object %s ' "$binary"; done) -instr-profile "{{coverage_dir}}/merged.profdata" -ignore-filename-regex='scripts/' | tee "{{coverage_dir}}/report.txt"
 

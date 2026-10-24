@@ -31,7 +31,9 @@ nonisolated struct SubscriptionImportProcessor {
             }
             do {
                 let configuration = try parser.parse(rawLink)
-                let sourceEntryID = rawLink.trimmingCharacters(in: .whitespacesAndNewlines)
+                let sourceEntryID = configuration.protocolType == .hysteria
+                    ? configuration.duplicateFilterIdentity
+                    : rawLink.trimmingCharacters(in: .whitespacesAndNewlines)
                 // Exact repetitions share a refresh identity even when optional
                 // endpoint deduplication is off. Keeping both breaks reconciliation.
                 guard seenEntryIDs.insert(sourceEntryID).inserted else { continue }
@@ -54,7 +56,7 @@ nonisolated struct SubscriptionImportProcessor {
         return result
     }
 
-    private static func skipReason(for error: Error) -> String {
+    static func skipReason(for error: Error) -> String {
         // Parser errors may contain provider-supplied values. Summarize their
         // category instead of persisting credentials or arbitrary text in status.
         guard let error = error as? ConfigurationError else { return "Invalid connection settings" }
@@ -65,6 +67,8 @@ nonisolated struct SubscriptionImportProcessor {
         case .missingParameter: return "Missing required connection parameters"
         case .invalidUUID: return "Invalid VLESS user ID"
         case .missingPassword: return "Missing Trojan password"
+        case .invalidXrayJSON: return "Invalid Xray JSON configuration"
+        case .invalidHysteria(let reason): return reason
         default: return "Invalid connection settings"
         }
     }

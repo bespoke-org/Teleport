@@ -4,6 +4,7 @@ import Foundation
 struct TestSubscriptionSupport {
     static func main() throws {
         try testXrayJSONSubscription()
+        try testMalformedJSONPaste()
         try testMixedJSONAndSkipReasons()
         try testUnsupportedJSONSettingsAreNotLost()
         try testLocalJSONSettings()
@@ -51,6 +52,17 @@ struct TestSubscriptionSupport {
         precondition(reality["serverName"] as? String == config.serverName)
     }
 
+    private static func testMalformedJSONPaste() throws {
+        for proto in ["vless", "trojan", "hysteria"] {
+            do {
+                _ = try ConnectionLinkParser().parse("{\"outbounds\":[{\"protocol\":\"\(proto)\"")
+                preconditionFailure("Malformed JSON was accepted")
+            } catch ConfigurationError.invalidXrayJSON {
+                // A JSON syntax error belongs to the format, not a protocol.
+            }
+        }
+    }
+
     private static func xrayProfile() throws -> [String: Any] {
         let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .appendingPathComponent("fixtures/subscriptions/xray-single.json")
@@ -88,7 +100,7 @@ struct TestSubscriptionSupport {
         let result = try importJSON([valid, hysteria, shadowsocks, balanced, xhttp, 42] as [Any])
         precondition(result.importedEntries.count == 1)
         precondition(result.skippedCount == 5)
-        precondition(result.skippedReasons["Hysteria is not supported"] == 1)
+        precondition(result.skippedReasons.keys.contains { $0.contains("Hysteria") })
         precondition(result.skippedReasons["Shadowsocks is not supported"] == 1)
         precondition(result.statusMessage!.contains("Imported 1, skipped 5"))
         precondition(result.statusMessage!.contains("Balancer/observatory"))
@@ -101,7 +113,7 @@ struct TestSubscriptionSupport {
             precondition(error.localizedDescription.contains("Shadowsocks"))
             precondition(error.localizedDescription.contains("skipped 2"))
         }
-        let mixedLinks = sampleLinks().joined(separator: "\n") + "\nss://REDACTED\nhy2://REDACTED"
+        let mixedLinks = sampleLinks().joined(separator: "\n") + "\nss://REDACTED\nhy2://"
         let mixed = try importPayload(Data(mixedLinks.utf8))
         precondition(mixed.importedEntries.count == 2 && mixed.skippedCount == 2)
     }

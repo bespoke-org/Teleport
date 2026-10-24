@@ -50,6 +50,8 @@ nonisolated struct SubscriptionPayloadDecoder {
                     return .link(try XraySubscriptionProfileParser().parse(profile))
                 } catch let error as XraySubscriptionProfileError {
                     return .skipped(error.reason)
+                } catch let error as ConfigurationError {
+                    return .skipped(SubscriptionImportProcessor.skipReason(for: error))
                 } catch {
                     return .skipped("Invalid Xray profile")
                 }
@@ -63,8 +65,8 @@ nonisolated struct SubscriptionPayloadDecoder {
         return links.map { link in
             let scheme = link.components(separatedBy: "://")[0].lowercased()
             switch scheme {
-            case "vless", "trojan": return .link(link)
-            case "hysteria", "hysteria2", "hy2": return .skipped("Hysteria is not supported")
+            case "vless", "trojan", "hysteria2", "hy2": return .link(link)
+            case "hysteria": return .skipped("Hysteria 1 is not supported")
             case "ss": return .skipped("Shadowsocks is not supported")
             default: return .skipped("Unsupported subscription link protocol")
             }

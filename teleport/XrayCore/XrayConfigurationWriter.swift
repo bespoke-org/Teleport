@@ -570,6 +570,8 @@ nonisolated struct XrayConfigurationWriter {
     private func makeOutboundSettings(configuration: ConnectionConfiguration, addressOverride: String? = nil) -> [String: Any] {
         let serverAddress = addressOverride ?? configuration.host
         switch configuration.protocolType {
+        case .hysteria:
+            return ["version": 2, "address": serverAddress, "port": configuration.port]
         case .vless:
             var user: [String: Any] = [
                 "id": configuration.vlessUserID ?? "",
@@ -636,6 +638,7 @@ nonisolated struct XrayConfigurationWriter {
     }
 
     private func makeStreamSettings(configuration: ConnectionConfiguration) -> [String: Any] {
+        if configuration.protocolType == .hysteria { return configuration.hysteriaStreamSettings }
         // WireGuard supplies its own transport and encryption; emitting a
         // network/security pair here would only describe unused placeholder
         // fields. Callers still add `sockopt` on top of the empty result.

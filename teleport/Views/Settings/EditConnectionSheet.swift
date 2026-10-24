@@ -31,7 +31,7 @@ struct EditConnectionSheet: View {
                 .textFieldStyle(.roundedBorder)
                 .focused($isNameFieldFocused)
 
-            TextField("vless://, trojan://, wireguard://, or [Interface]…", text: $configurationDraft, axis: .vertical)
+            TextField("vless://, trojan://, hy2://, wireguard://, or configuration…", text: $configurationDraft, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .font(.caption.monospaced())
                 .lineLimit(6...16)
@@ -94,7 +94,7 @@ struct EditConnectionSheet: View {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
-        panel.message = "Choose a WireGuard configuration file"
+        panel.message = "Choose an Xray JSON or WireGuard configuration file"
 
         guard panel.runModal() == .OK,
               let url = panel.url else {
