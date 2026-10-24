@@ -4,7 +4,7 @@
 
 The app expects:
 
-- `teleport/Resources/xray` — bundled arm64 Xray executable
+- `teleport/Resources/xray` — bundled arm64 Xray executable; not kept in git, `scripts/fetch-xray.sh` creates it and `just build` runs that script when the file is missing or does not match the pin
 - `teleport/Resources/xray-assets/geoip.dat`
 - `teleport/Resources/xray-assets/geosite.dat`
 

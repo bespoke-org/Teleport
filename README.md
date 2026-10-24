@@ -150,7 +150,7 @@ To replace the bundled Xray with the official release build for a given version:
 scripts/fetch-xray.sh v26.6.27
 ```
 
-The script checks the archive against the digest XTLS publishes and the executable against the pin in `BundledArtifactPolicy.swift`; when upgrading, update the pin to the digest it prints and run it again. Licenses of the bundled components are in `THIRD_PARTY_NOTICES.md`.
+The script checks the archive against the digest XTLS publishes and the executable against the pin in `BundledArtifactPolicy.swift`; when upgrading, update the pin to the digest it prints and run it again. The executable is not kept in git: `just build` runs the script when `teleport/Resources/xray` is missing or does not match the pin, and a build from Xcode fails until the script has been run once. Licenses of the bundled components are in `THIRD_PARTY_NOTICES.md`.
 
 Formatting follows `.swift-format` (four-space indent, 160 columns). Check with `swift format lint -r teleport Shared TeleportPrivilegedHelper scripts`.
 

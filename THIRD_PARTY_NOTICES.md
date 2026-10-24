@@ -11,7 +11,7 @@ dependencies; everything else it links is part of the macOS SDK.
 - Source: https://github.com/XTLS/Xray-core, tag `v26.6.27`
 - License: Mozilla Public License 2.0, https://github.com/XTLS/Xray-core/blob/main/LICENSE
 
-The committed executable is byte for byte the `xray` file from the official
+The bundled executable is byte for byte the `xray` file from the official
 release asset `Xray-macos-arm64-v8a.zip` of that tag (SHA-256
 `650e6edf792ce808554e94f891db5271c77a7c2e80188beaafbf24883b3b84a0`, the same
 value `BundledArtifactPolicy.swift` pins). `scripts/fetch-xray.sh` downloads

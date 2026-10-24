@@ -9,3 +9,5 @@ Config/Local.xcconfig
 review-report.md
 openspec/
 docs/superpowers/
+# Fetched by scripts/fetch-xray.sh (just build runs it when needed).
+teleport/Resources/xray

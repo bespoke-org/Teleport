@@ -22,6 +22,7 @@ Format is based on [_Keep a changelog_](https://keepachangelog.com) and uses
 - The Team ID used for signing and for the app/helper signature checks comes from `Config/Local.xcconfig` instead of the project file and source.
 - The app talks to the privileged helper over an authenticated launchd XPC Mach service with typed, size-bounded messages. The previous helper installation is removed with `just reset-legacy-privileged-helper`.
 - Bundled Xray runtime updated to 26.6.27.
+- The Xray executable is no longer kept in the repository. `just build` fetches it with `scripts/fetch-xray.sh` when it is missing or does not match the pin.
 - A rebuilt helper is detected by its code-directory hash; a rebuild that only re-signs the helper no longer asks for an administrator password.
 - The helper is installed before a connect changes anything else on the machine, and a failed install puts the previous installation back.
 - The start script undoes its routes and stops Xray on any failure, including one `set -e` stops on.

@@ -136,6 +136,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = C2DEAC172F96D9FE00CCB832 /* Build configuration list for PBXNativeTarget "teleport" */;
 			buildPhases = (
+				C2A0F1012FAC000000CCB832 /* Check Bundled Xray */,
 				C2DEAC082F96D9FB00CCB832 /* Sources */,
 				C2DEAC092F96D9FB00CCB832 /* Frameworks */,
 				C2DEAC0A2F96D9FB00CCB832 /* Resources */,
@@ -228,6 +229,27 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
+		C2A0F1012FAC000000CCB832 /* Check Bundled Xray */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/teleport/Resources/xray",
+				"$(SRCROOT)/teleport/HelperInstallation/BundledArtifactPolicy.swift",
+			);
+			name = "Check Bundled Xray";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/xray-pin-check.stamp",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -eu\nXRAY=\"$SRCROOT/teleport/Resources/xray\"\nPIN=$(sed -n 's/.*xraySHA256: \"\\([0-9a-f]\\{64\\}\\)\".*/\\1/p' \"$SRCROOT/teleport/HelperInstallation/BundledArtifactPolicy.swift\")\nif [ ! -f \"$XRAY\" ] || [ \"$(shasum -a 256 \"$XRAY\" | awk '{print $1}')\" != \"$PIN\" ]; then\n  echo \"error: teleport/Resources/xray is missing or does not match the pinned digest in BundledArtifactPolicy.swift; run scripts/fetch-xray.sh (or just build)\" >&2\n  exit 1\nfi\nmkdir -p \"$DERIVED_FILE_DIR\"\ntouch \"$DERIVED_FILE_DIR/xray-pin-check.stamp\"\n";
+		};
 		C2B011D12FAA000000CCB832 /* Copy Bundled Connections */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;

@@ -20,8 +20,18 @@ default:
 clean:
     rm -rf {{derived_data}} {{dist_dir}}
 
+# Download teleport/Resources/xray unless it is already there and matches the pin in BundledArtifactPolicy.swift
+fetch-xray:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    pin=$(sed -n 's/.*xraySHA256: "\([0-9a-f]\{64\}\)".*/\1/p' teleport/HelperInstallation/BundledArtifactPolicy.swift)
+    if [[ -f teleport/Resources/xray && "$(shasum -a 256 teleport/Resources/xray | awk '{print $1}')" == "$pin" ]]; then
+      exit 0
+    fi
+    scripts/fetch-xray.sh
+
 # Build the app. Usage: just build [Debug|Release]
-build configuration="Debug":
+build configuration="Debug": fetch-xray
     xcodebuild \
       -project {{project}} \
       -scheme {{scheme}} \
