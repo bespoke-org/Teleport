@@ -65,6 +65,10 @@ final class AppViewModel: ObservableObject {
 
     private let parser: ConnectionLinkParser
     private let store: ConfigurationStore
+    private let bundledSeeder: BundledConfigurationSeeder
+    /// Names of the subscription lists shipped with the app. Nothing imports them
+    /// on its own; see `addBundledSubscriptions`.
+    let bundledSubscriptionTitles: [String]
     private let connectionProviderFactory: ConnectionProviderFactory
     private var connectionProvider: any ConnectionProvider
     private let subscriptionClient: SubscriptionClient
@@ -165,6 +169,9 @@ final class AppViewModel: ObservableObject {
     ) {
         self.parser = parser
         self.store = store
+        let bundledSeeder = BundledConfigurationSeeder(parser: parser)
+        self.bundledSeeder = bundledSeeder
+        self.bundledSubscriptionTitles = bundledSeeder.subscriptionTitles()
         self.connectionProviderFactory = connectionProviderFactory
         self.leakGuard = leakGuard
         self.subscriptionClient = subscriptionClient
@@ -177,17 +184,14 @@ final class AppViewModel: ObservableObject {
             "launched build \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?") (\(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?")), state dumps \(SystemStateDump.isEnabled ? "on" : "off")"
         )
 
-        var snapshot = store.load()
+        let snapshot = store.load()
         var loadErrorMessage: String?
         if let loadError = store.lastLoadError {
             // Keychain read failed (e.g. still locked right after boot, or the app's
             // signature changed since the item was written) rather than there being no
-            // saved data. Surface it instead of silently seeding/showing an empty state,
-            // since seeding here would go on to overwrite the real Keychain item.
+            // saved data. Surface it instead of silently showing an empty state, since
+            // a save from here would go on to overwrite the real Keychain item.
             loadErrorMessage = loadError.localizedDescription
-        } else if !store.hasSavedSnapshot {
-            snapshot = BundledConfigurationSeeder(parser: parser).seed(snapshot)
-            try? store.save(snapshot)
         }
 
         lastError = loadErrorMessage
@@ -540,6 +544,28 @@ final class AppViewModel: ObservableObject {
             return addSubscription(from: trimmed)
         } else {
             return addManualConnection(from: trimmed)
+        }
+    }
+
+    /// Adds the subscription lists from `bundled-connections.json`. They point at
+    /// servers run by third parties the user has no relation to, so they are
+    /// never imported on their own: the user adds them from Settings, next to
+    /// the warning that says what that means.
+    func addBundledSubscriptions() {
+        let seeded = bundledSeeder.seed(makeSnapshot())
+        let newSources = seeded.subscriptionSources.filter { subscriptionSourcesByID[$0.id] == nil }
+        let newConnections = seeded.savedConnections.filter { savedConnectionsByID[$0.id] == nil }
+        guard !newSources.isEmpty || !newConnections.isEmpty else { return }
+
+        subscriptionSources.append(contentsOf: newSources)
+        savedConnections.append(contentsOf: newConnections)
+        rebuildSubscriptionSourceIndexes()
+        rebuildSavedConnectionIndexes()
+        normalizeSelection()
+        setStoredError(nil)
+        persistSettingError()
+        for (index, source) in newSources.enumerated() {
+            refreshSubscription(id: source.id, autoSelectFirstImported: index == 0 && savedConnections.isEmpty)
         }
     }
 

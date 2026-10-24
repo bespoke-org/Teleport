@@ -10,10 +10,17 @@ struct BundledConfigurationSeeder {
         self.parser = parser
     }
 
+    /// Display names of the bundled subscriptions, for offering them to the user
+    /// before anything is imported.
+    func subscriptionTitles() -> [String] {
+        guard let seed = loadSeed() else { return [] }
+        return seed.subscriptions.compactMap { subscription in
+            subscription.validatedURL.map(subscription.resolvedDisplayName(for:))
+        }
+    }
+
     func seed(_ snapshot: AppSnapshot, now: Date = Date()) -> AppSnapshot {
-        guard let seedURL = bundle.url(forResource: "bundled-connections", withExtension: "json"),
-              let data = try? Data(contentsOf: seedURL),
-              let seed = try? decoder.decode(BundledConfigurationSeed.self, from: data) else {
+        guard let seed = loadSeed() else {
             return snapshot
         }
 
@@ -72,6 +79,14 @@ struct BundledConfigurationSeeder {
             showsLatencyInMenuBarPicker: snapshot.showsLatencyInMenuBarPicker,
             animatesMenuBarIcon: snapshot.animatesMenuBarIcon
         )
+    }
+
+    private func loadSeed() -> BundledConfigurationSeed? {
+        guard let seedURL = bundle.url(forResource: "bundled-connections", withExtension: "json"),
+              let data = try? Data(contentsOf: seedURL) else {
+            return nil
+        }
+        return try? decoder.decode(BundledConfigurationSeed.self, from: data)
     }
 }
 

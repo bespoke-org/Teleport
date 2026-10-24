@@ -19,11 +19,15 @@ struct ConnectionsSettingsView: View {
             if viewModel.savedConnections.isEmpty && viewModel.subscriptionSources.isEmpty {
                 VStack {
                     Spacer(minLength: 0)
-                    ContentUnavailableView(
-                        "No connections",
-                        systemImage: "tray",
-                        description: Text("Add a VLESS, Trojan, or subscription link to get started.")
-                    )
+                    ContentUnavailableView {
+                        Label("No connections", systemImage: "tray")
+                    } description: {
+                        Text("Add a VLESS, Trojan, WireGuard, or subscription link to get started.")
+                    } actions: {
+                        if !viewModel.bundledSubscriptionTitles.isEmpty {
+                            bundledSubscriptionsOffer
+                        }
+                    }
                     .frame(maxWidth: .infinity)
                     Spacer(minLength: 0)
                 }
@@ -189,6 +193,22 @@ struct ConnectionsSettingsView: View {
         .contextMenu {
             Button("Rename…") { beginRename(connection) }
         }
+    }
+
+    /// The subscription lists shipped with the app are offered here rather than
+    /// imported on first launch: whoever runs those servers sees the traffic.
+    private var bundledSubscriptionsOffer: some View {
+        VStack(spacing: 8) {
+            Button("Add community subscriptions") {
+                viewModel.addBundledSubscriptions()
+            }
+            Text("Adds \(viewModel.bundledSubscriptionTitles.joined(separator: " and ")): public lists of servers run by anonymous third parties. Everything you send through them can be read or altered by whoever operates them.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 440)
+        }
+        .padding(.top, 4)
     }
 
     @ViewBuilder
