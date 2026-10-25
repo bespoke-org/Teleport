@@ -9,14 +9,14 @@ struct AddConnectionSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Add connection")
+            Text("Add portal")
                 .font(.headline)
 
-            Text("Paste a VLESS, Trojan, Hysteria 2, WireGuard, or subscription link, Xray JSON, or a WireGuard configuration.")
+            Text("Paste a portal link, subscription URL, or configuration.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
-            TextField("vless://, trojan://, hy2://, wireguard://, https://subscription…, or configuration…", text: $draftLink, axis: .vertical)
+            TextField("Link or configuration", text: $draftLink, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .font(.caption.monospaced())
                 .lineLimit(3...12)
@@ -38,7 +38,7 @@ struct AddConnectionSheet: View {
             }
 
             HStack {
-                Button("Import file…") {
+                Button("Choose file…") {
                     importConfigurationFile()
                 }
 
@@ -72,9 +72,12 @@ struct AddConnectionSheet: View {
     /// before it is parsed.
     private func importConfigurationFile() {
         let panel = NSOpenPanel()
+        panel.preventsApplicationTerminationWhenModal = false
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
-        panel.message = "Choose an Xray JSON or WireGuard configuration file"
+        panel.title = "Choose configuration file"
+        panel.message = "Select an Xray JSON or WireGuard configuration."
+        panel.prompt = "Choose"
 
         guard panel.runModal() == .OK,
               let url = panel.url else {
@@ -82,7 +85,7 @@ struct AddConnectionSheet: View {
         }
 
         guard let contents = try? String(contentsOf: url, encoding: .utf8) else {
-            viewModel.reportImportFailure("That file is not readable as text")
+            viewModel.reportImportFailure("This file couldn’t be read. Choose a text configuration file.")
             return
         }
 

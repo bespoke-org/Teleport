@@ -560,7 +560,7 @@ enum ConfigurationStoreError: LocalizedError {
         case let .keychainWriteFailed(status):
             return "Failed to save Teleport's encryption key to Keychain: OSStatus \(status)"
         case let .keychainReadFailed(status):
-            return "Failed to read Teleport's encryption key from Keychain (OSStatus \(status)). Your saved connections were not lost — unlock Keychain Access and restart Teleport."
+            return "Failed to read Teleport's encryption key from Keychain (OSStatus \(status)). Your saved portals were not lost — unlock Keychain Access and restart Teleport."
         case .encryptionKeyMissing:
             return "Teleport's saved settings are encrypted, but the key is missing from your Keychain. Nothing was deleted, and Teleport will not overwrite them."
         case .snapshotCouldNotBeOpened:

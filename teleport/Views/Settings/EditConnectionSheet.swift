@@ -24,7 +24,7 @@ struct EditConnectionSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Edit connection")
+            Text("Edit portal")
                 .font(.headline)
 
             TextField("Name", text: $nameDraft, prompt: Text(connection.configuration.remarks ?? connection.displayName))
@@ -92,6 +92,7 @@ struct EditConnectionSheet: View {
 
     private func importConfigurationFile() {
         let panel = NSOpenPanel()
+        panel.preventsApplicationTerminationWhenModal = false
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         panel.message = "Choose an Xray JSON or WireGuard configuration file"

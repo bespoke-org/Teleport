@@ -12,7 +12,7 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Teleport")
                 .font(.title2.bold())
-            Text("This app runs from the menu bar. Open the status item to configure your connection link and control Xray.")
+            Text("This app runs from the menu bar. Open Settings to add portals, and use the menu bar to connect.")
                 .foregroundStyle(.secondary)
         }
         .padding()
