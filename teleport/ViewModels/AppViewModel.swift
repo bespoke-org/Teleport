@@ -50,6 +50,8 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var subscriptionConnectionSort: SubscriptionConnectionSort
     @Published private(set) var showsLatencyInMenuBarPicker: Bool
     @Published private(set) var animatesMenuBarIcon: Bool
+    @Published private(set) var showsInDock: Bool
+    @Published private(set) var connectsOnLaunch: Bool
     @Published private(set) var isLeakGuardEnabled: Bool
     @Published private(set) var splitTunnelProfiles: [SplitTunnelProfile]
     @Published private(set) var selectedSplitTunnelProfileID: UUID?
@@ -136,6 +138,7 @@ final class AppViewModel: ObservableObject {
     private var pendingConnectionSelectionID: UUID?
     private var connectionTask: (operationID: UUID, task: Task<Void, Never>)?
     private var hasObservedInitialConnectionState = false
+    private var isLaunchConnectionPending = false
     private var isTerminating = false
     private var persistWorkItem: DispatchWorkItem?
     private var splitTunnelApplyWorkItem: DispatchWorkItem?
@@ -211,6 +214,9 @@ final class AppViewModel: ObservableObject {
         subscriptionConnectionSort = snapshot.subscriptionConnectionSort
         showsLatencyInMenuBarPicker = snapshot.showsLatencyInMenuBarPicker
         animatesMenuBarIcon = snapshot.animatesMenuBarIcon
+        showsInDock = snapshot.showsInDock
+        connectsOnLaunch = snapshot.connectsOnLaunch
+        isLaunchConnectionPending = snapshot.connectsOnLaunch && loadErrorMessage == nil
         splitTunnelProfiles = snapshot.splitTunnelProfiles
         selectedSplitTunnelProfileID = snapshot.selectedSplitTunnelProfileID
         isSplitTunnelEnabled = snapshot.isSplitTunnelEnabled
@@ -800,6 +806,7 @@ final class AppViewModel: ObservableObject {
             return
         }
 
+        isLaunchConnectionPending = false
         let previousProvider = connectionProvider
         connectionStateTask?.cancel()
         connectionMode = mode
@@ -834,6 +841,19 @@ final class AppViewModel: ObservableObject {
     func setAnimatesMenuBarIcon(_ animates: Bool) {
         guard animates != animatesMenuBarIcon else { return }
         animatesMenuBarIcon = animates
+        schedulePersist()
+    }
+
+    func setConnectsOnLaunch(_ connectsOnLaunch: Bool) {
+        guard connectsOnLaunch != self.connectsOnLaunch else { return }
+        self.connectsOnLaunch = connectsOnLaunch
+        if !connectsOnLaunch { isLaunchConnectionPending = false }
+        schedulePersist()
+    }
+
+    func setShowsInDock(_ showsInDock: Bool) {
+        guard showsInDock != self.showsInDock else { return }
+        self.showsInDock = showsInDock
         schedulePersist()
     }
 
@@ -1299,6 +1319,7 @@ final class AppViewModel: ObservableObject {
     }
 
     func connect() {
+        isLaunchConnectionPending = false
         guard let selectedConfiguration else {
             setStoredError("Add and select a connection first")
             return
@@ -1313,6 +1334,7 @@ final class AppViewModel: ObservableObject {
     /// A disconnect the user asked for. The guard comes off with it: someone who
     /// disconnects on purpose is asking to be back on the network, not filtered.
     func disconnect() {
+        isLaunchConnectionPending = false
         releaseLeakGuard()
         tearDownSession()
     }
@@ -1621,6 +1643,7 @@ final class AppViewModel: ObservableObject {
             }.value
             self?.deferredProxyRestoreFailedAt = failed ? SuspendingClock().now : nil
             self?.deferredProxyRestoreTask = nil
+            self?.connectOnLaunchIfNeeded()
         }
     }
 
@@ -1683,6 +1706,24 @@ final class AppViewModel: ObservableObject {
             break
         }
         updateMenuBarAnimation()
+        connectOnLaunchIfNeeded()
+    }
+
+    private func connectOnLaunchIfNeeded() {
+        guard isLaunchConnectionPending, hasObservedInitialConnectionState else { return }
+        switch connectionState {
+        case .preparing:
+            return
+        case .idle:
+            // Finish restoring old proxy settings before starting a new session.
+            guard deferredProxyRestoreTask == nil else { return }
+            isLaunchConnectionPending = false
+            guard deferredProxyRestoreFailedAt == nil, canConnect else { return }
+            connect()
+        case .connected, .failed, .awaitingUserApproval, .connecting, .disconnecting:
+            // An existing session or a failed recovery consumes the launch attempt.
+            isLaunchConnectionPending = false
+        }
     }
 
     private var hasEstablishedConnection: Bool {
@@ -2243,6 +2284,8 @@ final class AppViewModel: ObservableObject {
             subscriptionConnectionSort: subscriptionConnectionSort,
             showsLatencyInMenuBarPicker: showsLatencyInMenuBarPicker,
             animatesMenuBarIcon: animatesMenuBarIcon,
+            showsInDock: showsInDock,
+            connectsOnLaunch: connectsOnLaunch,
             splitTunnelProfiles: splitTunnelProfiles,
             selectedSplitTunnelProfileID: selectedSplitTunnelProfileID,
             isSplitTunnelEnabled: isSplitTunnelEnabled,

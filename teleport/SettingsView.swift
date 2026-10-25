@@ -3,58 +3,106 @@ import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var viewModel: AppViewModel
-    @State private var selectedSection: SettingsSection? = .general
+    @State private var navigation = SettingsNavigation()
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
     var body: some View {
-        NavigationSplitView(columnVisibility: .constant(.all)) {
-            List(SettingsSection.allCases, selection: $selectedSection) { section in
-                Label(section.title, systemImage: section.systemImage)
+        NavigationSplitView(columnVisibility: $columnVisibility) {
+            List(SettingsSection.allCases, selection: Binding<SettingsSection?>(
+                get: { navigation.section },
+                set: { section in
+                    if let section { navigation.select(section) }
+                }
+            )) { section in
+                Label {
+                    Text(section.title)
+                } icon: {
+                    SettingsSidebarIcon(section: section)
+                }
                     .tag(section as SettingsSection?)
             }
             .listStyle(.sidebar)
             .frame(minWidth: 200, maxHeight: .infinity)
             .navigationSplitViewColumnWidth(200)
-            .toolbar(removing: .sidebarToggle)
+            .background(SettingsSidebarLayout())
         } detail: {
             selectedSectionView
-                .navigationTitle((selectedSection ?? .general).title)
+                .frame(minWidth: 560)
+                .padding(.top, 16)
+                .navigationTitle(navigation.section.title)
         }
         .toolbar {
+            ToolbarItemGroup(placement: .navigation) {
+                Button("Back", systemImage: "chevron.left") {
+                    navigation.goBack()
+                }
+                .labelStyle(.iconOnly)
+                .help("Back")
+                .keyboardShortcut("[", modifiers: .command)
+                .disabled(!navigation.canGoBack)
+
+                Button("Forward", systemImage: "chevron.right") {
+                    navigation.goForward()
+                }
+                .labelStyle(.iconOnly)
+                .help("Forward")
+                .keyboardShortcut("]", modifiers: .command)
+                .disabled(!navigation.canGoForward)
+            }
             ToolbarItem(placement: .principal) {
                 Color.clear.frame(width: 0, height: 0)
             }
         }
         .navigationSplitViewStyle(.balanced)
-        .frame(minWidth: 760, minHeight: 500)
-        .onAppear {
-            if selectedSection == nil {
-                selectedSection = .general
-            }
-        }
+        .frame(minHeight: 500)
     }
 
     @ViewBuilder
     private var selectedSectionView: some View {
-        switch selectedSection ?? .general {
+        switch navigation.section {
         case .general:
             GeneralSettingsView(viewModel: viewModel)
         case .connections:
             ConnectionsSettingsView(viewModel: viewModel)
         case .splitTunneling:
-            SplitTunnelingSettingsView(viewModel: viewModel, onOpenGeodata: { selectedSection = .geodata })
+            SplitTunnelingSettingsView(viewModel: viewModel, onOpenGeodata: { navigation.select(.geodata) })
         case .geodata:
             GeodataSettingsView(viewModel: viewModel)
-        case .nerdShit:
-            NerdShitSettingsView(viewModel: viewModel)
+        case .advanced:
+            AdvancedSettingsView(viewModel: viewModel)
+        case .logs:
+            LogsSettingsView(viewModel: viewModel)
         case .about:
             AboutSettingsView()
         }
     }
 }
 
+private struct SettingsSidebarIcon: View {
+    let section: SettingsSection
+
+    var body: some View {
+        Image(systemName: section.systemImage)
+            .resizable()
+            .scaledToFit()
+            .symbolVariant(.none)
+            .symbolRenderingMode(.monochrome)
+            .font(.system(size: 13, weight: .regular))
+            .foregroundStyle(.white)
+            .frame(width: 13, height: 13)
+            .frame(width: 20, height: 20)
+            .background(section.iconColor.gradient, in: RoundedRectangle(cornerRadius: 5))
+            .overlay {
+                RoundedRectangle(cornerRadius: 5)
+                    .strokeBorder(.white.opacity(0.2), lineWidth: 0.5)
+            }
+            .shadow(color: .black.opacity(0.12), radius: 1, y: 1)
+            .accessibilityHidden(true)
+    }
+}
+
 private struct GeneralSettingsView: View {
     @ObservedObject var viewModel: AppViewModel
-    @State private var isConfirmingHelperUninstall = false
 
     var body: some View {
         Form {
@@ -69,65 +117,60 @@ private struct GeneralSettingsView: View {
                         Text(mode.displayName).tag(mode)
                     }
                 } label: {
-                    Text("Teleport mode")
-                    Text("System Proxy routes apps that respect macOS proxy settings. TUN routes the whole device through Xray TUN and requires administrator approval. Disconnect before changing modes.")
+                    Text("Connection mode")
+                    Text(modeDescription(for: viewModel.connectionMode))
                 }
+                .pickerStyle(.menu)
                 .disabled(!viewModel.canChangeSelection || viewModel.hasActiveConnectionSession)
-            }
 
-            Section {
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("HTTP/HTTPS proxy port")
-                        Text("Used for macOS Web Proxy and Secure Web Proxy settings.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    TextField(
-                        "8080",
-                        value: Binding(
-                            get: { viewModel.proxyEndpoint.httpPort },
-                            set: { viewModel.setProxyEndpoint(httpPort: $0) }
-                        ),
-                        format: .number.grouping(.never)
+                Toggle(
+                    isOn: Binding(
+                        get: { viewModel.isLeakGuardEnabled },
+                        set: { viewModel.setLeakGuardEnabled($0) }
                     )
-                    .labelsHidden()
-                    .multilineTextAlignment(.trailing)
-                    .frame(width: 80)
-                    .textFieldStyle(.roundedBorder)
-                    .disabled(viewModel.hasActiveConnectionSession)
+                ) {
+                    Text("Protect traffic during tunnel interruptions")
+                    Text(viewModel.connectionMode == .tun
+                        ? "Blocks apps from using your regular internet connection while the tunnel reconnects. Local network access and DNS remain available."
+                        : "Available in TUN mode.")
                 }
-
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("SOCKS5 proxy port")
-                        Text("Used for local SOCKS proxy clients and macOS SOCKS settings.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    TextField(
-                        "1080",
-                        value: Binding(
-                            get: { viewModel.proxyEndpoint.socksPort },
-                            set: { viewModel.setProxyEndpoint(socksPort: $0) }
-                        ),
-                        format: .number.grouping(.never)
-                    )
-                    .labelsHidden()
-                    .multilineTextAlignment(.trailing)
-                    .frame(width: 80)
-                    .textFieldStyle(.roundedBorder)
-                    .disabled(viewModel.hasActiveConnectionSession)
-                }
+                .disabled(viewModel.connectionMode != .tun)
+                .help("If a hotel or airport sign-in page will not load, temporarily turn off tunnel protection.")
             } header: {
-                Text("Local proxy ports")
+                Text("Connection")
             } footer: {
-                Text(proxyPortsFooter)
+                if let restriction = modeRestriction {
+                    Text(restriction)
+                }
             }
 
-            Section {
+            Section("Menu bar and Dock") {
+                Toggle(
+                    isOn: Binding(
+                        get: { viewModel.showsInDock },
+                        set: { viewModel.setShowsInDock($0) }
+                    )
+                ) {
+                    Text("Show Teleport in Dock")
+                    Text("Takes effect when Settings closes.")
+                }
+
+                Toggle(
+                    "Animate menu bar icon",
+                    isOn: Binding(
+                        get: { viewModel.animatesMenuBarIcon },
+                        set: { viewModel.setAnimatesMenuBarIcon($0) }
+                    )
+                )
+
+                Toggle(
+                    "Show connection latency",
+                    isOn: Binding(
+                        get: { viewModel.showsLatencyInMenuBarPicker },
+                        set: { viewModel.setShowsLatencyInMenuBarPicker($0) }
+                    )
+                )
+
                 Picker(
                     selection: Binding(
                         get: { viewModel.subscriptionConnectionSort },
@@ -138,90 +181,33 @@ private struct GeneralSettingsView: View {
                         Text(sort.displayName).tag(sort)
                     }
                 } label: {
-                    Text("Configs order")
-                    Text("Choose how imported subscription configs are ordered in Settings and the menu bar picker.")
+                    Text("Connection order")
                 }
-
-                Toggle(
-                    isOn: Binding(
-                        get: { viewModel.showsLatencyInMenuBarPicker },
-                        set: { viewModel.setShowsLatencyInMenuBarPicker($0) }
-                    )
-                ) {
-                    Text("Show latency in menu bar picker")
-                    Text("Include latest health check latency next to connection names.")
-                }
-
-                Toggle(
-                    isOn: Binding(
-                        get: { viewModel.animatesMenuBarIcon },
-                        set: { viewModel.setAnimatesMenuBarIcon($0) }
-                    )
-                ) {
-                    Text("Animate menu bar icon")
-                    Text("Show subtle portal particles while Teleport is active. May impact performance.")
-                }
+                .pickerStyle(.menu)
             }
 
-            Section {
+            Section("Startup") {
                 Toggle(
+                    "Launch at login",
                     isOn: Binding(
                         get: { viewModel.startsAtLogin },
                         set: { viewModel.setStartsAtLogin($0) }
                     )
-                ) {
-                    Text("Launch at login")
-                    Text("Start Teleport automatically when you sign in.")
-                }
+                )
 
                 Toggle(
                     isOn: Binding(
-                        get: { viewModel.isLeakGuardEnabled },
-                        set: { viewModel.setLeakGuardEnabled($0) }
+                        get: { viewModel.connectsOnLaunch },
+                        set: { viewModel.setConnectsOnLaunch($0) }
                     )
                 ) {
-                    Text("Block traffic outside the tunnel")
-                    Text("In TUN mode, keep traffic off the network while Teleport is rebuilding a session — after waking, or after changing Wi-Fi. Local networks and DNS still work. Turn this off to sign in to a hotel or airport Wi-Fi page.")
+                    Text("Connect on launch")
+                    Text("Uses the selected connection and mode.")
                 }
-            }
-
-            Section {
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Privileged helper")
-                        Text(viewModel.isHelperInstalled ? "Installed" : "Not installed")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button(viewModel.isUninstallingHelper ? "Uninstalling..." : "Uninstall...") {
-                        isConfirmingHelperUninstall = true
-                    }
-                    // Allowed while connected: the uninstall disconnects first.
-                    .disabled(!viewModel.isHelperInstalled || viewModel.isUninstallingHelper || viewModel.isOperationPending)
-                }
-                .confirmationDialog(
-                    "Uninstall Teleport's privileged helper?",
-                    isPresented: $isConfirmingHelperUninstall,
-                    titleVisibility: .visible
-                ) {
-                    Button("Uninstall", role: .destructive) {
-                        viewModel.uninstallHelper()
-                    }
-                    Button("Cancel", role: .cancel) {}
-                } message: {
-                    Text("Any running session is disconnected first. The helper's LaunchDaemon, its Xray copy, its state and log under /Library and /var, and its packet filter rules are removed. Your connections and settings stay. TUN mode asks for administrator approval to install the helper again on the next connect; System Proxy mode is not affected.")
-                }
-            } header: {
-                Text("TUN mode helper")
-            } footer: {
-                Text(helperFooter)
             }
         }
         .formStyle(.grouped)
         .padding(.top, -20)
-        .padding(.leading, -8)
-        .padding(.trailing, -6)
         .navigationTitle("General")
         .onAppear {
             viewModel.refreshStartsAtLoginStatus()
@@ -229,27 +215,35 @@ private struct GeneralSettingsView: View {
         }
     }
 
-    private var helperFooter: String {
-        if let message = viewModel.helperUninstallMessage {
-            return message
+    private func modeDescription(for mode: ConnectionMode) -> String {
+        switch mode {
+        case .systemProxy:
+            return "Routes apps that use macOS proxy settings."
+        case .tun:
+            if !viewModel.isHelperInstalled {
+                return "Routes device traffic with split-tunneling exceptions. The first connection requires administrator approval to install a helper."
+            }
+            return "Routes device traffic with split-tunneling exceptions."
         }
-        return "The root helper TUN mode installs with administrator approval. Removing it needs that approval once more."
     }
 
-    private var proxyPortsFooter: String {
+    private var modeRestriction: String? {
         if viewModel.connectionPhase == .failed || viewModel.proxyPhase == .failed {
-            return "Ports are locked because the last connection attempt failed. Click Disconnect in the menu bar to clear the error, then change ports."
+            return "Click Disconnect in the menu bar to clear the failed session before changing mode."
         }
         if viewModel.hasActiveConnectionSession {
-            return "Disconnect before changing ports. Teleport listens on 127.0.0.1."
+            return "Disconnect to change mode."
         }
-        return "Teleport listens on 127.0.0.1."
+        if !viewModel.canChangeSelection {
+            return "Connection mode is temporarily unavailable."
+        }
+        return nil
     }
 }
 
-private struct NerdShitSettingsView: View {
+private struct LogsSettingsView: View {
     @ObservedObject var viewModel: AppViewModel
-    @State private var selectedLog: NerdLogFile = .app
+    @State private var selectedLog: SettingsLogFile = .app
     @State private var logText = ""
     @State private var logMetadata = ""
     @State private var dumpsSystemState = UserDefaults.standard.bool(forKey: SystemStateDump.defaultsKey)
@@ -288,7 +282,7 @@ private struct NerdShitSettingsView: View {
 
             HStack(spacing: 10) {
                 Picker("Log", selection: $selectedLog) {
-                    ForEach(NerdLogFile.allCases) { logFile in
+                    ForEach(SettingsLogFile.allCases) { logFile in
                         Text(logFile.title).tag(logFile)
                     }
                 }
@@ -449,7 +443,7 @@ private struct LogTextViewer: NSViewRepresentable {
     }
 }
 
-private enum NerdLogFile: String, CaseIterable, Identifiable, Hashable {
+private enum SettingsLogFile: String, CaseIterable, Identifiable, Hashable {
     case app
     case helper
     case systemProxy
@@ -518,12 +512,13 @@ private enum NerdLogFile: String, CaseIterable, Identifiable, Hashable {
     }
 }
 
-private enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
+enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
     case general
     case connections
     case splitTunneling
     case geodata
-    case nerdShit
+    case advanced
+    case logs
     case about
 
     var id: Self { self }
@@ -538,8 +533,10 @@ private enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
             return "Split Tunneling"
         case .geodata:
             return "Geodata"
-        case .nerdShit:
-            return "Nerd shit"
+        case .advanced:
+            return "Advanced"
+        case .logs:
+            return "Logs"
         case .about:
             return "About"
         }
@@ -555,10 +552,31 @@ private enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
             return "point.topleft.down.curvedto.point.bottomright.up"
         case .geodata:
             return "globe"
-        case .nerdShit:
+        case .advanced:
+            return "slider.horizontal.3"
+        case .logs:
             return "terminal"
         case .about:
             return "info.circle"
+        }
+    }
+
+    var iconColor: Color {
+        switch self {
+        case .general:
+            return .gray
+        case .connections:
+            return .blue
+        case .splitTunneling:
+            return Color(red: 244.0 / 255, green: 119.0 / 255, blue: 107.0 / 255)
+        case .geodata:
+            return Color(red: 50.0 / 255, green: 184.0 / 255, blue: 83.0 / 255)
+        case .advanced:
+            return .gray
+        case .logs:
+            return .orange
+        case .about:
+            return .blue
         }
     }
 }
