@@ -52,6 +52,7 @@ struct SplitTunnelingSettingsView: View {
         .navigationTitle("Split Tunneling")
         .sheet(isPresented: $isShowingProfilesSheet) {
             SplitTunnelProfilesSheet(viewModel: viewModel)
+                .background(SettingsDialogWindow())
         }
     }
 
@@ -127,7 +128,7 @@ struct SplitTunnelingSettingsView: View {
                             get: { newRuleConnectionID },
                             set: { newRuleConnectionID = $0 }
                         ),
-                        label: "Connection"
+                        label: "Portal"
                     )
                 }
 
@@ -305,11 +306,11 @@ struct SplitTunnelingSettingsView: View {
     /// before this existed behave.
     @ViewBuilder
     private func connectionPicker(selection: Binding<UUID?>, label: String? = nil) -> some View {
-        Picker(label ?? "Connection", selection: selection) {
+        Picker(label ?? "Portal", selection: selection) {
             // The unassigned entry is simply the selected connection by name: it is
             // the one the rule follows, and naming the mechanism instead of the
             // connection told the reader nothing.
-            Text(viewModel.selectedConnection?.displayName ?? "Selected connection")
+            Text(viewModel.selectedConnection?.displayName ?? "Selected portal")
                 .tag(UUID?.none)
             ForEach(viewModel.savedConnections.filter { $0.id != viewModel.selectedConnectionID }) { connection in
                 Text(connection.displayName)
@@ -321,7 +322,7 @@ struct SplitTunnelingSettingsView: View {
             // selected connection until it is repointed.
             if let missingConnectionID = selection.wrappedValue,
                !viewModel.savedConnections.contains(where: { $0.id == missingConnectionID }) {
-                Text("Unavailable connection").tag(Optional(missingConnectionID))
+                Text("Unavailable portal").tag(Optional(missingConnectionID))
             }
         }
         // The rules list has its own columns and no room for a repeated label.

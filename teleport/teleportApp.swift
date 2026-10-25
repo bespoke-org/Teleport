@@ -114,10 +114,22 @@ private struct SettingsWindowObserver: NSViewRepresentable {
 
     final class WindowObserverView: NSView {
         var onWindowAvailable: ((NSWindow) -> Void)?
+        private var minimumSizeObservation: NSKeyValueObservation?
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            if let window { onWindowAvailable?(window) }
+            minimumSizeObservation = nil
+            if let window {
+                // SwiftUI recalculates this when the sidebar changes. Keep the window
+                // minimum independent of the split view's animated layout.
+                minimumSizeObservation = window.observe(\.contentMinSize, options: [.initial, .new]) { window, _ in
+                    let size = window.contentMinSize
+                    if size.width < 760 || size.height < 500 {
+                        window.contentMinSize = NSSize(width: max(760, size.width), height: max(500, size.height))
+                    }
+                }
+                onWindowAvailable?(window)
+            }
         }
     }
 }

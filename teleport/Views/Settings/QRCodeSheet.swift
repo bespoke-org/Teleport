@@ -2,6 +2,12 @@ import AppKit
 import CoreImage.CIFilterBuiltins
 import SwiftUI
 
+struct QRPayload: Identifiable {
+    let id = UUID()
+    let title: String
+    let value: String
+}
+
 struct QRCodeSheet: View {
     @Environment(\.dismiss) private var dismiss
 
@@ -31,15 +37,10 @@ struct QRCodeSheet: View {
                 ContentUnavailableView("QR unavailable", systemImage: "qrcode")
             }
 
-            Text(payload.value)
-                .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
-                .lineLimit(3)
-
             HStack {
                 Spacer()
 
-                Button("Copy connection") {
+                Button("Copy") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(payload.value, forType: .string)
                 }

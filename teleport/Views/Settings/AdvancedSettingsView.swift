@@ -75,7 +75,7 @@ struct AdvancedSettingsView: View {
                     }
                     Button("Cancel", role: .cancel) {}
                 } message: {
-                    Text("Any running session is disconnected first. The helper's LaunchDaemon, its Xray copy, its state and log under /Library and /var, and its packet filter rules are removed. Your connections and settings stay. TUN mode asks for administrator approval to install the helper again on the next connect; System Proxy mode is not affected.")
+                    Text("Any running session is disconnected first. The helper's LaunchDaemon, its Xray copy, its state and log under /Library and /var, and its packet filter rules are removed. Your portals and settings stay. TUN mode asks for administrator approval to install the helper again on the next connect; System Proxy mode is not affected.")
                 }
             } header: {
                 Text("Maintenance")

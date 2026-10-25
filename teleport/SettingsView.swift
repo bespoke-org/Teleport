@@ -5,7 +5,7 @@ struct SettingsView: View {
     @ObservedObject var viewModel: AppViewModel
     @State private var navigation = SettingsNavigation()
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
-
+    @State private var portalsState = PortalsState()
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             List(SettingsSection.allCases, selection: Binding<SettingsSection?>(
@@ -28,7 +28,7 @@ struct SettingsView: View {
         } detail: {
             selectedSectionView
                 .frame(minWidth: 560)
-                .padding(.top, 16)
+                .padding(.top, navigation.section == .portals ? 0 : 16)
                 .navigationTitle(navigation.section.title)
         }
         .toolbar {
@@ -62,8 +62,8 @@ struct SettingsView: View {
         switch navigation.section {
         case .general:
             GeneralSettingsView(viewModel: viewModel)
-        case .connections:
-            ConnectionsSettingsView(viewModel: viewModel)
+        case .portals:
+            PortalsSettingsView(viewModel: viewModel, state: $portalsState)
         case .splitTunneling:
             SplitTunnelingSettingsView(viewModel: viewModel, onOpenGeodata: { navigation.select(.geodata) })
         case .geodata:
@@ -81,15 +81,26 @@ struct SettingsView: View {
 private struct SettingsSidebarIcon: View {
     let section: SettingsSection
 
+    private var image: Image {
+        if section == .portals {
+            return Image(nsImage: MenuBarIconImageFactory.image(
+                for: .running, proxyPhase: .disabled, frame: 0, isAnimated: false
+            ))
+            .renderingMode(.template)
+        }
+        return Image(systemName: section.systemImage)
+    }
+
     var body: some View {
-        Image(systemName: section.systemImage)
+        image
             .resizable()
             .scaledToFit()
             .symbolVariant(.none)
             .symbolRenderingMode(.monochrome)
             .font(.system(size: 13, weight: .regular))
             .foregroundStyle(.white)
-            .frame(width: 13, height: 13)
+            .frame(width: section == .portals ? 15 : 13, height: section == .portals ? 15 : 13)
+            .offset(x: section == .portals ? -1 : 0)
             .frame(width: 20, height: 20)
             .background(section.iconColor.gradient, in: RoundedRectangle(cornerRadius: 5))
             .overlay {
@@ -164,7 +175,7 @@ private struct GeneralSettingsView: View {
                 )
 
                 Toggle(
-                    "Show connection latency",
+                    "Show portal latency",
                     isOn: Binding(
                         get: { viewModel.showsLatencyInMenuBarPicker },
                         set: { viewModel.setShowsLatencyInMenuBarPicker($0) }
@@ -181,7 +192,7 @@ private struct GeneralSettingsView: View {
                         Text(sort.displayName).tag(sort)
                     }
                 } label: {
-                    Text("Connection order")
+                    Text("Portal order")
                 }
                 .pickerStyle(.menu)
             }
@@ -202,7 +213,7 @@ private struct GeneralSettingsView: View {
                     )
                 ) {
                     Text("Connect on launch")
-                    Text("Uses the selected connection and mode.")
+                    Text("Uses the selected portal and mode.")
                 }
             }
         }
@@ -514,7 +525,7 @@ private enum SettingsLogFile: String, CaseIterable, Identifiable, Hashable {
 
 enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
     case general
-    case connections
+    case portals
     case splitTunneling
     case geodata
     case advanced
@@ -527,8 +538,8 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .general:
             return "General"
-        case .connections:
-            return "Connections"
+        case .portals:
+            return "Portals"
         case .splitTunneling:
             return "Split Tunneling"
         case .geodata:
@@ -546,8 +557,8 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .general:
             return "gearshape"
-        case .connections:
-            return "link"
+        case .portals:
+            return "oval.portrait"
         case .splitTunneling:
             return "point.topleft.down.curvedto.point.bottomright.up"
         case .geodata:
@@ -565,8 +576,8 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .general:
             return .gray
-        case .connections:
-            return .blue
+        case .portals:
+            return Color(red: 143.0 / 255, green: 76.0 / 255, blue: 219.0 / 255)
         case .splitTunneling:
             return Color(red: 244.0 / 255, green: 119.0 / 255, blue: 107.0 / 255)
         case .geodata:

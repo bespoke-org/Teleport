@@ -396,7 +396,7 @@ final class AppViewModel: ObservableObject {
         }
         switch connectionPhase {
         case .unconfigured:
-            return savedConnections.isEmpty ? "Add a connection or subscription in Settings to get started" : "Select a connection to get started"
+            return savedConnections.isEmpty ? "Add a portal or subscription in Settings to get started" : "Select a portal to get started"
         case .ready, .stopped:
             return proxyPhase == .enabled ? "Connected" : "Disconnected"
         case .starting:
@@ -484,13 +484,14 @@ final class AppViewModel: ObservableObject {
         switch healthCheck.state {
         case .reachable:
             if let latency = healthCheck.latencyMilliseconds {
+                let duration = ConnectionLatencyFormatter.string(milliseconds: latency)
                 switch healthCheck.latencyKind {
                 case .proxyRequest:
-                    return "Ping \(latency) ms"
+                    return "Ping \(duration)"
                 case .wireGuardHandshake:
-                    return "Handshake \(latency) ms"
+                    return "Handshake \(duration)"
                 case .tcpConnect, nil:
-                    return "TCP \(latency) ms"
+                    return "TCP \(duration)"
                 }
             }
             return "Available"
@@ -521,13 +522,14 @@ final class AppViewModel: ObservableObject {
         switch healthCheck.state {
         case .reachable:
             if let latency = healthCheck.latencyMilliseconds {
+                let duration = ConnectionLatencyFormatter.string(milliseconds: latency)
                 switch healthCheck.latencyKind {
                 case .proxyRequest:
-                    return "Ping \(latency) ms"
+                    return "Ping \(duration)"
                 case .wireGuardHandshake:
-                    return "Handshake \(latency) ms"
+                    return "Handshake \(duration)"
                 case .tcpConnect, nil:
-                    return "TCP \(latency) ms"
+                    return "TCP \(duration)"
                 }
             }
             return "Available"
@@ -567,7 +569,7 @@ final class AppViewModel: ObservableObject {
     func addConnection(from rawValue: String) -> Bool {
         let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            setStoredError("Paste a connection or subscription URL first")
+            setStoredError("Paste a link or configuration, or choose a file first.")
             return false
         }
 
@@ -625,18 +627,18 @@ final class AppViewModel: ObservableObject {
         guard let index = savedConnections.firstIndex(where: { $0.id == id }) else { return false }
 
         guard savedConnections[index].source == nil else {
-            setStoredError("Imported connections are replaced on refresh, so they cannot be edited")
+            setStoredError("Imported portals are replaced on refresh, so they cannot be edited")
             return false
         }
 
         if isConnectionInUse(id: id) {
-            setStoredError("Disconnect before editing this connection")
+            setStoredError("Disconnect before editing this portal")
             return false
         }
 
         let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            setStoredError("Paste a connection URL or configuration first")
+            setStoredError("Paste a portal URL or configuration first")
             return false
         }
 
@@ -659,7 +661,7 @@ final class AppViewModel: ObservableObject {
         guard let index = savedConnections.firstIndex(where: { $0.id == id }) else { return }
 
         if isConnectionInUse(id: id) {
-            setStoredError("Disconnect before removing the active connection")
+            setStoredError("Disconnect before removing the active portal")
             return
         }
 
@@ -1321,7 +1323,7 @@ final class AppViewModel: ObservableObject {
     func connect() {
         isLaunchConnectionPending = false
         guard let selectedConfiguration else {
-            setStoredError("Add and select a connection first")
+            setStoredError("Add and select a portal first")
             return
         }
 
@@ -1733,7 +1735,7 @@ final class AppViewModel: ObservableObject {
 
     private func reconnectToSelectedConnection(afterUplinkChange: Bool = false) {
         guard let selectedConfiguration else {
-            setStoredError("Add and select a connection first")
+            setStoredError("Add and select a portal first")
             return
         }
         startConnection(using: selectedConfiguration, afterUplinkChange: afterUplinkChange)
