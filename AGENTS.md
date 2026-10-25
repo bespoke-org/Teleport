@@ -22,4 +22,5 @@ prepare-release X.Y.Z`), committed before the tag.
 
 Run only the `just test-case <Class>` checks that cover the code you changed; `just test` builds
 the Debug app for the build-approval check and runs every test, which is slow, and CI runs the
-rest. Run the full `just test` before a release or when asked.
+rest. Before a release, wait for the CI checks of the release pull request instead of running
+the full `just test`; run it locally only when asked.
