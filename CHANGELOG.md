@@ -3,7 +3,7 @@
 Format is based on [_Keep a changelog_](https://keepachangelog.com) and uses
 [_Semantic versioning_](https://semver.org).
 
-## [Unreleased]
+## [0.4.0] - 2026-10-25
 ### Added
 - Split tunneling: destination rules, geosite category rules, custom geosite/geoip sources, named profiles with a per-profile default action, and a rule tester that matches against geodata. A rule can name the connection its traffic leaves through, and a session dials every connection the active rules route through.
 - WireGuard connections from `wireguard://` links and `[Interface]` files. Names routed to a peer are resolved through that peer's own DNS servers.
