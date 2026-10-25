@@ -1,5 +1,5 @@
 # Builds the Debug app and runs the checks on each runner in the matrix the caller passes.
-# Pull request runs it on one runner, Main on each supported macOS.
+# Pull requests cover macOS 15 and 26; Main covers each supported macOS and architecture.
 name: Test
 
 on:
@@ -28,6 +28,11 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
+
+      # XCTest subprocesses can fall back to the system selection instead of the
+      # job's DEVELOPER_DIR. Keep both on the same Xcode to avoid mixing frameworks.
+      - name: Select Xcode for builds and test subprocesses
+        run: sudo xcode-select --switch "$DEVELOPER_DIR"
 
       - name: Show the macOS and Xcode in use
         run: sw_vers && xcodebuild -version
