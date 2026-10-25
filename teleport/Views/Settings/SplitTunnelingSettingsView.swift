@@ -1,401 +1,283 @@
+import AppKit
 import SwiftUI
 
 struct SplitTunnelingSettingsView: View {
     @ObservedObject var viewModel: AppViewModel
     var onOpenGeodata: () -> Void = {}
-    @State private var newRuleValue = ""
-    @State private var newRuleAction: SplitTunnelRuleAction = .direct
-    /// `nil` means the session's default connection.
-    @State private var newRuleConnectionID: UUID?
-    @State private var addRuleErrorMessage: String?
-    @State private var testerValue = ""
     @State private var isShowingProfilesSheet = false
+    @State private var isShowingAddSheet = false
+    @State private var selectedRuleID: UUID?
+    @State private var ruleClickScope = SettingsClickAwayScope()
+
+    private let sectionBackground = Color.primary.opacity(0.035)
+    // Match the card width of the grouped Forms used by the other settings pages.
+    private let maximumContentWidth: CGFloat = 704
 
     var body: some View {
-        // One scroll view for the whole pane. A List mixed with non-scrolling
-        // siblings in a VStack reported an unbounded ideal width that collapsed
-        // the split view's sidebar, and a grouped Form fixed that — but a Form on
-        // macOS does not honor `.onMove`, so the rules could not be reordered.
-        // A List holding every section keeps the single scroll view and gets
-        // drag-to-reorder back; the Connections tab lives in the same pane the
-        // same way.
-        List {
+        GeometryReader { geometry in
+            settingsList(horizontalInset: max(20, (geometry.size.width - maximumContentWidth) / 2))
+        }
+    }
+
+    private func settingsList(horizontalInset: CGFloat) -> some View {
+        let rowColors = NSColor.alternatingContentBackgroundColors
+        // Keep native List reordering and one scrolling surface for the page.
+        return List {
             Section {
-                Toggle(
-                    isOn: Binding(
-                        get: { viewModel.isSplitTunnelEnabled },
-                        set: { viewModel.setSplitTunnelEnabled($0) }
-                    )
-                ) {
-                    Text("Split tunneling")
-                    Text("Route specific domains or IP/CIDR ranges directly, through the proxy, or block them, while TUN mode is active. This matches destinations, not individual apps — macOS has no supported per-app TUN routing outside managed (MDM) configurations.")
-                }
-
-                if viewModel.connectionMode != .tun {
-                    Label(
-                        "Split tunneling is configured here but only applies in TUN mode. System Proxy mode ignores these rules.",
-                        systemImage: "exclamationmark.triangle.fill"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                }
+                settingsBlock
+                    .padding(.vertical, 8)
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 0, leading: horizontalInset, bottom: 0, trailing: horizontalInset))
+                    .listRowBackground(RoundedRectangle(cornerRadius: 10).fill(sectionBackground).padding(.horizontal, horizontalInset))
             }
+            .listSectionSeparator(.hidden)
 
-            profileSection
-            defaultActionSection
-            addRuleSection
-            rulesSection
-            testerSection
+            Section {
+                Button(action: onOpenGeodata) {
+                    HStack(spacing: 12) {
+                        SettingsSectionIcon(section: .geodata)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Geodata")
+                            Text("Domain and IP lists used by split routing rules.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                            .accessibilityHidden(true)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 22)
+                    .padding(.vertical, 8)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets(top: 0, leading: horizontalInset, bottom: 0, trailing: horizontalInset))
+                .listRowBackground(RoundedRectangle(cornerRadius: 10).fill(sectionBackground).padding(.horizontal, horizontalInset))
+            }
+            .listSectionSeparator(.hidden)
+
+            Section {
+                if viewModel.splitTunnelRules.isEmpty {
+                    Text("No rules yet")
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 8)
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets(top: 0, leading: horizontalInset, bottom: 0, trailing: horizontalInset))
+                        .listRowBackground(
+                            UnevenRoundedRectangle(topLeadingRadius: 10, topTrailingRadius: 10)
+                                .fill(sectionBackground).padding(.horizontal, horizontalInset)
+                        )
+                } else {
+                    ForEach(Array(viewModel.splitTunnelRules.enumerated()), id: \.element.id) { index, rule in
+                        ruleRow(rule)
+                            .foregroundStyle(.primary)
+                            .padding(.vertical, 5)
+                            .padding(.horizontal, 10)
+                            .padding(.top, index == 0 ? 10 : 0)
+                            .padding(.bottom, index == viewModel.splitTunnelRules.count - 1 ? 10 : 0)
+                            .background(SettingsClickAwayRegion(scope: ruleClickScope))
+                            .contentShape(Rectangle())
+                            .onTapGesture { selectedRuleID = rule.id }
+                            .accessibilityElement(children: .contain)
+                            .accessibilityAddTraits(selectedRuleID == rule.id ? .isSelected : [])
+                            .accessibilityAction(named: "Select rule") { selectedRuleID = rule.id }
+                            .listRowSeparator(.hidden)
+                            .listRowInsets(EdgeInsets(top: 0, leading: horizontalInset, bottom: 0, trailing: horizontalInset))
+                            .listRowBackground(
+                                ZStack {
+                                    UnevenRoundedRectangle(
+                                        topLeadingRadius: index == 0 ? 10 : 0,
+                                        topTrailingRadius: index == 0 ? 10 : 0
+                                    ).fill(sectionBackground)
+                                    UnevenRoundedRectangle(
+                                        topLeadingRadius: index == 0 ? 6 : 0,
+                                        bottomLeadingRadius: index == viewModel.splitTunnelRules.count - 1 ? 6 : 0,
+                                        bottomTrailingRadius: index == viewModel.splitTunnelRules.count - 1 ? 6 : 0,
+                                        topTrailingRadius: index == 0 ? 6 : 0
+                                    ).fill(selectedRuleID == rule.id
+                                        ? Color.accentColor.opacity(0.2)
+                                        : Color(nsColor: rowColors[index % rowColors.count]))
+                                        .padding(.horizontal, 10)
+                                        .padding(.top, index == 0 ? 10 : 0)
+                                        .padding(.bottom, index == viewModel.splitTunnelRules.count - 1 ? 10 : 0)
+                                }
+                                .padding(.horizontal, horizontalInset)
+                            )
+                    }
+                    .onMove { viewModel.moveSplitTunnelRules(fromOffsets: $0, toOffset: $1) }
+                }
+                ruleActions
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 0, leading: horizontalInset, bottom: 0, trailing: horizontalInset))
+                    .listRowBackground(
+                        UnevenRoundedRectangle(bottomLeadingRadius: 10, bottomTrailingRadius: 10)
+                            .fill(Color(nsColor: rowColors.last ?? .controlBackgroundColor))
+                            .overlay(alignment: .top) { Divider() }
+                            .padding(.horizontal, horizontalInset)
+                    )
+            } header: {
+                sectionHeading("Rules", horizontalInset: horizontalInset)
+            }
+            .listSectionSeparator(.hidden)
+
+            Section {
+                SplitTunnelTester(viewModel: viewModel)
+                    .padding(.vertical, 10)
+                    .padding(.bottom, 20)
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 0, leading: horizontalInset, bottom: 0, trailing: horizontalInset))
+                    .listRowBackground(
+                        RoundedRectangle(cornerRadius: 10).fill(sectionBackground)
+                            .padding(.horizontal, horizontalInset)
+                            .padding(.bottom, 20)
+                    )
+            } header: {
+                sectionHeading("Test route", horizontalInset: horizontalInset)
+            }
+            .listSectionSeparator(.hidden)
         }
         .listStyle(.inset)
+        .scrollContentBackground(.hidden)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .navigationTitle("Split Tunneling")
+        .navigationTitle("Split Routing")
+        .background(SettingsClickAwayMonitor(scope: ruleClickScope, isActive: selectedRuleID != nil) {
+            selectedRuleID = nil
+        })
+        .onChange(of: viewModel.selectedSplitTunnelProfileID) { _, _ in selectedRuleID = nil }
+        .onChange(of: viewModel.splitTunnelRules.map(\.id)) { _, ids in
+            if let selectedRuleID, !ids.contains(selectedRuleID) { self.selectedRuleID = nil }
+        }
         .sheet(isPresented: $isShowingProfilesSheet) {
             SplitTunnelProfilesSheet(viewModel: viewModel)
                 .background(SettingsDialogWindow())
         }
+        .sheet(isPresented: $isShowingAddSheet) {
+            AddSplitTunnelRulesSheet(viewModel: viewModel)
+                .background(SettingsDialogWindow())
+        }
     }
 
-    private var profileSection: some View {
-        Section {
-            Picker(
-                "Profile",
-                selection: Binding(
-                    get: { viewModel.selectedSplitTunnelProfileID ?? viewModel.splitTunnelProfiles.first?.id },
-                    set: { newID in
-                        if let newID {
-                            viewModel.selectSplitTunnelProfile(id: newID)
+    private func sectionHeading(_ title: String, horizontalInset: CGFloat) -> some View {
+        Text(title)
+            .font(.headline)
+            .foregroundStyle(.primary)
+            // List adds 16 points; grouped Form headings sit 10 points inside their cards.
+            .padding(.horizontal, horizontalInset - 6)
+            .padding(.bottom, 4)
+    }
+
+    private var ruleActions: some View {
+        HStack(spacing: 0) {
+            Button {
+                isShowingAddSheet = true
+            } label: {
+                Image(systemName: "plus").frame(width: 28, height: 24).contentShape(Rectangle())
+            }
+            .accessibilityLabel("Add rule")
+            .help("Add rule")
+            .background(SettingsClickAwayRegion(scope: ruleClickScope))
+            Divider().frame(height: 14)
+            Button {
+                guard let selectedRuleID else { return }
+                viewModel.removeSplitTunnelRule(id: selectedRuleID)
+                self.selectedRuleID = nil
+            } label: {
+                Image(systemName: "minus").frame(width: 28, height: 24).contentShape(Rectangle())
+            }
+            .disabled(selectedRuleID == nil)
+            .accessibilityLabel("Remove selected rule")
+            .help("Remove selected rule")
+            .background(SettingsClickAwayRegion(scope: ruleClickScope))
+            Spacer()
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+    }
+
+    private var settingsBlock: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Toggle("Split routing", isOn: Binding(
+                get: { viewModel.isSplitTunnelEnabled },
+                set: { viewModel.setSplitTunnelEnabled($0) }
+            ))
+            .toggleStyle(.switch)
+
+            Divider()
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Profile")
+                    Text("Each profile keeps its own rules. Only one is active at a time.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                SettingsValueMenu(title: viewModel.splitTunnelProfiles.first { $0.id == viewModel.selectedSplitTunnelProfileID }?.name ?? "Profile") {
+                    Picker("Profile", selection: Binding(
+                        get: { viewModel.selectedSplitTunnelProfileID },
+                        set: { if let id = $0 { viewModel.selectSplitTunnelProfile(id: id) } }
+                    )) {
+                        ForEach(viewModel.splitTunnelProfiles) { profile in
+                            Text(profile.name).tag(Optional(profile.id))
                         }
                     }
-                )
-            ) {
-                ForEach(viewModel.splitTunnelProfiles) { profile in
-                    Text(profile.name).tag(Optional(profile.id))
-                }
-            }
-
-            Button("Manage Profiles…", systemImage: "gearshape") {
-                isShowingProfilesSheet = true
-            }
-        }
-    }
-
-    private var defaultActionSection: some View {
-        Section {
-            Picker(
-                selection: Binding(
-                    get: { viewModel.splitTunnelDefaultAction == .direct ? SplitTunnelRuleAction.direct : .proxy },
-                    set: { viewModel.setSplitTunnelDefaultAction($0) }
-                )
-            ) {
-                Text(SplitTunnelRuleAction.proxy.displayName).tag(SplitTunnelRuleAction.proxy)
-                Text(SplitTunnelRuleAction.direct.displayName).tag(SplitTunnelRuleAction.direct)
-            } label: {
-                Text("Unmatched traffic")
-                Text(viewModel.splitTunnelDefaultAction == .direct
-                    ? "Whitelist mode: only destinations matched below use the proxy; everything else stays direct."
-                    : "Everything not matched below goes through the proxy; add rules to send specific destinations direct.")
-            }
-        }
-    }
-
-    private var addRuleSection: some View {
-        Section {
-            TextField(
-                "Domain, IP/CIDR, geosite:category, or geoip:category — paste a list to add several at once",
-                text: $newRuleValue,
-                axis: .vertical
-            )
-            .textFieldStyle(.roundedBorder)
-            .lineLimit(1 ... 6)
-            .onSubmit(addRule)
-
-            // The action picker and Add button only matter once there is something
-            // to add; showing them for an empty field invites clicks that do nothing.
-            if !newRuleValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Picker("Action", selection: $newRuleAction) {
-                    ForEach(SplitTunnelRuleAction.allCases) { action in
-                        Text(action.displayName).tag(action)
-                    }
-                }
-                .pickerStyle(.segmented)
-
-                if newRuleAction == .proxy, viewModel.savedConnections.count > 1 {
-                    // A labeled form row, like Action above it: the bare picker read
-                    // as a stray control with no idea what it selected.
-                    connectionPicker(
-                        selection: Binding(
-                            get: { newRuleConnectionID },
-                            set: { newRuleConnectionID = $0 }
-                        ),
-                        label: "Portal"
-                    )
-                }
-
-                if let addRuleErrorMessage {
-                    Text(addRuleErrorMessage)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
-
-                HStack {
-                    Spacer()
-                    Button("Add", action: addRule)
-                        .keyboardShortcut(.defaultAction)
-                }
-            }
-        } header: {
-            Text("Add rule")
-        } footer: {
-            HStack(spacing: 4) {
-                Text("Match whole categories with geosite:name or geoip:name (e.g. geosite:google, geoip:private).")
-                Button("Manage geodata", action: onOpenGeodata)
-                    .buttonStyle(.link)
-            }
-        }
-    }
-
-    private var rulesSection: some View {
-        Section {
-            if viewModel.splitTunnelRules.isEmpty {
-                Text("No rules yet — add a domain, IP/CIDR, or geosite category above.")
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(viewModel.splitTunnelRules) { rule in
-                    ruleRow(rule)
-                }
-                .onMove { offsets, destination in
-                    viewModel.moveSplitTunnelRules(fromOffsets: offsets, toOffset: destination)
-                }
-            }
-        } header: {
-            Text("Rules")
-        } footer: {
-            Text("Rules are evaluated top to bottom; the first match wins. Drag to reorder.")
-        }
-    }
-
-    private var testerSection: some View {
-        Section {
-            LabeledContent {
-                TextField("Destination", text: $testerValue, prompt: Text("maps.google.com or 10.0.0.5"))
+                    .pickerStyle(.inline)
                     .labelsHidden()
-                    .textFieldStyle(.roundedBorder)
-            } label: {
-                Label("Destination", systemImage: "magnifyingglass")
-            }
-
-            if testerValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text("Type a domain or IP. The matching rule and its action appear here as you type.")
-                    .foregroundStyle(.secondary)
-                    .font(.caption)
-            } else {
-                if viewModel.hasEnabledSplitTunnelGeodataRules, !viewModel.isSplitTunnelGeodataReady {
-                    Label(
-                        "Loading geosite/geoip data for the tester…",
-                        systemImage: "hourglass"
-                    )
-                    .foregroundStyle(.secondary)
-                    .font(.caption)
+                    Button("Manage profiles", systemImage: "slider.horizontal.3") { isShowingProfilesSheet = true }
                 }
-
-                if let match = viewModel.matchingSplitTunnelRule(for: testerValue) {
-                    if viewModel.connectionMode != .tun {
-                        Label(
-                            "Would match \"\(displayValue(match))\" → \(match.action.displayName), but System Proxy mode ignores split tunneling",
-                            systemImage: "exclamationmark.triangle.fill"
-                        )
-                        .foregroundStyle(.orange)
-                        .font(.caption)
-                    } else if viewModel.isSplitTunnelEnabled {
-                        Label(
-                            "Matches \"\(displayValue(match))\" → \(match.action.displayName)",
-                            systemImage: "checkmark.circle.fill"
-                        )
-                        .foregroundStyle(.green)
-                        .font(.caption)
-                    } else {
-                        Label(
-                            "Would match \"\(displayValue(match))\" → \(match.action.displayName), but split tunneling is off",
-                            systemImage: "exclamationmark.triangle.fill"
-                        )
-                        .foregroundStyle(.orange)
-                        .font(.caption)
+                .accessibilityLabel("Profile")
+            }
+            Divider()
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Unmatched traffic")
+                    Text(viewModel.splitTunnelDefaultAction == .direct
+                        ? "Destinations that don't match a rule connect directly."
+                        : "Destinations that don't match a rule use the selected portal.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                SettingsValueMenu(title: viewModel.splitTunnelDefaultAction.displayName) {
+                    Picker("Unmatched traffic", selection: Binding(
+                        get: { viewModel.splitTunnelDefaultAction },
+                        set: { viewModel.setSplitTunnelDefaultAction($0) }
+                    )) {
+                        Text("Proxy").tag(SplitTunnelRuleAction.proxy)
+                        Text("Direct").tag(SplitTunnelRuleAction.direct)
                     }
-                } else {
-                    Label(
-                        "No rule matches — uses default: \(viewModel.splitTunnelDefaultAction.displayName)",
-                        systemImage: "arrow.triangle.branch"
-                    )
-                    .foregroundStyle(.secondary)
-                    .font(.caption)
+                    .pickerStyle(.inline)
+                    .labelsHidden()
                 }
-
-                Text("Domain rules apply when Xray can sniff the server name (TLS, HTTP, QUIC); other flows are matched by IP rules only.")
-                    .foregroundStyle(.tertiary)
-                    .font(.caption)
+                .accessibilityLabel("Unmatched traffic")
             }
-        } header: {
-            Text("Test a domain or IP")
+            if viewModel.connectionMode != .tun {
+                Label("Applies only in TUN mode", systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(.orange)
+            }
         }
     }
 
     private func ruleRow(_ rule: SplitTunnelRule) -> some View {
         HStack(spacing: 10) {
-            Toggle(
-                "",
-                isOn: Binding(
-                    get: { rule.isEnabled },
-                    set: { viewModel.setSplitTunnelRuleEnabled(id: rule.id, isEnabled: $0) }
-                )
-            )
+            Toggle("Enable \(SplitTunnelPresentation.destination(rule))", isOn: Binding(
+                get: { rule.isEnabled },
+                set: { viewModel.setSplitTunnelRuleEnabled(id: rule.id, isEnabled: $0) }
+            ))
             .labelsHidden()
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(displayValue(rule))
-                    .font(.body.monospaced())
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text(kindLabel(rule.kind))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .opacity(rule.isEnabled ? 1 : 0.45)
-
-            Spacer()
-
-            Picker(
-                "",
-                selection: Binding(
-                    get: { rule.action },
-                    set: { viewModel.setSplitTunnelRuleAction(id: rule.id, action: $0) }
-                )
-            ) {
-                ForEach(SplitTunnelRuleAction.allCases) { action in
-                    Text(action.displayName).tag(action)
-                }
-            }
-            .labelsHidden()
-            .pickerStyle(.segmented)
-            .frame(width: 180)
-            .opacity(rule.isEnabled ? 1 : 0.45)
-
-            if rule.action == .proxy, viewModel.savedConnections.count > 1 {
-                connectionPicker(
-                    selection: Binding(
-                        get: { rule.connectionID },
-                        set: { viewModel.setSplitTunnelRuleConnection(id: rule.id, connectionID: $0) }
-                    )
-                )
-                .frame(width: 150)
+            .toggleStyle(.checkbox)
+            Text(SplitTunnelPresentation.destination(rule))
+                .lineLimit(1)
+                .truncationMode(.middle)
                 .opacity(rule.isEnabled ? 1 : 0.45)
+            Spacer(minLength: 8)
+            SplitTunnelRoutePicker(viewModel: viewModel, action: rule.action, connectionID: rule.connectionID) { action, portal in
+                viewModel.setSplitTunnelRuleAction(id: rule.id, action: action)
+                viewModel.setSplitTunnelRuleConnection(id: rule.id, connectionID: portal)
             }
-
-            Button(role: .destructive) {
-                viewModel.removeSplitTunnelRule(id: rule.id)
-            } label: {
-                Image(systemName: "trash")
-            }
-            .buttonStyle(.borderless)
-        }
-    }
-
-    /// Every saved connection can be picked here: choosing one is what puts it in
-    /// the session, so there is nothing to enable elsewhere first. The default
-    /// entry means "whatever connection is selected", which is how rules written
-    /// before this existed behave.
-    @ViewBuilder
-    private func connectionPicker(selection: Binding<UUID?>, label: String? = nil) -> some View {
-        Picker(label ?? "Portal", selection: selection) {
-            // The unassigned entry is simply the selected connection by name: it is
-            // the one the rule follows, and naming the mechanism instead of the
-            // connection told the reader nothing.
-            Text(viewModel.selectedConnection?.displayName ?? "Selected portal")
-                .tag(UUID?.none)
-            ForEach(viewModel.savedConnections.filter { $0.id != viewModel.selectedConnectionID }) { connection in
-                Text(connection.displayName)
-                    .tag(Optional(connection.id))
-            }
-            // A rule can outlive the connection it named (a removed subscription
-            // entry, say). Keep an entry for it so the picker shows the rule's real
-            // state instead of an empty selection; the config falls back to the
-            // selected connection until it is repointed.
-            if let missingConnectionID = selection.wrappedValue,
-               !viewModel.savedConnections.contains(where: { $0.id == missingConnectionID }) {
-                Text("Unavailable portal").tag(Optional(missingConnectionID))
-            }
-        }
-        // The rules list has its own columns and no room for a repeated label.
-        .modifier(HiddenLabel(isHidden: label == nil))
-    }
-
-    /// A domain rule only accepts the ASCII form, which is what Xray matches; it
-    /// is shown readable.
-    private func displayValue(_ rule: SplitTunnelRule) -> String {
-        guard rule.kind == .domain else { return rule.value }
-        let prefix = rule.value.hasPrefix("full:") ? "full:" : ""
-        return prefix + DisplayHostname.unicode(String(rule.value.dropFirst(prefix.count)))
-    }
-
-    private func kindLabel(_ kind: SplitTunnelRuleKind) -> String {
-        switch kind {
-        case .domain: return "Domain"
-        case .ip: return "IP/CIDR"
-        case .geosite: return "Geosite"
-        case .geoip: return "GeoIP"
-        }
-    }
-
-    private func addRule() {
-        let candidates = newRuleValue
-            .components(separatedBy: CharacterSet(charactersIn: "\n\r,"))
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-
-        guard candidates.count > 1 else {
-            // Single entry: keep the exact typed/pasted value (including any
-            // leading/trailing content the user may still be editing) rather
-            // than the split-and-trimmed form used for bulk pasted lists.
-            let result = viewModel.addSplitTunnelRule(value: newRuleValue, action: newRuleAction, connectionID: newRuleConnectionID)
-            switch result {
-            case .success:
-                newRuleValue = ""
-                addRuleErrorMessage = nil
-            case let .failure(error):
-                addRuleErrorMessage = error.errorDescription
-            }
-            return
-        }
-
-        // Bulk add: pasting a newline- or comma-separated list adds one rule per
-        // entry, skipping invalid ones instead of rejecting the whole paste.
-        var failures: [String] = []
-        for candidate in candidates {
-            if case let .failure(error) = viewModel.addSplitTunnelRule(value: candidate, action: newRuleAction, connectionID: newRuleConnectionID) {
-                failures.append("\(candidate) (\(error.errorDescription ?? "invalid"))")
-            }
-        }
-
-        if failures.isEmpty {
-            newRuleValue = ""
-            addRuleErrorMessage = nil
-        } else {
-            newRuleValue = ""
-            addRuleErrorMessage = "Skipped \(failures.count) invalid entr\(failures.count == 1 ? "y" : "ies"): " + failures.joined(separator: ", ")
-        }
-    }
-}
-
-/// `labelsHidden()` takes no condition, so hiding a label conditionally needs a
-/// modifier of its own.
-private struct HiddenLabel: ViewModifier {
-    let isHidden: Bool
-
-    func body(content: Content) -> some View {
-        if isHidden {
-            content.labelsHidden()
-        } else {
-            content
+            .opacity(rule.isEnabled ? 1 : 0.45)
         }
     }
 }

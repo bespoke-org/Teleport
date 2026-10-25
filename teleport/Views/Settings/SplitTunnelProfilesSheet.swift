@@ -7,27 +7,25 @@ struct SplitTunnelProfilesSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Split-tunnel profiles")
+            Text("Manage profiles")
                 .font(.headline)
 
-            Text("Each profile keeps its own rule list. Only one profile is active at a time.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            List {
-                ForEach(viewModel.splitTunnelProfiles) { profile in
-                    profileRow(profile)
+            ScrollView {
+                VStack(spacing: 8) {
+                    ForEach(viewModel.splitTunnelProfiles) { profile in
+                        profileRow(profile)
+                            .frame(height: 28)
+                    }
                 }
+                .padding(2)
             }
-            .listStyle(.inset)
-            .frame(minHeight: 160, maxHeight: 260)
-
-            Button("Add Profile", systemImage: "plus") {
-                let newID = viewModel.addSplitTunnelProfile(name: "New Profile")
-                editedNamesByID[newID] = "New Profile"
-            }
+            .frame(height: min(CGFloat(viewModel.splitTunnelProfiles.count) * 36, 252))
 
             HStack {
+                Button("Add profile", systemImage: "plus") {
+                    let newID = viewModel.addSplitTunnelProfile(name: "New profile")
+                    editedNamesByID[newID] = "New profile"
+                }
                 Spacer()
                 Button("Done") {
                     dismiss()
@@ -36,16 +34,20 @@ struct SplitTunnelProfilesSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 380)
+        .frame(width: 400)
     }
 
     private func profileRow(_ profile: SplitTunnelProfile) -> some View {
         HStack(spacing: 10) {
-            Image(systemName: profile.id == viewModel.selectedSplitTunnelProfileID ? "checkmark.circle.fill" : "circle")
-                .foregroundStyle(profile.id == viewModel.selectedSplitTunnelProfileID ? Color.accentColor : Color.secondary)
-                .onTapGesture {
-                    viewModel.selectSplitTunnelProfile(id: profile.id)
-                }
+            Button {
+                viewModel.selectSplitTunnelProfile(id: profile.id)
+            } label: {
+                Image(systemName: profile.id == viewModel.selectedSplitTunnelProfileID ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(profile.id == viewModel.selectedSplitTunnelProfileID ? Color.accentColor : Color.secondary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Use \(profile.name)")
+            .accessibilityValue(profile.id == viewModel.selectedSplitTunnelProfileID ? "Selected" : "Not selected")
 
             TextField(
                 "Profile name",
@@ -65,6 +67,7 @@ struct SplitTunnelProfilesSheet: View {
             Text("\(profile.rules.count) rule\(profile.rules.count == 1 ? "" : "s")")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .fixedSize()
 
             Button(role: .destructive) {
                 viewModel.removeSplitTunnelProfile(id: profile.id)
@@ -73,6 +76,7 @@ struct SplitTunnelProfilesSheet: View {
                 Image(systemName: "trash")
             }
             .buttonStyle(.borderless)
+            .accessibilityLabel("Remove \(profile.name)")
             .disabled(viewModel.splitTunnelProfiles.count <= 1)
         }
     }

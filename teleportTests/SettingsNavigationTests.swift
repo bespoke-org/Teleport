@@ -2,6 +2,20 @@ import XCTest
 
 @MainActor
 final class SettingsNavigationTests: XCTestCase {
+    func testGeodataIsASplitTunnelingDestinationWithBackAndForwardHistory() {
+        XCTAssertFalse(SettingsSection.sidebarSections.contains(.geodata))
+        var navigation = SettingsNavigation()
+        navigation.select(.splitTunneling)
+        navigation.select(.geodata)
+        XCTAssertEqual(navigation.section, .geodata)
+        XCTAssertEqual(navigation.section.sidebarSection, .splitTunneling)
+        navigation.goBack()
+        XCTAssertEqual(navigation.section, .splitTunneling)
+        navigation.goForward()
+        XCTAssertEqual(navigation.section, .geodata)
+        XCTAssertEqual(navigation.section.sidebarSection, .splitTunneling)
+    }
+
     func testLogsIsAnAdvancedDestinationWithBackAndForwardHistory() {
         XCTAssertFalse(SettingsSection.sidebarSections.contains(.logs))
         var navigation = SettingsNavigation()
