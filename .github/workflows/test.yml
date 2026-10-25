@@ -1,5 +1,5 @@
 # Builds the Debug app and runs the checks on each runner in the matrix the caller passes.
-# Pull requests cover macOS 15 and 26; Main covers each supported macOS and architecture.
+# Pull requests cover macOS 15 and 26; Develop covers each supported macOS and architecture.
 name: Test
 
 on:
