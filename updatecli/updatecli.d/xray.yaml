@@ -1,6 +1,7 @@
 # Opens a pull request when XTLS/Xray-core publishes a new stable release.
 # Run by .github/workflows/xray-update.yml; the token comes from the
-# UPDATECLI_GITHUB_TOKEN environment variable.
+# UPDATECLI_GITHUB_TOKEN environment variable and belongs to a GitHub App, so
+# the pull request starts the Pull request workflow.
 name: Update the bundled Xray
 
 scms:
@@ -10,8 +11,8 @@ scms:
       owner: bespoke-org
       repository: Teleport
       branch: main
-      user: github-actions[bot]
-      email: 41898282+github-actions[bot]@users.noreply.github.com
+      user: teleport-xray-update[bot]
+      email: 347876928+teleport-xray-update[bot]@users.noreply.github.com
       commitmessage:
         type: build
         hidecredit: true
@@ -37,9 +38,9 @@ targets:
     sourceid: xray
     spec:
       # The release tag is appended as the last argument. The script prints to
-      # stdout only when it changed (or under `diff` would change) a file, and
-      # with --test fails when `just test` fails, so nothing is committed.
-      command: scripts/bump-xray.sh --test
+      # stdout only when it changed (or under `diff` would change) a file. The
+      # tests run on the pull request, so a release that breaks them still gets one.
+      command: scripts/bump-xray.sh
 
 actions:
   pullrequest:
