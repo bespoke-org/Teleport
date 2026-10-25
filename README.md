@@ -141,7 +141,7 @@ Checks are XCTest cases in `teleportTests/` (app and shared code) and `TeleportP
 
 ## Buy us some tokens
 
-Although Teleport is built with LLMs, we spend a lot of time and tokens making it stable and improving its UX. If Teleport is useful to you, you can support that work with USDT.
+Although Teleport is built with LLMs, we put a lot of time and tokens into its stability and UX. If Teleport is useful to you, you can support that work with USDT.
 
 Check the network before sending: a transfer on a network not listed here can be lost.
 
