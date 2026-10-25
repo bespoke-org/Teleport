@@ -1,0 +1,22 @@
+name: Pull request
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pull-request-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # GitHub runs at most five macOS jobs at a time, so pull requests run the checks only on
+  # arm64 macOS 26, the image the release is built on. Main runs the rest after the merge.
+  test:
+    uses: ./.github/workflows/test.yml
+    with:
+      matrix: |
+        [
+          {"macos": 26, "arch": "arm64", "runner": "macos-26", "developer-dir": "/Applications/Xcode.app/Contents/Developer"}
+        ]
