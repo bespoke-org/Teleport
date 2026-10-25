@@ -1,0 +1,33 @@
+name: Main
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: main-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Foundation's behaviour differs between macOS releases, so the checks run on each
+  # supported one, on arm64 and on x86_64. The macos-15 images ship Xcode 26 but not as
+  # the default. The xcode-27 preview image runs macOS 27, has only Xcode 27 and has no
+  # x86_64 variant.
+  test:
+    uses: ./.github/workflows/test.yml
+    with:
+      matrix: |
+        [
+          {"macos": 15, "arch": "arm64", "runner": "macos-15", "developer-dir": "/Applications/Xcode_26.3.app/Contents/Developer"},
+          {"macos": 15, "arch": "x86_64", "runner": "macos-15-intel", "developer-dir": "/Applications/Xcode_26.3.app/Contents/Developer"},
+          {"macos": 26, "arch": "arm64", "runner": "macos-26", "developer-dir": "/Applications/Xcode.app/Contents/Developer"},
+          {"macos": 26, "arch": "x86_64", "runner": "macos-26-intel", "developer-dir": "/Applications/Xcode.app/Contents/Developer"},
+          {"macos": 27, "arch": "arm64", "runner": "xcode-27", "developer-dir": "/Applications/Xcode.app/Contents/Developer"}
+        ]
+
+  # Builds the .dmg and the zipped app the way a release does and keeps them as artifacts of the run.
+  package:
+    uses: ./.github/workflows/package.yml

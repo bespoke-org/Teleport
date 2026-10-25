@@ -1,49 +1,26 @@
+# Builds the Debug app and runs the checks on each runner in the matrix the caller passes.
+# Pull request runs it on one runner, Main on each supported macOS.
 name: Test
 
 on:
-  pull_request:
-  push:
-    branches: [main]
+  workflow_call:
+    inputs:
+      matrix:
+        description: JSON list of {macos, arch, runner, developer-dir}
+        required: true
+        type: string
 
 permissions:
   contents: read
 
-concurrency:
-  group: test-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   test:
-    # Foundation's behaviour differs between macOS releases, so the checks run on
-    # each supported one, on arm64 and on x86_64. The macos-15 images ship
-    # Xcode 26 but not as the default. The xcode-27 preview image runs macOS 27,
-    # has only Xcode 27 and has no x86_64 variant.
     # Without Config/Local.xcconfig the build is signed ad hoc.
     name: macOS ${{ matrix.macos }} (${{ matrix.arch }})
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - macos: 15
-            arch: arm64
-            runner: macos-15
-            developer-dir: /Applications/Xcode_26.3.app/Contents/Developer
-          - macos: 15
-            arch: x86_64
-            runner: macos-15-intel
-            developer-dir: /Applications/Xcode_26.3.app/Contents/Developer
-          - macos: 26
-            arch: arm64
-            runner: macos-26
-            developer-dir: /Applications/Xcode.app/Contents/Developer
-          - macos: 26
-            arch: x86_64
-            runner: macos-26-intel
-            developer-dir: /Applications/Xcode.app/Contents/Developer
-          - macos: 27
-            arch: arm64
-            runner: xcode-27
-            developer-dir: /Applications/Xcode.app/Contents/Developer
+        include: ${{ fromJSON(inputs.matrix) }}
     runs-on: ${{ matrix.runner }}
     env:
       DEVELOPER_DIR: ${{ matrix.developer-dir }}
@@ -61,8 +38,3 @@ jobs:
       - run: just build-debug
 
       - run: just test
-
-  # Builds the .dmg and the zipped app the way a release does and keeps them as artifacts of the run.
-  package:
-    if: github.event_name == 'push'
-    uses: ./.github/workflows/package.yml
