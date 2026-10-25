@@ -7,20 +7,20 @@ final class SettingsNavigationTests: XCTestCase {
         XCTAssertFalse(navigation.canGoBack)
         XCTAssertFalse(navigation.canGoForward)
 
-        navigation.select(.connections)
+        navigation.select(.portals)
         navigation.select(.splitTunneling)
         navigation.select(.geodata)
 
         navigation.goBack()
         XCTAssertEqual(navigation.section, .splitTunneling)
         navigation.goBack()
-        XCTAssertEqual(navigation.section, .connections)
+        XCTAssertEqual(navigation.section, .portals)
         navigation.goBack()
         XCTAssertEqual(navigation.section, .general)
         XCTAssertFalse(navigation.canGoBack)
 
         navigation.goForward()
-        XCTAssertEqual(navigation.section, .connections)
+        XCTAssertEqual(navigation.section, .portals)
         navigation.goForward()
         XCTAssertEqual(navigation.section, .splitTunneling)
         navigation.goForward()
@@ -30,7 +30,7 @@ final class SettingsNavigationTests: XCTestCase {
 
     func testNewDestinationAfterGoingBackClearsForwardHistory() {
         var navigation = SettingsNavigation()
-        navigation.select(.connections)
+        navigation.select(.portals)
         navigation.select(.geodata)
         navigation.goBack()
         navigation.select(.logs)
@@ -39,7 +39,7 @@ final class SettingsNavigationTests: XCTestCase {
         navigation.goForward()
         XCTAssertEqual(navigation.section, .logs)
         navigation.goBack()
-        XCTAssertEqual(navigation.section, .connections)
+        XCTAssertEqual(navigation.section, .portals)
     }
 
     func testSelectingCurrentSectionPreservesForwardHistory() {

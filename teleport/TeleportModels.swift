@@ -1025,7 +1025,7 @@ enum SubscriptionError: LocalizedError, Equatable {
         case .invalidJSON:
             return "Subscription contains malformed JSON"
         case let .noImportableEntries(summary):
-            return "No compatible connections could be imported. \(summary)"
+            return "No compatible portals could be imported. \(summary)"
         }
     }
 }

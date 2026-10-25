@@ -81,7 +81,7 @@ struct MenuBarView: View {
             subscriptionItems: viewModel.subscriptionPickerItems,
             importedItemsBySourceID: viewModel.importedConnectionPickerItemsBySourceID,
             selectedConnectionID: viewModel.selectedConnectionID,
-            selectedDisplayName: viewModel.selectedConnection?.displayName ?? "Select connection",
+            selectedDisplayName: viewModel.selectedConnection?.displayName ?? "Select portal",
             subtitle: connectionSubtitle,
             canChangeSelection: viewModel.canChangeSelection,
             showsLatency: viewModel.showsLatencyInMenuBarPicker,
@@ -94,7 +94,7 @@ struct MenuBarView: View {
 
     private var connectionSubtitle: String {
         guard let selectedConnection = viewModel.selectedConnection else {
-            return "Choose a connection"
+            return "Choose a portal"
         }
 
         let healthSummary = viewModel.healthSummary(for: selectedConnection)
@@ -164,13 +164,13 @@ private struct ConnectionPickerSection: View, Equatable {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if savedConnectionCount == 0 {
-                Text("No saved connections")
+                Text("No saved portals")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
                 Menu {
                     if !manualItems.isEmpty {
-                        Text("Saved connections")
+                        Text("Standalone")
                         ForEach(manualItems) { connection in
                             connectionSelectionButton(connection)
                         }
