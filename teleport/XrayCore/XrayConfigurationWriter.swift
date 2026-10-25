@@ -335,7 +335,13 @@ nonisolated struct XrayConfigurationWriter {
                         "autoSystemRoutingTable": ipv6Enabled
                             ? ["0.0.0.0/0", "::/0"]
                             : ["0.0.0.0/0"],
-                        "autoOutboundsInterface": outboundInterface
+                        // Empty rather than absent: with autoSystemRoutingTable set,
+                        // a missing key makes Xray default to "auto". Either value
+                        // registers TUN's dialer controller, which in Xray 26.10.21
+                        // fails every UDP dial on Darwin (XTLS/Xray-core#7228), the
+                        // WireGuard handshake included. The outbounds are bound to
+                        // the uplink by their own sockopt.interface instead.
+                        "autoOutboundsInterface": ""
                     ],
                     "sniffing": [
                         "enabled": true,
