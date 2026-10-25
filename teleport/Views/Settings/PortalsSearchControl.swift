@@ -17,7 +17,7 @@ struct PortalsSearchControl: View {
                     focusRequest: focusRequest,
                     onDismiss: closeSearch)
                     .frame(width: searchFieldWidth, height: 28)
-                    .opacity(min(1, (searchControlWidth - 36) / 60))
+                    .opacity(min(1, (Double(searchControlWidth) - 36) / 60))
                     .allowsHitTesting(isSearchExpanded)
             }
             Button {

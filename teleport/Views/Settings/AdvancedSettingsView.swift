@@ -2,7 +2,9 @@ import SwiftUI
 
 struct AdvancedSettingsView: View {
     @ObservedObject var viewModel: AppViewModel
+    let onOpenLogs: () -> Void
     @State private var isConfirmingHelperUninstall = false
+    @AppStorage(SystemStateDump.defaultsKey) private var capturesNetworkState = false
 
     var body: some View {
         Form {
@@ -77,6 +79,7 @@ struct AdvancedSettingsView: View {
                 } message: {
                     Text("Any running session is disconnected first. The helper's LaunchDaemon, its Xray copy, its state and log under /Library and /var, and its packet filter rules are removed. Your portals and settings stay. TUN mode asks for administrator approval to install the helper again on the next connect; System Proxy mode is not affected.")
                 }
+
             } header: {
                 Text("Maintenance")
             } footer: {
@@ -84,10 +87,36 @@ struct AdvancedSettingsView: View {
                     Text(message)
                 }
             }
+
+            Section("Diagnostics") {
+                Toggle(isOn: $capturesNetworkState) {
+                    Text("Capture network state")
+                    Text("Records routes, DNS, firewall and proxy settings around network changes. May slow down connecting.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section {
+                Button(action: onOpenLogs) {
+                    HStack(spacing: 12) {
+                        SettingsSectionIcon(section: .logs)
+                        Text("Logs")
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                            .accessibilityHidden(true)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 22)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
         }
         .formStyle(.grouped)
         .padding(.top, -20)
-        .navigationTitle("Advanced")
+        .navigationTitle("Nerd Shit")
         .onAppear {
             viewModel.refreshHelperInstallationStatus()
         }

@@ -2,6 +2,21 @@ import XCTest
 
 @MainActor
 final class SettingsNavigationTests: XCTestCase {
+    func testLogsIsAnAdvancedDestinationWithBackAndForwardHistory() {
+        XCTAssertFalse(SettingsSection.sidebarSections.contains(.logs))
+        var navigation = SettingsNavigation()
+        navigation.select(.advanced)
+        navigation.select(.logs)
+        XCTAssertEqual(navigation.section, .logs)
+        XCTAssertEqual(navigation.section.sidebarSection, .advanced)
+
+        navigation.goBack()
+        XCTAssertEqual(navigation.section, .advanced)
+        navigation.goForward()
+        XCTAssertEqual(navigation.section, .logs)
+        XCTAssertEqual(navigation.section.sidebarSection, .advanced)
+    }
+
     func testBackAndForwardFollowVisitedSections() {
         var navigation = SettingsNavigation()
         XCTAssertFalse(navigation.canGoBack)
