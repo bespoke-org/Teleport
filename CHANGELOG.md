@@ -7,7 +7,11 @@ Format is based on [_Keep a changelog_](https://keepachangelog.com) and uses
 ### Added
 - Split tunneling: destination rules, geosite category rules, custom geosite/geoip sources, named profiles with a per-profile default action, and a rule tester that matches against geodata. A rule can name the connection its traffic leaves through, and a session dials every connection the active rules route through.
 - WireGuard connections from `wireguard://` links and `[Interface]` files. Names routed to a peer are resolved through that peer's own DNS servers.
-- Saved connections can be renamed; the name survives subscription refreshes.
+- Hysteria 2 connections from `hy2://` links and subscriptions, with obfuscation and port hopping.
+- Subscriptions can carry standalone Xray JSON profiles (VLESS and Trojan) alongside URI lists.
+- Saved connections can be renamed; the name survives subscription refreshes. A manually added connection's link or `[Interface]` text can be edited; it keeps its id and the split-tunnel rules that point at it.
+- The server can be switched while connected or connecting.
+- macOS 15 is supported.
 - TUN mode routes IPv6 and DNS through the tunnel. IPv6 is only claimed when the uplink has global IPv6.
 - Leak guard: pf rules keep traffic off the physical uplink while a TUN session is being rebuilt, after a wake or an uplink change. Settings has a switch for it; it is off by default.
 - A TUN session is rebuilt when the machine wakes from sleep or the uplink changes, and torn down by the helper when its Xray exits.
@@ -30,8 +34,10 @@ Format is based on [_Keep a changelog_](https://keepachangelog.com) and uses
 - Xray owns DNS for the tunnel; QUIC is blocked in tunnel routing so domain rules see the name.
 - Proxy mode gives Xray the same geodata TUN mode gets.
 - Saved state: a snapshot this build cannot read is never overwritten, a save is never the only copy, and backup copies live in the Keychain.
-- `just install` installs the Release build into /Applications, quitting and relaunching a running Teleport; `just build-release` only builds; `just coverage` reports line coverage of the test scripts. `just verify` and the `verify-*` recipes are renamed to `just test` and `test-*`, and `scripts/verify_*.swift` to `scripts/test_*.swift`.
+- `just install` installs the Release build into /Applications, quitting and relaunching a running Teleport; `just build-release` only builds; `just coverage` reports line coverage of the tests. The checks run as XCTest bundles: `just test` runs all of them, `just test-case <Class>` one class.
 - The connection mode formerly called VPN is called TUN in the UI and the docs.
+- TUN mode works in ad hoc signed builds after an administrator approves the build; a changed build asks again.
+- The menu bar popover no longer has the Connection and Actions headings or the Open Settings button.
 
 ### Fixed
 - Health probes no longer report what they did not measure.
@@ -47,6 +53,9 @@ Format is based on [_Keep a changelog_](https://keepachangelog.com) and uses
 - Geodata is validated before it reaches the helper.
 - Direct traffic no longer loops back into Xray (`routeOnly` sniffing).
 - The About page shows both authors and no longer falls back to a stale version string.
+- Hostnames with Cyrillic labels are shown decoded instead of as punycode.
+- Credentials and names containing percent sequences are decoded the same way on every macOS version.
+- UDP connections in TUN mode, WireGuard included: Xray 26.10.21 failed every UDP dial on macOS (XTLS/Xray-core#7228).
 
 ## [0.3.0] - 2026-05-10
 ### Added
