@@ -237,6 +237,11 @@ reset-legacy-privileged-helper:
 uninstall-helper:
     sudo bash scripts/uninstall.sh
 
+# Print the JSON inside one of the app's sealed snapshot files; the key comes from Keychain. Usage: just decrypt-snapshot [snapshot|retained.<stamp>-<reason>|unreadable.<stamp>]
+decrypt-snapshot name="snapshot":
+    security find-generic-password -s dev.x.teleport.configuration -a app-snapshot.key -w \
+      | swift scripts/decrypt-snapshot.swift "$HOME/Library/Application Support/teleport/sealed/app-snapshot/{{name}}"
+
 # Print the changelog section for the commits since the last tag (see cliff.toml)
 changelog:
     git-cliff --unreleased

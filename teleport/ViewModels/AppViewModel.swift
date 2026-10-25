@@ -199,10 +199,10 @@ final class AppViewModel: ObservableObject {
         let snapshot = store.load()
         var loadErrorMessage: String?
         if let loadError = store.lastLoadError {
-            // Keychain read failed (e.g. still locked right after boot, or the app's
-            // signature changed since the item was written) rather than there being no
-            // saved data. Surface it instead of silently showing an empty state, since
-            // a save from here would go on to overwrite the real Keychain item.
+            // The saved data could not be read (e.g. the Keychain key was still locked
+            // right after boot) rather than there being none. Surface it instead of
+            // silently showing an empty state, since a save from here would go on to
+            // overwrite the real snapshot.
             loadErrorMessage = loadError.localizedDescription
         }
 

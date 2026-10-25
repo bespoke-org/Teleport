@@ -38,7 +38,7 @@ final class ConnectionProviderTests: XCTestCase {
             keychainAccount: "app-snapshot-name",
             log: TeleportLog(directoryURL: root, fileName: "verify.log")
         )
-        defer { store.deleteKeychainItemForTesting() }
+        defer { store.deleteStoredDataForTesting() }
 
         let configuration = try ConnectionLinkParser().parse(
             "vless://123e4567-e89b-12d3-a456-426614174000@example.com:443?security=tls&type=tcp&sni=example.com#Imported"
@@ -111,7 +111,7 @@ final class ConnectionProviderTests: XCTestCase {
             keychainAccount: "app-snapshot-switch-\(mode.rawValue)",
             log: log
         )
-        defer { store.deleteKeychainItemForTesting() }
+        defer { store.deleteStoredDataForTesting() }
         let connections = try (1...3).map { index in
             SavedConnection(
                 id: UUID(),
@@ -536,7 +536,7 @@ final class ConnectionProviderTests: XCTestCase {
         let root = try makeIsolatedRoot("termination")
         defer { try? FileManager.default.removeItem(at: root) }
         let (viewModel, backend, store) = try await makeTerminationFixture(root: root)
-        defer { store.deleteKeychainItemForTesting() }
+        defer { store.deleteStoredDataForTesting() }
 
         await backend.stopGate.enableBlocking()
         let completed = Flag()
@@ -604,7 +604,7 @@ final class ConnectionProviderTests: XCTestCase {
         let root = try makeIsolatedRoot("termination-limit")
         defer { try? FileManager.default.removeItem(at: root) }
         let (viewModel, backend, store) = try await makeTerminationFixture(root: root)
-        defer { store.deleteKeychainItemForTesting() }
+        defer { store.deleteStoredDataForTesting() }
         await backend.stopGate.enableBlocking()
         let completed = Flag()
         viewModel.handleAppTermination(teardownLimit: .milliseconds(200)) { completed.set() }

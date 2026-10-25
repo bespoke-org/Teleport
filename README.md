@@ -83,7 +83,7 @@ TUN mode installs a LaunchDaemon (`dev.x.teleport.PrivilegedHelper`) that runs a
 
 ### Stored data
 
-Connection links, which contain credentials, are stored in the login Keychain (service `dev.x.teleport.configuration`), not in plain files. Logs are written under `~/Library/Application Support/teleport/` and, for the helper, under `/var/db/dev.x.teleport/`.
+Connection links, which contain credentials, are stored encrypted under `~/Library/Application Support/teleport/sealed/`, with the key in the login Keychain (service `dev.x.teleport.configuration`). Logs are written under `~/Library/Application Support/teleport/` and, for the helper, under `/var/db/dev.x.teleport/`.
 
 ## Uninstall
 

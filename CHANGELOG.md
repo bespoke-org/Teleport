@@ -33,7 +33,7 @@ Format is based on [_Keep a changelog_](https://keepachangelog.com) and uses
 - The start script undoes its routes and stops Xray on any failure, including one `set -e` stops on.
 - Xray owns DNS for the tunnel; QUIC is blocked in tunnel routing so domain rules see the name.
 - Proxy mode gives Xray the same geodata TUN mode gets.
-- Saved state: a snapshot this build cannot read is never overwritten, a save is never the only copy, and backup copies live in the Keychain.
+- Saved state: a snapshot this build cannot read is never overwritten, a save is never the only copy, and the snapshot and its backup copies are files encrypted with a key kept in the Keychain, so an update asks for the Keychain password once instead of once per copy.
 - `just install` installs the Release build into /Applications, quitting and relaunching a running Teleport; `just build-release` only builds; `just coverage` reports line coverage of the tests. The checks run as XCTest bundles: `just test` runs all of them, `just test-case <Class>` one class.
 - The connection mode formerly called VPN is called TUN in the UI and the docs.
 - TUN mode works in ad hoc signed builds after an administrator approves the build; a changed build asks again.
