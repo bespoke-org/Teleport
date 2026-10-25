@@ -48,10 +48,6 @@ struct GeodataSettingsView: View {
                     }
                 }
 
-            } header: {
-                Text("Domain and IP lists used by split-tunneling rules.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
 
             Section("Updates") {

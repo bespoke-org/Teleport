@@ -9,7 +9,7 @@ Teleport keeps app-side connection orchestration separate from the root helper t
 Defines the provider-oriented API consumed by upper application layers:
 
 - `ConnectionProvider` exposes asynchronous connect/disconnect operations and one `ConnectionState` stream.
-- `ConnectionRequest` carries provider-neutral connection and split-tunnel inputs.
+- `ConnectionRequest` carries provider-neutral connection and split routing inputs.
 - `ConnectionProviderFactory` selects System Proxy or root-Xray mode.
 - `BackendConnectionProvider` serializes lifecycle work around transitional synchronous backends.
 

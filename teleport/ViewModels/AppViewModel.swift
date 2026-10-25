@@ -1000,7 +1000,7 @@ final class AppViewModel: ObservableObject {
     @discardableResult
     func addSplitTunnelProfile(name: String) -> UUID {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let profile = SplitTunnelProfile(name: trimmedName.isEmpty ? "New Profile" : trimmedName)
+        let profile = SplitTunnelProfile(name: trimmedName.isEmpty ? "New profile" : trimmedName)
         splitTunnelProfiles.append(profile)
         selectedSplitTunnelProfileID = profile.id
         schedulePersist()
@@ -1361,7 +1361,7 @@ final class AppViewModel: ObservableObject {
         }
 
         awaitsUplinkToReconnect = false
-        log.info(Self.subsystem, "connect requested: mode \(connectionMode), server \(LogFormat.host(selectedConfiguration.host)):\(selectedConfiguration.port), split tunnel \(isSplitTunnelEnabled ? "on" : "off") with \(activeSplitTunnelRules.count) rules")
+        log.info(Self.subsystem, "connect requested: mode \(connectionMode), server \(LogFormat.host(selectedConfiguration.host)):\(selectedConfiguration.port), split routing \(isSplitTunnelEnabled ? "on" : "off") with \(activeSplitTunnelRules.count) rules")
         SystemStateDump.capture("before connect", log: log)
         startConnection(using: selectedConfiguration)
     }
