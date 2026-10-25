@@ -170,18 +170,16 @@ private struct ConnectionPickerSection: View, Equatable {
             } else {
                 Menu {
                     if !manualItems.isEmpty {
-                        Section("Saved connections") {
-                            ForEach(manualItems) { connection in
-                                connectionSelectionButton(connection)
-                            }
+                        Text("Saved connections")
+                        ForEach(manualItems) { connection in
+                            connectionSelectionButton(connection)
                         }
                     }
 
                     if !subscriptionItems.isEmpty {
-                        Section("Subscriptions") {
-                            ForEach(subscriptionItems) { source in
-                                subscriptionMenu(source)
-                            }
+                        Text("Subscriptions")
+                        ForEach(subscriptionItems) { source in
+                            subscriptionMenu(source)
                         }
                     }
                 } label: {

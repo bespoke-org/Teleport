@@ -77,7 +77,9 @@ struct BundledConfigurationSeeder {
             connectionMode: snapshot.connectionMode,
             subscriptionConnectionSort: snapshot.subscriptionConnectionSort,
             showsLatencyInMenuBarPicker: snapshot.showsLatencyInMenuBarPicker,
-            animatesMenuBarIcon: snapshot.animatesMenuBarIcon
+            animatesMenuBarIcon: snapshot.animatesMenuBarIcon,
+            showsInDock: snapshot.showsInDock,
+            connectsOnLaunch: snapshot.connectsOnLaunch
         )
     }
 
