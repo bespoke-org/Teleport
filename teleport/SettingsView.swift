@@ -28,7 +28,7 @@ struct SettingsView: View {
         } detail: {
             selectedSectionView
                 .frame(minWidth: 560)
-                .padding(.top, navigation.section == .portals ? 0 : 16)
+                .padding(.top, navigation.section == .portals || navigation.section == .splitTunneling ? 0 : 16)
                 .navigationTitle(navigation.section.title)
         }
         .toolbar {
@@ -232,9 +232,9 @@ private struct GeneralSettingsView: View {
             return "Routes apps that use macOS proxy settings."
         case .tun:
             if !viewModel.isHelperInstalled {
-                return "Routes device traffic with split-tunneling exceptions. The first connection requires administrator approval to install a helper."
+                return "Routes device traffic with split routing exceptions. The first connection requires administrator approval to install a helper."
             }
-            return "Routes device traffic with split-tunneling exceptions."
+            return "Routes device traffic with split routing exceptions."
         }
     }
 
@@ -263,9 +263,15 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
 
     var id: Self { self }
 
-    static var sidebarSections: [Self] { allCases.filter { $0 != .logs } }
+    static var sidebarSections: [Self] { allCases.filter { $0 != .logs && $0 != .geodata } }
 
-    var sidebarSection: Self { self == .logs ? .advanced : self }
+    var sidebarSection: Self {
+        switch self {
+        case .logs: return .advanced
+        case .geodata: return .splitTunneling
+        default: return self
+        }
+    }
 
     var title: String {
         switch self {
@@ -274,7 +280,7 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         case .portals:
             return "Portals"
         case .splitTunneling:
-            return "Split Tunneling"
+            return "Split Routing"
         case .geodata:
             return "Geodata"
         case .advanced:
@@ -293,7 +299,7 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         case .portals:
             return "oval.portrait"
         case .splitTunneling:
-            return "point.topleft.down.curvedto.point.bottomright.up"
+            return "arrow.triangle.branch"
         case .geodata:
             return "globe"
         case .advanced:
@@ -311,9 +317,7 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
             return .gray
         case .portals:
             return Color(red: 143.0 / 255, green: 76.0 / 255, blue: 219.0 / 255)
-        case .splitTunneling:
-            return Color(red: 244.0 / 255, green: 119.0 / 255, blue: 107.0 / 255)
-        case .geodata:
+        case .splitTunneling, .geodata:
             return Color(red: 50.0 / 255, green: 184.0 / 255, blue: 83.0 / 255)
         case .advanced:
             return .orange

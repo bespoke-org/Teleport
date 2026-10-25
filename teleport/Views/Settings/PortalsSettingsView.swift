@@ -219,7 +219,7 @@ struct PortalsSettingsView: View {
                             .lineLimit(1)
                             .additionalHelp(connection.configuration.securityWarningText)
                         if !selected && ruleCount > 0 {
-                            Text(ruleCount == 1 ? "1 split-tunnel rule" : "\(ruleCount) split-tunnel rules")
+                            Text(ruleCount == 1 ? "1 split routing rule" : "\(ruleCount) split routing rules")
                                 .font(.caption)
                                 .foregroundStyle(.tint)
                         }

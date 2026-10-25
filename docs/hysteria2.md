@@ -158,7 +158,7 @@ Before closing the issue, use privately supplied profiles on a signed build:
    response reaches the expected remote endpoint. Check health probing, then
    disconnect and confirm proxy restoration and process/listener cleanup.
 4. In VPN mode, verify the physical host route and interface binding for every
-   Hysteria server, including a Hysteria connection selected by a split-tunnel
+   Hysteria server, including a Hysteria connection selected by a split routing
    rule. Check TCP, DNS, and non-443 UDP traffic, IPv4 and IPv6 where available,
    and large transfers. Application UDP/443 remains blocked by Teleport's
    existing policy; the Hysteria transport's own QUIC traffic must still work.
