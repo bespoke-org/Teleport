@@ -6,7 +6,7 @@ Xray **26.10.21**, revision **1b1647c**, supplies both the proxy protocol and th
 QUIC transport. Hysteria 1 is rejected. No additional executable is required.
 
 The representative configuration in
-`scripts/fixtures/subscriptions/hysteria2.json` is synthetic. It is not a capture
+`teleportTests/fixtures/subscriptions/hysteria2.json` is synthetic. It is not a capture
 of any provider's subscription. A separate import check against the private
 Liberty sample imported all four Hysteria profiles. Connectivity to those
 servers still needs live verification.
@@ -127,41 +127,19 @@ not report the server's UDP-disabled handshake flag to Teleport.
 Run from the repository root:
 
 ```sh
-just test-script hysteria
-just test-script subscription-support
-just test-script persistence
-just test-hysteria-integration
+just test-case HysteriaTests
+just test-case SubscriptionSupportTests
+just test-case PersistenceTests
 ```
 
-`just test-script hysteria` runs `fetch-xray`, so both Hysteria recipes work on a
-fresh checkout without first building the app. The download is checked against
-the bundled core's SHA-256 pin.
+`just test-case` runs `fetch-xray` first, so the checks work on a fresh checkout.
+The download is checked against the bundled core's SHA-256 pin.
 
 The Hysteria checks exercise real subscription decoding, plain/Base64 links,
 strict rejection and sanitized diagnostics, rename/refresh identity, snapshot
 and startup round trips, share export, both config writers, and bundled
 `xray run -test` validation. Persistence checks include an isolated Keychain
 round trip. They require access to the login Keychain.
-
-The integration script starts disposable local TCP/UDP echo services and a
-Hysteria server, then imports a synthetic subscription through Teleport's real
-parser and writer. It checks SOCKS TCP, HTTP CONNECT, SOCKS UDP, server restart
-recovery, and listener cleanup, with and without Salamander. Additional UDP
-relays simulate provider port forwarding to the same Hysteria server. These
-checks prove that the base port stays unused when a different sole hopping
-port is configured, and that traffic changes destination port after an explicit
-five-second interval while TCP, HTTP, and UDP continue working. They cover plain
-TLS, Salamander, Gecko, migration from the obsolete hopping field, and a Gecko
-URI with the `mport`/`alpn`/`fp` extensions. Run only
-these checks after `just test-script hysteria` with:
-
-```sh
-python3 scripts/test_hysteria_integration.py /tmp/teleport-test-hysteria --hopping-only
-```
-
-The script creates a temporary self-signed certificate and pins it in the client. All listeners
-use loopback; temporary processes and files are removed. It requires Python 3
-and OpenSSL, but no root access and no changes to macOS networking.
 
 ## Live macOS verification
 

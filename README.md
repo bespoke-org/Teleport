@@ -129,7 +129,7 @@ scripts/fetch-xray.sh v26.10.21
 
 The script downloads the arm64 and x86_64 release archives, checks each against the digest XTLS publishes, joins them with `lipo` into one universal executable and compares it with the pin in `BundledArtifactPolicy.swift`; when upgrading, update the pin to the digest it prints and run it again. `scripts/bump-xray.sh vX.Y.Z` does the whole update: it fetches the release, writes the new pin and puts the version into this README, `THIRD_PARTY_NOTICES.md` and `CHANGELOG.md`. The `.github/workflows/xray-update.yml` workflow runs it through Updatecli once a day and opens a pull request when XTLS publishes a new stable release. The executable is not kept in git: `just build` runs the script when `teleport/Resources/xray` is missing or does not match the pin, and a build from Xcode fails until the script has been run once. Release builds are universal (`just build-release`), Debug builds are host-only. Licenses of the bundled components are in `THIRD_PARTY_NOTICES.md`.
 
-Formatting follows `.swift-format` (four-space indent, 160 columns). Check with `swift format lint -r teleport Shared TeleportPrivilegedHelper scripts`.
+Formatting follows `.swift-format` (four-space indent, 160 columns). Check with `swift format lint -r teleport Shared TeleportPrivilegedHelper teleportTests TeleportPrivilegedHelperTests`.
 
 ### Tests
 
@@ -137,7 +137,7 @@ Formatting follows `.swift-format` (four-space indent, 160 columns). Check with 
 just test
 ```
 
-Checks are standalone Swift programs in `scripts/test_*.swift`; no XCTest. Run one with `just test-script <name>`, e.g. `just test-script core` for `scripts/test_core.swift`. Connecting, helper installation and the leak guard on a real network are tested by hand.
+Checks are XCTest cases in `teleportTests/` (app and shared code) and `TeleportPrivilegedHelperTests/` (helper code); both bundles compile the sources they test, so no app or helper process runs. Run one class or method with `just test-case <Class>[/<method>]`, e.g. `just test-case CoreTests`, or press Cmd-U in Xcode. `just coverage` prints line coverage. Connecting, helper installation and the leak guard on a real network are tested by hand.
 
 ## Buy us some tokens
 
