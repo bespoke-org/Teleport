@@ -5,40 +5,49 @@ on:
     tags: ['v*']
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  package:
+    uses: ./.github/workflows/package.yml
+
   release:
-    # Without Config/Local.xcconfig the build is signed ad hoc; see the note added to the release.
-    runs-on: macos-26
+    # Uses only git-cliff, awk and gh, so it runs on Linux.
+    # The build is signed ad hoc; see the note added to the release.
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     env:
-      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
       TAG: ${{ github.ref_name }}
+      VERSION: ${{ needs.package.outputs.version }}
     steps:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
 
-      - name: Install just and git-cliff
-        run: brew install just git-cliff
-
-      - run: just package
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: git-cliff
 
       # v1.2.3 and v1.2.3-rc.1 both need MARKETING_VERSION 1.2.3.
       - name: Check that the tag matches the app version
         run: |
-          version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' build/DerivedData/Build/Products/Release/Teleport.app/Contents/Info.plist)
           base=${TAG#v}
           base=${base%%-*}
-          if [[ "$base" != "$version" ]]; then
-            echo "Tag $TAG does not match MARKETING_VERSION $version" >&2
+          if [[ "$base" != "$VERSION" ]]; then
+            echo "Tag $TAG does not match MARKETING_VERSION $VERSION" >&2
             exit 1
           fi
-          echo "VERSION=$version" >> "$GITHUB_ENV"
 
-      - name: Archive the app
-        run: ditto -c -k --keepParent build/DerivedData/Build/Products/Release/Teleport.app "build/dist/Teleport-$VERSION.zip"
+      # Each file was uploaded unzipped; skip-decompress keeps the zipped app as it is.
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          pattern: Teleport-${{ needs.package.outputs.version }}.*
+          path: build/dist
+          merge-multiple: true
+          skip-decompress: true
 
       # A release takes its CHANGELOG.md section, written by just prepare-release. A pre-release
       # gets the commits since the last release; cliff.toml's tag_pattern skips -rc tags.

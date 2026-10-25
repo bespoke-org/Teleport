@@ -61,3 +61,8 @@ jobs:
       - run: just build-debug
 
       - run: just test
+
+  # Builds the .dmg and the zipped app the way a release does and keeps them as artifacts of the run.
+  package:
+    if: github.event_name == 'push'
+    uses: ./.github/workflows/package.yml
