@@ -1,19 +1,7 @@
 import Foundation
+import XCTest
 
-struct TestGeodata {
-    static func main() throws {
-        try testGeodataSettingsDefaultsWhenMissing()
-        try testGeodataSettingsRoundTrip()
-        try testGeodataUpdateErrorDescriptionsAreNonEmpty()
-        try testStoreReportsWhetherBytesChanged()
-        try testResolvedAssetsUseMetadataManifest()
-        try testSourceURLRequiresHTTPS()
-        try testFormatValidationRejectsUnusablePayloads()
-        try testFormatValidationRejectsTheOtherKind()
-        try testFormatValidationRejectsOversizedIntegerVarints()
-        print("test_geodata: all checks passed")
-    }
-
+final class GeodataTests: XCTestCase {
     /// Redirects the Application Support base directory to a throwaway location so
     /// GeodataUpdateService.store writes to a temp path instead of the developer's
     /// real ~/Library/Application Support/teleport/geodata store.
@@ -39,7 +27,7 @@ struct TestGeodata {
         }
     }
 
-    private static func testStoreReportsWhetherBytesChanged() throws {
+    func testStoreReportsWhetherBytesChanged() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("teleport-verify-geodata-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -50,19 +38,19 @@ struct TestGeodata {
         let payloadB = Data(repeating: 0xCD, count: 8192)
 
         let firstWrite = try service.store(payloadA, for: .geosite)
-        precondition(firstWrite, "expected the first write of a new file to report changed == true")
+        XCTAssert(firstWrite, "expected the first write of a new file to report changed == true")
 
         let identicalRewrite = try service.store(payloadA, for: .geosite)
-        precondition(!identicalRewrite, "expected rewriting identical bytes to report changed == false")
+        XCTAssert(!identicalRewrite, "expected rewriting identical bytes to report changed == false")
 
         let changedRewrite = try service.store(payloadB, for: .geosite)
-        precondition(changedRewrite, "expected writing different bytes to report changed == true")
+        XCTAssert(changedRewrite, "expected writing different bytes to report changed == true")
 
-        precondition(service.hasCustomGeodata(for: .geosite), "expected the stored custom file to exist")
-        precondition(!service.hasCustomGeodata(for: .geoip), "expected only the written kind to exist")
+        XCTAssert(service.hasCustomGeodata(for: .geosite), "expected the stored custom file to exist")
+        XCTAssert(!service.hasCustomGeodata(for: .geoip), "expected only the written kind to exist")
     }
 
-    private static func testResolvedAssetsUseMetadataManifest() throws {
+    func testResolvedAssetsUseMetadataManifest() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("teleport-verify-geodata-resolved-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -75,8 +63,8 @@ struct TestGeodata {
 
         let resolved = try service.resolvedAssetDirectoryURL()
         _ = try service.resolvedAssetDirectoryURL()
-        precondition(fileManager.contentsEqualCallCount == 0, "expected repeated resolution to avoid full-file comparisons")
-        precondition(
+        XCTAssert(fileManager.contentsEqualCallCount == 0, "expected repeated resolution to avoid full-file comparisons")
+        XCTAssert(
             fileManager.fileExists(atPath: resolved.appendingPathComponent(".source-manifest.json").path),
             "expected a small source metadata manifest"
         )
@@ -85,10 +73,10 @@ struct TestGeodata {
         try service.store(changed, for: .geosite)
         _ = try service.resolvedAssetDirectoryURL()
         let refreshed = try Data(contentsOf: resolved.appendingPathComponent("geosite.dat"))
-        precondition(refreshed == changed, "expected changed source metadata to refresh the resolved asset")
+        XCTAssert(refreshed == changed, "expected changed source metadata to refresh the resolved asset")
     }
 
-    private static func testGeodataSettingsDefaultsWhenMissing() throws {
+    func testGeodataSettingsDefaultsWhenMissing() throws {
         let legacyJSON = """
         {
           "savedConnections": [],
@@ -97,14 +85,14 @@ struct TestGeodata {
         }
         """
         let decoded = try JSONDecoder().decode(AppSnapshot.self, from: Data(legacyJSON.utf8))
-        precondition(decoded.geodataSettings.geositeURLString == nil, "expected no custom geosite URL by default")
-        precondition(decoded.geodataSettings.geoipURLString == nil, "expected no custom geoip URL by default")
-        precondition(decoded.geodataSettings.autoUpdateIntervalMinutes == nil, "expected auto-update off by default")
-        precondition(decoded.geodataSettings.geositeLastUpdatedAt == nil)
-        precondition(decoded.geodataSettings.geoipLastError == nil)
+        XCTAssert(decoded.geodataSettings.geositeURLString == nil, "expected no custom geosite URL by default")
+        XCTAssert(decoded.geodataSettings.geoipURLString == nil, "expected no custom geoip URL by default")
+        XCTAssert(decoded.geodataSettings.autoUpdateIntervalMinutes == nil, "expected auto-update off by default")
+        XCTAssert(decoded.geodataSettings.geositeLastUpdatedAt == nil)
+        XCTAssert(decoded.geodataSettings.geoipLastError == nil)
     }
 
-    private static func testGeodataSettingsRoundTrip() throws {
+    func testGeodataSettingsRoundTrip() throws {
         let settings = GeodataSourceSettings(
             geositeURLString: "https://example.com/geosite.dat",
             geoipURLString: "https://example.com/geoip.dat",
@@ -125,18 +113,18 @@ struct TestGeodata {
         let data = try JSONEncoder().encode(snapshot)
         let decoded = try JSONDecoder().decode(AppSnapshot.self, from: data)
 
-        precondition(decoded.geodataSettings.geositeURLString == "https://example.com/geosite.dat")
-        precondition(decoded.geodataSettings.geoipURLString == "https://example.com/geoip.dat")
-        precondition(decoded.geodataSettings.autoUpdateIntervalMinutes == 1440)
-        precondition(decoded.geodataSettings.geositeLastUpdatedAt == settings.geositeLastUpdatedAt)
-        precondition(decoded.geodataSettings.geoipLastUpdatedAt == nil)
-        precondition(decoded.geodataSettings.geositeLastError == nil)
-        precondition(decoded.geodataSettings.geoipLastError == "Download failed with status 404")
+        XCTAssert(decoded.geodataSettings.geositeURLString == "https://example.com/geosite.dat")
+        XCTAssert(decoded.geodataSettings.geoipURLString == "https://example.com/geoip.dat")
+        XCTAssert(decoded.geodataSettings.autoUpdateIntervalMinutes == 1440)
+        XCTAssert(decoded.geodataSettings.geositeLastUpdatedAt == settings.geositeLastUpdatedAt)
+        XCTAssert(decoded.geodataSettings.geoipLastUpdatedAt == nil)
+        XCTAssert(decoded.geodataSettings.geositeLastError == nil)
+        XCTAssert(decoded.geodataSettings.geoipLastError == "Download failed with status 404")
     }
 
     // MARK: - Protobuf fixtures
 
-    private static func varint(_ value: Int) -> [UInt8] {
+    private func varint(_ value: Int) -> [UInt8] {
         var remaining = value
         var bytes: [UInt8] = []
         repeat {
@@ -148,27 +136,27 @@ struct TestGeodata {
         return bytes
     }
 
-    private static func tag(_ field: Int, _ wireType: Int) -> [UInt8] {
+    private func tag(_ field: Int, _ wireType: Int) -> [UInt8] {
         varint(field << 3 | wireType)
     }
 
-    private static func lengthDelimited(_ field: Int, _ payload: [UInt8]) -> [UInt8] {
+    private func lengthDelimited(_ field: Int, _ payload: [UInt8]) -> [UInt8] {
         tag(field, 2) + varint(payload.count) + payload
     }
 
-    private static var oversizedIntVarint: [UInt8] {
+    private var oversizedIntVarint: [UInt8] {
         Array(repeating: 0xFF, count: 9) + [0x01]
     }
 
     /// One `geosite.dat` entry: country "test" holding the domain "example.com".
-    private static func geositeFixture(domain value: String = "example.com") -> Data {
+    private func geositeFixture(domain value: String = "example.com") -> Data {
         let domain = tag(1, 0) + varint(2) + lengthDelimited(2, Array(value.utf8))
         let site = lengthDelimited(1, Array("test".utf8)) + lengthDelimited(2, domain)
         return Data(lengthDelimited(1, site))
     }
 
     /// One `geoip.dat` entry: country "cn" holding the range 1.2.3.4/24.
-    private static func geoipFixture() -> Data {
+    private func geoipFixture() -> Data {
         let cidr = lengthDelimited(1, [1, 2, 3, 4]) + tag(2, 0) + varint(24)
         let country = lengthDelimited(1, Array("cn".utf8)) + lengthDelimited(2, cidr)
         return Data(lengthDelimited(1, country))
@@ -176,19 +164,19 @@ struct TestGeodata {
 
     // MARK: - Tests
 
-    private static func testSourceURLRequiresHTTPS() throws {
-        precondition(GeodataUpdateService.validatedSourceURL("https://example.com/geosite.dat") != nil)
-        precondition(
+    func testSourceURLRequiresHTTPS() throws {
+        XCTAssert(GeodataUpdateService.validatedSourceURL("https://example.com/geosite.dat") != nil)
+        XCTAssert(
             GeodataUpdateService.validatedSourceURL("http://example.com/geosite.dat") == nil,
             "plain http must be refused: geodata decides which traffic leaves the tunnel"
         )
-        precondition(GeodataUpdateService.validatedSourceURL("HTTPS://example.com/x.dat") != nil, "scheme match must be case-insensitive")
-        precondition(GeodataUpdateService.validatedSourceURL("file:///etc/passwd") == nil)
-        precondition(GeodataUpdateService.validatedSourceURL("https:///no-host.dat") == nil)
-        precondition(GeodataUpdateService.validatedSourceURL("not a url") == nil)
+        XCTAssert(GeodataUpdateService.validatedSourceURL("HTTPS://example.com/x.dat") != nil, "scheme match must be case-insensitive")
+        XCTAssert(GeodataUpdateService.validatedSourceURL("file:///etc/passwd") == nil)
+        XCTAssert(GeodataUpdateService.validatedSourceURL("https:///no-host.dat") == nil)
+        XCTAssert(GeodataUpdateService.validatedSourceURL("not a url") == nil)
     }
 
-    private static func testFormatValidationRejectsUnusablePayloads() throws {
+    func testFormatValidationRejectsUnusablePayloads() throws {
         try GeodataFormat.validate(geositeFixture(), kind: .geosite)
         try GeodataFormat.validate(geoipFixture(), kind: .geoip)
 
@@ -202,12 +190,12 @@ struct TestGeodata {
     /// Each kind's records skip cleanly as the other's, so a cross-kind file parses
     /// into a dictionary of empty entries rather than failing outright. Requiring
     /// real content is what catches it.
-    private static func testFormatValidationRejectsTheOtherKind() throws {
+    func testFormatValidationRejectsTheOtherKind() throws {
         expectRejected(geoipFixture(), kind: .geosite, what: "a geoip file offered as geosite")
         expectRejected(geositeFixture(), kind: .geoip, what: "a geosite file offered as geoip")
     }
 
-    private static func testFormatValidationRejectsOversizedIntegerVarints() throws {
+    func testFormatValidationRejectsOversizedIntegerVarints() throws {
         let oversizedLength = Data(tag(1, 2) + oversizedIntVarint)
         expectRejected(oversizedLength, kind: .geosite, what: "a length larger than Int.max")
 
@@ -220,16 +208,16 @@ struct TestGeodata {
         expectRejected(Data(lengthDelimited(1, country)), kind: .geoip, what: "a CIDR prefix larger than Int.max")
     }
 
-    private static func expectRejected(_ data: Data, kind: GeodataKind, what: String) {
+    private func expectRejected(_ data: Data, kind: GeodataKind, what: String) {
         do {
             try GeodataFormat.validate(data, kind: kind)
-            preconditionFailure("expected \(what) to be rejected as \(kind.fileName)")
+            XCTFail("expected \(what) to be rejected as \(kind.fileName)")
         } catch {
             // Expected.
         }
     }
 
-    private static func testGeodataUpdateErrorDescriptionsAreNonEmpty() throws {
+    func testGeodataUpdateErrorDescriptionsAreNonEmpty() throws {
         let errors: [GeodataUpdateError] = [
             .invalidURL,
             .networkFailure("boom"),
@@ -242,7 +230,7 @@ struct TestGeodata {
             .bundledDefaultMissing
         ]
         for error in errors {
-            precondition(!(error.errorDescription ?? "").isEmpty, "expected a non-empty description for \(error)")
+            XCTAssert(!(error.errorDescription ?? "").isEmpty, "expected a non-empty description for \(error)")
         }
     }
 }

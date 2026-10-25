@@ -9,12 +9,7 @@ dist_dir := "build/dist"
 # Debug builds target only the host architecture; Release builds are universal (arm64 + x86_64).
 debug_destination := "platform=macOS,arch=" + `uname -m`
 release_destination := "generic/platform=macOS"
-# Extra swiftc flags for the test binaries; `coverage` sets the profiling ones.
-test_flags := ""
 coverage_dir := "build/coverage"
-test_sources := "teleport/TeleportModels.swift teleport/App/*.swift teleport/Connection/*.swift teleport/Parsing/*.swift teleport/Persistence/*.swift teleport/Subscriptions/*.swift teleport/XrayCore/*.swift teleport/SystemProxy/*.swift teleport/TUN/*.swift teleport/HelperInstallation/*.swift teleport/Geodata/*.swift teleport/Health/*.swift teleport/ViewModels/*.swift Shared/*.swift"
-# Scripts compiled with test_sources into the one test-app binary, plus the helper files they use.
-test_app_sources := "TeleportPrivilegedHelper/Support/HelperPlatform.swift TeleportPrivilegedHelper/Routing/XrayTunScriptBuilder.swift scripts/test_app.swift scripts/test_core.swift scripts/test_subscription_support.swift scripts/test_connection_health.swift scripts/test_connection_provider.swift scripts/test_split_tunneling.swift scripts/test_geodata.swift scripts/test_persistence.swift scripts/test_uplink_reconciliation.swift scripts/test_privileged_helper_client.swift scripts/test_mach_service_installation.swift"
 
 # List available recipes
 default:
@@ -201,47 +196,37 @@ package: (build "Release")
 package-open: package
     open {{dist_dir}}
 
-# Run all test scripts. Only build-approval needs the built app and builds it itself.
-test: test-app (test-script "hysteria") (test-script "build-approval") (test-script "leak-guard") (test-script "xpc-protocol") (test-script "helper-request-ledger") (test-script "helper-command-dispatch") (test-script "helper-xpc-endpoint") (test-script "xpc-transport")
+# Run the XCTest bundles of the teleport scheme; the Debug app is built for the build-approval check
+test: fetch-xray
+    xcodebuild test \
+      -project {{project}} \
+      -scheme {{scheme}} \
+      -destination '{{debug_destination}}' \
+      -derivedDataPath {{derived_data}}
 
-# Compile the scripts that need the app sources into one binary; run all its scripts or the named ones
-test-app *names: fetch-xray
-    swiftc {{test_flags}} {{test_sources}} {{test_app_sources}} -o /tmp/teleport-test-app
-    /tmp/teleport-test-app {{names}}
+# Run one test class or method of either bundle. Usage: just test-case CoreTests[/testMethod]
+test-case name: fetch-xray
+    xcodebuild test \
+      -project {{project}} \
+      -scheme {{scheme}} \
+      -destination '{{debug_destination}}' \
+      -derivedDataPath {{derived_data}} \
+      -only-testing:teleportTests/{{name}} \
+      -only-testing:TeleportPrivilegedHelperTests/{{name}}
 
-# Run scripts/test_<name>.swift. Usage: just test-script leak-guard
-test-script name:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    case "{{name}}" in
-      leak-guard) sources="Shared/LeakGuardRuleset.swift Shared/TUNHelperXPCProtocol.swift teleport/TUN/ProbeHostExemptions.swift" ;;
-      xpc-protocol) sources="Shared/*.swift" ;;
-      helper-request-ledger) sources="Shared/*.swift TeleportPrivilegedHelper/IPC/HelperRequestLedger.swift" ;;
-      helper-command-dispatch) sources="Shared/*.swift TeleportPrivilegedHelper/IPC/HelperRequestLedger.swift TeleportPrivilegedHelper/IPC/HelperCommandExecuting.swift TeleportPrivilegedHelper/IPC/HelperCommandDispatcher.swift" ;;
-      helper-xpc-endpoint) sources="Shared/*.swift TeleportPrivilegedHelper/IPC/HelperRequestLedger.swift TeleportPrivilegedHelper/IPC/HelperCommandExecuting.swift TeleportPrivilegedHelper/IPC/HelperCommandDispatcher.swift TeleportPrivilegedHelper/IPC/HelperXPCService.swift" ;;
-      xpc-transport) sources="Shared/*.swift teleport/TUN/TUNHelperTransport.swift teleport/TUN/XPCTUNHelperTransport.swift" ;;
-      # Kept out of test-app: the integration script runs this binary with its own arguments.
-      hysteria) {{just_executable()}} fetch-xray; sources="{{test_sources}}" ;;
-      # Checks the approval of the built Debug app.
-      build-approval) {{just_executable()}} build-debug; sources="{{test_sources}}" ;;
-      # The other scripts need the app sources and run in the test-app binary.
-      *) exec {{just_executable()}} test_flags='{{test_flags}}' test-app "{{name}}" ;;
-    esac
-    name="{{name}}"
-    swiftc {{test_flags}} $sources "scripts/test_${name//-/_}.swift" -o "/tmp/teleport-test-$name"
-    "/tmp/teleport-test-$name"
-
-# Exercise TCP/UDP through a local Hysteria 2 server without changing macOS networking
-test-hysteria-integration: (test-script "hysteria")
-    python3 scripts/test_hysteria_integration.py /tmp/teleport-test-hysteria
-
-# Line coverage of the test scripts over the sources they compile (views and most helper sources are not among them)
-coverage:
+# Line coverage of the tests over the sources compiled into the two bundles (the app and helper products are not executed)
+coverage: fetch-xray
     rm -rf "{{coverage_dir}}" && mkdir -p "{{coverage_dir}}"
-    rm -f /tmp/teleport-test-*
-    LLVM_PROFILE_FILE="{{coverage_dir}}/%m.profraw" just test_flags="-profile-generate -profile-coverage-mapping" test-script hysteria test-script leak-guard test-script xpc-protocol test-script helper-request-ledger test-script helper-command-dispatch test-script helper-xpc-endpoint test-script xpc-transport test-app
-    xcrun llvm-profdata merge -sparse "{{coverage_dir}}"/*.profraw -o "{{coverage_dir}}/merged.profdata"
-    xcrun llvm-cov report $(for binary in /tmp/teleport-test-*; do printf -- '-object %s ' "$binary"; done) -instr-profile "{{coverage_dir}}/merged.profdata" -ignore-filename-regex='scripts/' | tee "{{coverage_dir}}/report.txt"
+    xcodebuild test \
+      -project {{project}} \
+      -scheme {{scheme}} \
+      -destination '{{debug_destination}}' \
+      -derivedDataPath {{derived_data}} \
+      -enableCodeCoverage YES \
+      -resultBundlePath "{{coverage_dir}}/tests.xcresult"
+    for bundle in teleportTests.xctest TeleportPrivilegedHelperTests.xctest; do \
+      xcrun xccov view --report --files-for-target "$bundle" "{{coverage_dir}}/tests.xcresult"; \
+    done | grep -v -E '/(teleportTests|TeleportPrivilegedHelperTests)/[^/]*\.swift ' | tee "{{coverage_dir}}/report.txt"
 
 # Explicitly remove the legacy helper installation before development cutover
 reset-legacy-privileged-helper:

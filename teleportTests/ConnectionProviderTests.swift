@@ -1,23 +1,7 @@
 import Foundation
+import XCTest
 
-struct TestConnectionProvider {
-    static func main() async throws {
-        testConnectionPresentationMapping()
-        await testConnectionStateStorePublishesInitialAndUpdatedStates()
-        try await testProviderConnectReconnectAndDisconnect()
-        try await testProviderPublishesStartAndStopFailures()
-        try await testProviderSerializesConcurrentConnects()
-        try await testDisconnectRunsAfterActiveConnect()
-        try await testDisconnectCancelsUncommittedConnect()
-        try await testDisconnectWaitsForStartupRestoration()
-        try await testTerminationCompletesOnlyAfterProviderDisconnect()
-        try await testTerminationGivesUpOnAStuckTeardown()
-        try await testLostRuntimeFailsTheSessionAndRestoresSettings()
-        testFactorySelectsProviderByMode()
-        try await testStoredNameSurvivesLoading()
-        print("test_connection_provider: all checks passed")
-    }
-
+final class ConnectionProviderTests: XCTestCase {
     /// Loading re-parses each stored link to pick up parser fixes, but everything
     /// else the connection carries belongs to the stored connection. A rebuild that
     /// forgets a field drops it on every launch — which is what happened to names.
@@ -38,14 +22,14 @@ struct TestConnectionProvider {
         }
     }
 
-    private static func makeIsolatedRoot(_ name: String) throws -> URL {
+    private func makeIsolatedRoot(_ name: String) throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("teleport-verify-connection-provider-\(name)-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root
     }
 
-    private static func testStoredNameSurvivesLoading() async throws {
+    func testStoredNameSurvivesLoading() async throws {
         let root = try makeIsolatedRoot("name")
         defer { try? FileManager.default.removeItem(at: root) }
         let store = ConfigurationStore(
@@ -99,13 +83,13 @@ struct TestConnectionProvider {
         )
 
         let loaded = viewModel.savedConnections.first { $0.id == connectionID }
-        precondition(loaded?.customName == "Work", "expected a stored name to survive loading")
-        precondition(loaded?.displayName == "Work")
+        XCTAssert(loaded?.customName == "Work", "expected a stored name to survive loading")
+        XCTAssert(loaded?.displayName == "Work")
         // The link itself is still the one that was stored.
-        precondition(loaded?.configuration.rawLink == configuration.rawLink)
+        XCTAssert(loaded?.configuration.rawLink == configuration.rawLink)
     }
 
-    private static func testFactorySelectsProviderByMode() {
+    func testFactorySelectsProviderByMode() {
         let systemProxyProvider = SystemProxyConnectionProvider(
             coordinator: BackendConnectionProvider(mode: .systemProxy, backend: RecordingConnectionBackend())
         )
@@ -117,11 +101,11 @@ struct TestConnectionProvider {
             tunProvider: { tunProvider }
         )
 
-        precondition(factory.makeProvider(for: .systemProxy) is SystemProxyConnectionProvider)
-        precondition(factory.makeProvider(for: .tun) is RootXrayConnectionProvider)
+        XCTAssert(factory.makeProvider(for: .systemProxy) is SystemProxyConnectionProvider)
+        XCTAssert(factory.makeProvider(for: .tun) is RootXrayConnectionProvider)
     }
 
-    private static func testConnectionStateStorePublishesInitialAndUpdatedStates() async {
+    func testConnectionStateStorePublishesInitialAndUpdatedStates() async {
         let store = ConnectionStateStore(initialState: .idle)
         let stream = store.stream()
         let reader = collectStates(from: stream, count: 3)
@@ -129,11 +113,11 @@ struct TestConnectionProvider {
         store.update(.preparing)
         store.update(.connecting)
         let states = await reader.value
-        precondition(stateLabels(states) == ["idle", "preparing", "connecting"], "unexpected state stream order: \(states)")
-        precondition(store.current() == .connecting)
+        XCTAssert(stateLabels(states) == ["idle", "preparing", "connecting"], "unexpected state stream order: \(states)")
+        XCTAssert(store.current() == .connecting)
     }
 
-    private static func testProviderConnectReconnectAndDisconnect() async throws {
+    func testProviderConnectReconnectAndDisconnect() async throws {
         let backend = RecordingConnectionBackend()
         let provider = BackendConnectionProvider(mode: .tun, backend: backend)
         let request = try makeRequest()
@@ -142,27 +126,27 @@ struct TestConnectionProvider {
         let connectReader = collectStates(from: provider.stateUpdates(), count: 4)
         try await provider.connect(request)
         let connectStates = await connectReader.value
-        precondition(stateLabels(connectStates) == ["idle", "preparing", "connecting", "connected"])
-        precondition(backend.recordedCalls() == ["start"])
+        XCTAssert(stateLabels(connectStates) == ["idle", "preparing", "connecting", "connected"])
+        XCTAssert(backend.recordedCalls() == ["start"])
 
         let reconnectReader = collectStates(from: provider.stateUpdates(), count: 4)
         try await provider.connect(request)
         let reconnectStates = await reconnectReader.value
-        precondition(stateLabels(reconnectStates) == ["connected", "preparing", "connecting", "connected"])
-        precondition(backend.recordedCalls() == ["start", "reconnect"])
+        XCTAssert(stateLabels(reconnectStates) == ["connected", "preparing", "connecting", "connected"])
+        XCTAssert(backend.recordedCalls() == ["start", "reconnect"])
 
         let disconnectReader = collectStates(from: provider.stateUpdates(), count: 3)
         try await provider.disconnect()
         let disconnectStates = await disconnectReader.value
-        precondition(stateLabels(disconnectStates) == ["connected", "disconnecting", "idle"])
-        precondition(backend.recordedCalls() == ["start", "reconnect", "stop"])
+        XCTAssert(stateLabels(disconnectStates) == ["connected", "disconnecting", "idle"])
+        XCTAssert(backend.recordedCalls() == ["start", "reconnect", "stop"])
     }
 
     /// Xray dying under a connected session used to leave the system pointed at a
     /// dead local port with the app still saying "connected". The provider now
     /// watches the runtime and, when it is gone, fails the session and runs the
     /// backend's teardown so settings are put back.
-    private static func testLostRuntimeFailsTheSessionAndRestoresSettings() async throws {
+    func testLostRuntimeFailsTheSessionAndRestoresSettings() async throws {
         let backend = RecordingConnectionBackend()
         let provider = BackendConnectionProvider(mode: .systemProxy, backend: backend, supervisionInterval: 0.05)
         await awaitInitialState(provider)
@@ -170,39 +154,39 @@ struct TestConnectionProvider {
         backend.setRuntimeActive(true)
         try await provider.connect(try makeRequest())
         let connectedState = await provider.currentState()
-        precondition(stateLabels([connectedState]) == ["connected"])
+        XCTAssert(stateLabels([connectedState]) == ["connected"])
 
         // Still alive: the supervisor must not touch a healthy session.
         try await Task.sleep(nanoseconds: 200_000_000)
         let stillConnectedState = await provider.currentState()
-        precondition(stateLabels([stillConnectedState]) == ["connected"])
-        precondition(backend.recordedCalls() == ["start"])
+        XCTAssert(stateLabels([stillConnectedState]) == ["connected"])
+        XCTAssert(backend.recordedCalls() == ["start"])
 
         // One missed check is not a lost runtime: the check runs over XPC and the
         // first one after a wake can miss its deadline with Xray alive.
         backend.setRuntimeActive(false)
         await waitUntil("the supervisor checks the runtime") { backend.inactiveRuntimeChecks() >= 1 }
         backend.setRuntimeActive(true)
-        precondition(backend.inactiveRuntimeChecks() == 1, "the runtime was checked \(backend.inactiveRuntimeChecks()) times while inactive")
+        XCTAssert(backend.inactiveRuntimeChecks() == 1, "the runtime was checked \(backend.inactiveRuntimeChecks()) times while inactive")
         try await Task.sleep(nanoseconds: 200_000_000)
         let afterOneMissState = await provider.currentState()
-        precondition(stateLabels([afterOneMissState]) == ["connected"], "one missed check failed the session")
-        precondition(backend.recordedCalls() == ["start"])
+        XCTAssert(stateLabels([afterOneMissState]) == ["connected"], "one missed check failed the session")
+        XCTAssert(backend.recordedCalls() == ["start"])
 
         let failureReader = collectStates(from: provider.stateUpdates(), count: 2)
         backend.setRuntimeActive(false)
         let states = await failureReader.value
-        precondition(stateLabels(states) == ["connected", "failed"], "expected a lost runtime to fail the session, got \(stateLabels(states))")
+        XCTAssert(stateLabels(states) == ["connected", "failed"], "expected a lost runtime to fail the session, got \(stateLabels(states))")
 
         // The teardown that restores proxy settings or routes follows the failure.
         await waitUntil("the backend teardown runs after a lost runtime") { backend.recordedCalls() == ["start", "stop"] }
 
         // Only once: the supervisor stops with the session it was watching.
         try await Task.sleep(nanoseconds: 200_000_000)
-        precondition(backend.recordedCalls() == ["start", "stop"])
+        XCTAssert(backend.recordedCalls() == ["start", "stop"])
     }
 
-    private static func testProviderPublishesStartAndStopFailures() async throws {
+    func testProviderPublishesStartAndStopFailures() async throws {
         let startBackend = RecordingConnectionBackend()
         startBackend.startError = TestError.startFailed
         let startProvider = BackendConnectionProvider(mode: .systemProxy, backend: startBackend)
@@ -211,17 +195,18 @@ struct TestConnectionProvider {
 
         do {
             try await startProvider.connect(try makeRequest())
-            preconditionFailure("expected injected start failure")
+            XCTFail("expected injected start failure")
         } catch TestError.startFailed {
             // Expected.
         }
 
         let startStates = await startReader.value
-        precondition(stateLabels(startStates) == ["idle", "preparing", "connecting", "failed"])
+        XCTAssert(stateLabels(startStates) == ["idle", "preparing", "connecting", "failed"])
         guard case let .failed(failure) = startStates.last else {
-            preconditionFailure("expected failed terminal state")
+            XCTFail("expected failed terminal state")
+            return
         }
-        precondition(failure.summary == TestError.startFailed.localizedDescription)
+        XCTAssert(failure.summary == TestError.startFailed.localizedDescription)
 
         let stopBackend = RecordingConnectionBackend()
         let stopProvider = BackendConnectionProvider(mode: .tun, backend: stopBackend)
@@ -232,20 +217,21 @@ struct TestConnectionProvider {
 
         do {
             try await stopProvider.disconnect()
-            preconditionFailure("expected injected stop failure")
+            XCTFail("expected injected stop failure")
         } catch TestError.stopFailed {
             // Expected.
         }
 
         let stopStates = await stopReader.value
-        precondition(stateLabels(stopStates) == ["connected", "disconnecting", "failed"])
+        XCTAssert(stateLabels(stopStates) == ["connected", "disconnecting", "failed"])
         guard case let .failed(failure) = stopStates.last else {
-            preconditionFailure("expected failed terminal state")
+            XCTFail("expected failed terminal state")
+            return
         }
-        precondition(failure.summary == TestError.stopFailed.localizedDescription)
+        XCTAssert(failure.summary == TestError.stopFailed.localizedDescription)
     }
 
-    private static func testProviderSerializesConcurrentConnects() async throws {
+    func testProviderSerializesConcurrentConnects() async throws {
         let backend = RecordingConnectionBackend()
         await backend.startGate.enableBlocking()
         let provider = BackendConnectionProvider(mode: .tun, backend: backend)
@@ -256,7 +242,7 @@ struct TestConnectionProvider {
 
         let second = Task { try await provider.connect(request) }
         try? await Task.sleep(nanoseconds: 100_000_000)
-        precondition(
+        XCTAssert(
             backend.recordedCalls() == ["start"],
             "second connect reached the backend before the first finished: \(backend.recordedCalls())"
         )
@@ -266,13 +252,13 @@ struct TestConnectionProvider {
         try await second.value
         // The first connect left the provider connected, so the queued second one
         // takes the reconnect branch — proving it observed the finished first op.
-        precondition(
+        XCTAssert(
             backend.recordedCalls() == ["start", "reconnect"],
             "unexpected call order: \(backend.recordedCalls())"
         )
     }
 
-    private static func testDisconnectRunsAfterActiveConnect() async throws {
+    func testDisconnectRunsAfterActiveConnect() async throws {
         let backend = RecordingConnectionBackend()
         await backend.startGate.enableBlocking()
         let provider = BackendConnectionProvider(mode: .systemProxy, backend: backend)
@@ -282,7 +268,7 @@ struct TestConnectionProvider {
 
         let disconnectTask = Task { try await provider.disconnect() }
         try? await Task.sleep(nanoseconds: 100_000_000)
-        precondition(
+        XCTAssert(
             backend.recordedCalls() == ["start"],
             "disconnect ran before the active connect finished: \(backend.recordedCalls())"
         )
@@ -290,7 +276,7 @@ struct TestConnectionProvider {
         await backend.startGate.open()
         try await connectTask.value
         try await disconnectTask.value
-        precondition(
+        XCTAssert(
             backend.recordedCalls() == ["start", "stop"],
             "unexpected call order: \(backend.recordedCalls())"
         )
@@ -299,7 +285,7 @@ struct TestConnectionProvider {
     /// A connect still in its pre-flight has changed nothing, so a disconnect
     /// cancels it instead of waiting behind it; the connect ends idle, not failed,
     /// and the queued disconnect finds nothing to stop.
-    private static func testDisconnectCancelsUncommittedConnect() async throws {
+    func testDisconnectCancelsUncommittedConnect() async throws {
         let backend = RecordingConnectionBackend()
         backend.startObservesCancellation = true
         let provider = BackendConnectionProvider(mode: .systemProxy, backend: backend)
@@ -307,25 +293,25 @@ struct TestConnectionProvider {
 
         let connectTask = Task { try await provider.connect(try makeRequest()) }
         await waitUntil("the connect reaches the backend") { !backend.recordedCalls().isEmpty }
-        precondition(backend.recordedCalls() == ["start"], "connect did not start")
+        XCTAssert(backend.recordedCalls() == ["start"], "connect did not start")
 
         try await provider.disconnect()
         do {
             try await connectTask.value
-            preconditionFailure("cancelled connect returned without an error")
+            XCTFail("cancelled connect returned without an error")
         } catch is CancellationError {
         } catch {
-            preconditionFailure("cancelled connect threw \(error) instead of CancellationError")
+            XCTFail("cancelled connect threw \(error) instead of CancellationError")
         }
         let finalState = await provider.currentState()
-        precondition(finalState == .idle, "cancelled connect did not end idle: \(finalState)")
-        precondition(
+        XCTAssert(finalState == .idle, "cancelled connect did not end idle: \(finalState)")
+        XCTAssert(
             backend.recordedCalls() == ["start"],
             "disconnect stopped a backend that never started: \(backend.recordedCalls())"
         )
     }
 
-    private static func testDisconnectWaitsForStartupRestoration() async throws {
+    func testDisconnectWaitsForStartupRestoration() async throws {
         let backend = RecordingConnectionBackend()
         backend.hasRestorableStateValue = true
         await backend.restoreGate.enableBlocking()
@@ -334,7 +320,7 @@ struct TestConnectionProvider {
 
         let disconnectTask = Task { try await provider.disconnect() }
         try? await Task.sleep(nanoseconds: 100_000_000)
-        precondition(
+        XCTAssert(
             backend.recordedCalls() == ["restore"],
             "disconnect ran before startup restoration completed: \(backend.recordedCalls())"
         )
@@ -342,13 +328,13 @@ struct TestConnectionProvider {
         await backend.restoreGate.open()
         try await disconnectTask.value
         // Restoration ends in .idle, so the queued disconnect is a no-op.
-        precondition(
+        XCTAssert(
             backend.recordedCalls() == ["restore"],
             "unexpected restoration cleanup calls: \(backend.recordedCalls())"
         )
     }
 
-    private static func testTerminationCompletesOnlyAfterProviderDisconnect() async throws {
+    func testTerminationCompletesOnlyAfterProviderDisconnect() async throws {
         let root = try makeIsolatedRoot("termination")
         defer { try? FileManager.default.removeItem(at: root) }
         let (viewModel, backend, store) = try await makeTerminationFixture(root: root)
@@ -358,18 +344,18 @@ struct TestConnectionProvider {
         let completed = Flag()
         viewModel.handleAppTermination { completed.set() }
         await backend.stopGate.waitUntilEntered()
-        precondition(!completed.isSet, "termination completed before the provider disconnected")
+        XCTAssert(!completed.isSet, "termination completed before the provider disconnected")
 
         await backend.stopGate.open()
         await waitUntil("termination completes after disconnect") { completed.isSet }
-        precondition(
+        XCTAssert(
             backend.recordedCalls() == ["start", "stop"],
             "unexpected termination calls: \(backend.recordedCalls())"
         )
     }
 
     /// A connected view model over an isolated store, for the termination checks.
-    private static func makeTerminationFixture(
+    private func makeTerminationFixture(
         root: URL
     ) async throws -> (AppViewModel, RecordingConnectionBackend, ConfigurationStore) {
         let store = ConfigurationStore(
@@ -416,7 +402,7 @@ struct TestConnectionProvider {
 
     /// A teardown that never returns must not keep the app from quitting: the
     /// helper's lease and the next launch finish the cleanup.
-    private static func testTerminationGivesUpOnAStuckTeardown() async throws {
+    func testTerminationGivesUpOnAStuckTeardown() async throws {
         let root = try makeIsolatedRoot("termination-limit")
         defer { try? FileManager.default.removeItem(at: root) }
         let (viewModel, backend, store) = try await makeTerminationFixture(root: root)
@@ -432,7 +418,7 @@ struct TestConnectionProvider {
     /// Polls `condition` until it holds, and fails the run if it does not within
     /// `timeout`. The code under test signals nothing a check could await, so the
     /// checks poll; this keeps the polling and its limit in one place.
-    private static func waitUntil(
+    private func waitUntil(
         _ expectation: String,
         timeout: Duration = .seconds(2),
         _ condition: @Sendable () async -> Bool
@@ -443,18 +429,18 @@ struct TestConnectionProvider {
             if await condition() { return }
             try? await Task.sleep(for: .milliseconds(2))
         }
-        preconditionFailure("timed out waiting until \(expectation)")
+        XCTFail("timed out waiting until \(expectation)")
     }
 
     /// The provider resolves its starting state as the first queued operation, so a
     /// test that subscribes to the stream must let that finish before asserting.
-    private static func awaitInitialState(_ provider: BackendConnectionProvider) async {
+    private func awaitInitialState(_ provider: BackendConnectionProvider) async {
         await waitUntil("the provider resolves its initial state") {
             await provider.currentState() != .preparing
         }
     }
 
-    private static func makeRequest() throws -> ConnectionRequest {
+    private func makeRequest() throws -> ConnectionRequest {
         let configuration = try ConnectionLinkParser().parse(
             "vless://123e4567-e89b-12d3-a456-426614174000@example.com:443?security=tls&type=tcp&sni=example.com#Provider"
         )
@@ -465,7 +451,7 @@ struct TestConnectionProvider {
         )
     }
 
-    private static func collectStates(from stream: AsyncStream<ConnectionState>, count: Int) -> Task<[ConnectionState], Never> {
+    private func collectStates(from stream: AsyncStream<ConnectionState>, count: Int) -> Task<[ConnectionState], Never> {
         Task {
             var states: [ConnectionState] = []
             for await state in stream {
@@ -476,7 +462,7 @@ struct TestConnectionProvider {
         }
     }
 
-    private static func stateLabels(_ states: [ConnectionState]) -> [String] {
+    private func stateLabels(_ states: [ConnectionState]) -> [String] {
         states.map { state in
             switch state {
             case .idle: return "idle"
@@ -490,34 +476,34 @@ struct TestConnectionProvider {
         }
     }
 
-    private static func testConnectionPresentationMapping() {
-        precondition(
+    func testConnectionPresentationMapping() {
+        XCTAssert(
             ConnectionPresentation(state: .idle, hasConfiguration: false)
                 == ConnectionPresentation(connectionPhase: .unconfigured, proxyPhase: .disabled)
         )
-        precondition(
+        XCTAssert(
             ConnectionPresentation(state: .idle, hasConfiguration: true)
                 == ConnectionPresentation(connectionPhase: .stopped, proxyPhase: .disabled)
         )
-        precondition(
+        XCTAssert(
             ConnectionPresentation(state: .preparing, hasConfiguration: true)
                 == ConnectionPresentation(connectionPhase: .starting, proxyPhase: .enabling)
         )
-        precondition(
+        XCTAssert(
             ConnectionPresentation(state: .awaitingUserApproval, hasConfiguration: true)
                 == ConnectionPresentation(connectionPhase: .starting, proxyPhase: .enabling)
         )
-        precondition(
+        XCTAssert(
             ConnectionPresentation(state: .connecting, hasConfiguration: true)
                 == ConnectionPresentation(connectionPhase: .starting, proxyPhase: .enabling)
         )
-        precondition(
+        XCTAssert(
             ConnectionPresentation(
                 state: .connected(.init(id: UUID(), mode: .tun, connectedAt: Date())),
                 hasConfiguration: true
             ) == ConnectionPresentation(connectionPhase: .running, proxyPhase: .enabled)
         )
-        precondition(
+        XCTAssert(
             ConnectionPresentation(state: .disconnecting, hasConfiguration: true)
                 == ConnectionPresentation(connectionPhase: .stopping, proxyPhase: .disabling)
         )
@@ -525,8 +511,8 @@ struct TestConnectionProvider {
             state: .failed(.init(summary: "failed", details: nil)),
             hasConfiguration: true
         )
-        precondition(failedPresentation == ConnectionPresentation(connectionPhase: .failed, proxyPhase: .failed))
-        precondition(failedPresentation.canChangeSelection, "failed state must preserve selection changes")
+        XCTAssert(failedPresentation == ConnectionPresentation(connectionPhase: .failed, proxyPhase: .failed))
+        XCTAssert(failedPresentation.canChangeSelection, "failed state must preserve selection changes")
     }
 
     private enum TestError: LocalizedError {
@@ -569,7 +555,7 @@ struct TestConnectionProvider {
             while !entered && Date() < deadline {
                 try? await Task.sleep(nanoseconds: 2_000_000)
             }
-            precondition(entered, "backend call did not start in time")
+            XCTAssert(entered, "backend call did not start in time")
         }
     }
 

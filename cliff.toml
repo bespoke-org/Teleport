@@ -83,7 +83,7 @@ commit_parsers = [
     { message = "^refactor",          group = "<!-- 3 -->Refactor" },
     { message = "^docs?",             group = "<!-- 4 -->Documentation" },
     { message = "^perf",              group = "<!-- 5 -->Performance" },
-    # `verify:` changes the scripts/test_*.swift programs (formerly verify_*.swift), the project's tests.
+    # `verify:` named changes to the scripts/test_*.swift programs, the project's tests before the XCTest bundles.
     { message = "^(test|verify)",     group = "<!-- 6 -->Testing" },
     { message = "^(chore|style)",     group = "<!-- 7 -->Miscellaneous" },
     { message = "^(R|r)evert",        group = "<!-- 8 -->Revert" },

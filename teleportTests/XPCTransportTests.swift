@@ -1,4 +1,5 @@
 import Foundation
+import XCTest
 
 private func expectTransportError(
     _ expected: TUNHelperTransportError,
@@ -6,17 +7,17 @@ private func expectTransportError(
 ) async {
     do {
         _ = try await operation()
-        preconditionFailure("Expected transport error: \(expected)")
+        XCTFail("Expected transport error: \(expected)")
     } catch let error as TUNHelperTransportError {
-        precondition(error == expected, "Expected \(expected), got \(error)")
+        XCTAssert(error == expected, "Expected \(expected), got \(error)")
     } catch {
-        preconditionFailure("Unexpected error: \(error)")
+        XCTFail("Unexpected error: \(error)")
     }
 }
 
 /// Awaits `task`, giving up after `timeout` so a regression reports a failure
 /// instead of hanging the whole verification run.
-private func value<T: Sendable>(of task: Task<T, Never>, timeout: Double) async -> T? {
+private func awaitValue<T: Sendable>(of task: Task<T, Never>, timeout: Double) async -> T? {
     await withTaskGroup(of: T?.self) { group in
         group.addTask { await task.value }
         group.addTask {
@@ -224,7 +225,7 @@ private final class ConnectionFactory: @unchecked Sendable {
     func make() -> any TUNHelperXPCConnection {
         lock.lock()
         defer { lock.unlock() }
-        precondition(index < connections.count, "Unexpected connection creation")
+        XCTAssert(index < connections.count, "Unexpected connection creation")
         let connection = connections[index]
         index += 1
         return connection
@@ -284,25 +285,11 @@ private final class StoredReply: @unchecked Sendable {
     }
 }
 
-@main
-private enum TestXPCTransport {
-    static func main() async throws {
-        try await verifiesCommandRoutingAndNormalReplies()
-        await verifiesConcurrentSendsShareConnectionCreation()
-        await verifiesProxyErrorMapping()
-        await verifiesNSErrorReplyMapping()
-        try await verifiesSynchronousLifecycleHandlerDuringConfiguration()
-        try await verifiesInterruptionRetiresOnlyItsGeneration()
-        try await verifiesInvalidationCreatesOneReplacement()
-        try await verifiesDeadlineAndIgnoresLateReply()
-        await verifiesInvalidResponseMapping()
-        print("test_xpc_transport: all checks passed")
-    }
-
-    private static func verifiesCommandRoutingAndNormalReplies() async throws {
+final class XPCTransportTests: XCTestCase {
+    func testCommandRoutingAndNormalReplies() async throws {
         let response = Data("response".utf8)
         let proxy = FakeProxy { _, request, reply in
-            precondition(request == Data("request".utf8))
+            XCTAssert(request == Data("request".utf8))
             reply(response, nil)
         }
         let connection = FakeConnection(proxy: proxy)
@@ -315,16 +302,16 @@ private enum TestXPCTransport {
                 requestData: Data("request".utf8),
                 timeout: 1
             )
-            precondition(received == response)
+            XCTAssert(received == response)
         }
 
-        precondition(proxy.recordedCommands == [.status, .startSession, .stopSession, .readDiagnostics])
-        precondition(factory.creationCount == 1)
-        precondition(connection.activationCount == 1)
-        precondition(connection.didConfigureAllowedClasses)
+        XCTAssert(proxy.recordedCommands == [.status, .startSession, .stopSession, .readDiagnostics])
+        XCTAssert(factory.creationCount == 1)
+        XCTAssert(connection.activationCount == 1)
+        XCTAssert(connection.didConfigureAllowedClasses)
     }
 
-    private static func verifiesConcurrentSendsShareConnectionCreation() async {
+    func testConcurrentSendsShareConnectionCreation() async {
         let proxy = FakeProxy { _, _, reply in reply(Data("ok".utf8), nil) }
         let connection = FakeConnection(proxy: proxy)
         let factory = ConnectionFactory([connection])
@@ -358,24 +345,24 @@ private enum TestXPCTransport {
             }
         }
 
-        precondition(creationStarted.wait(timeout: .now() + 1) == .success)
+        XCTAssert(creationStarted.wait(timeout: .now() + 1) == .success)
         allowCreation.signal()
-        let sendersFinished = await value(of: senders, timeout: 5) != nil
-        precondition(sendersFinished, "concurrent sends did not finish")
-        precondition(results.load().count == 8)
+        let sendersFinished = await awaitValue(of: senders, timeout: 5) != nil
+        XCTAssert(sendersFinished, "concurrent sends did not finish")
+        XCTAssert(results.load().count == 8)
         for result in results.load() {
             do {
                 let data = try result.get()
-                precondition(data == Data("ok".utf8))
+                XCTAssert(data == Data("ok".utf8))
             } catch {
-                preconditionFailure("Unexpected concurrent send error: \(error)")
+                XCTFail("Unexpected concurrent send error: \(error)")
             }
         }
-        precondition(factory.creationCount == 1)
-        precondition(connection.activationCount == 1)
+        XCTAssert(factory.creationCount == 1)
+        XCTAssert(connection.activationCount == 1)
     }
 
-    private static func verifiesProxyErrorMapping() async {
+    func testProxyErrorMapping() async {
         let error = NSError(domain: "test.proxy", code: 7, userInfo: [
             NSLocalizedDescriptionKey: "proxy unavailable"
         ])
@@ -389,7 +376,7 @@ private enum TestXPCTransport {
         }
     }
 
-    private static func verifiesNSErrorReplyMapping() async {
+    func testNSErrorReplyMapping() async {
         let proxy = FakeProxy { _, _, reply in
             reply(nil, NSError(domain: "test.reply", code: 8, userInfo: [
                 NSLocalizedDescriptionKey: "reply rejected"
@@ -405,7 +392,7 @@ private enum TestXPCTransport {
         }
     }
 
-    private static func verifiesSynchronousLifecycleHandlerDuringConfiguration() async throws {
+    func testSynchronousLifecycleHandlerDuringConfiguration() async throws {
         let firstProxy = FakeProxy { _, _, reply in reply(Data("unexpected".utf8), nil) }
         let firstConnection = FakeConnection(
             proxy: firstProxy,
@@ -426,25 +413,26 @@ private enum TestXPCTransport {
             }
         }
 
-        let sendFinished = await value(of: send, timeout: 2) != nil
-        precondition(
+        let sendFinished = await awaitValue(of: send, timeout: 2) != nil
+        XCTAssert(
             sendFinished,
             "Synchronous lifecycle handler deadlocked connection configuration"
         )
         guard let storedResult = result.load() else {
-            preconditionFailure("Expected the send to store a result")
+            XCTFail("Expected the send to store a result")
+            return
         }
         await expectTransportError(.interrupted) {
             try storedResult.get()
         }
-        precondition(firstConnection.activationCount == 0)
+        XCTAssert(firstConnection.activationCount == 0)
 
         let replacement = try await transport.send(command: .status, requestData: Data(), timeout: 1)
-        precondition(replacement == Data("replacement".utf8))
-        precondition(factory.creationCount == 2)
+        XCTAssert(replacement == Data("replacement".utf8))
+        XCTAssert(factory.creationCount == 2)
     }
 
-    private static func verifiesInterruptionRetiresOnlyItsGeneration() async throws {
+    func testInterruptionRetiresOnlyItsGeneration() async throws {
         var firstConnection: FakeConnection!
         let firstProxy = FakeProxy { _, _, _ in firstConnection.triggerInterruption() }
         firstConnection = FakeConnection(proxy: firstProxy)
@@ -458,14 +446,14 @@ private enum TestXPCTransport {
             try await transport.send(command: .startSession, requestData: Data(), timeout: 1)
         }
         let received = try await transport.send(command: .status, requestData: Data(), timeout: 1)
-        precondition(received == response)
+        XCTAssert(received == response)
         firstConnection.triggerInvalidation()
         let receivedAgain = try await transport.send(command: .status, requestData: Data(), timeout: 1)
-        precondition(receivedAgain == response)
-        precondition(factory.creationCount == 2)
+        XCTAssert(receivedAgain == response)
+        XCTAssert(factory.creationCount == 2)
     }
 
-    private static func verifiesInvalidationCreatesOneReplacement() async throws {
+    func testInvalidationCreatesOneReplacement() async throws {
         var firstConnection: FakeConnection!
         let firstProxy = FakeProxy { _, _, _ in firstConnection.triggerInvalidation() }
         firstConnection = FakeConnection(proxy: firstProxy)
@@ -478,11 +466,11 @@ private enum TestXPCTransport {
             try await transport.send(command: .stopSession, requestData: Data(), timeout: 1)
         }
         let received = try await transport.send(command: .status, requestData: Data(), timeout: 1)
-        precondition(received == Data("ok".utf8))
-        precondition(factory.creationCount == 2)
+        XCTAssert(received == Data("ok".utf8))
+        XCTAssert(factory.creationCount == 2)
     }
 
-    private static func verifiesDeadlineAndIgnoresLateReply() async throws {
+    func testDeadlineAndIgnoresLateReply() async throws {
         let storedReply = StoredReply()
         let proxy = FakeProxy { _, _, reply in storedReply.store(reply) }
         let connection = FakeConnection(proxy: proxy)
@@ -495,11 +483,11 @@ private enum TestXPCTransport {
         storedReply.take()?(Data("late".utf8), nil)
         proxy.handle = { _, _, reply in reply(Data("next".utf8), nil) }
         let received = try await transport.send(command: .status, requestData: Data(), timeout: 1)
-        precondition(received == Data("next".utf8))
-        precondition(factory.creationCount == 1)
+        XCTAssert(received == Data("next".utf8))
+        XCTAssert(factory.creationCount == 1)
     }
 
-    private static func verifiesInvalidResponseMapping() async {
+    func testInvalidResponseMapping() async {
         let proxy = FakeProxy { _, _, reply in reply(nil, nil) }
         let connection = FakeConnection(proxy: proxy)
         let factory = ConnectionFactory([connection])

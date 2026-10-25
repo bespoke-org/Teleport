@@ -1,4 +1,5 @@
 import Foundation
+import XCTest
 
 actor RecordingDispatcher: HelperCommandDispatching {
     private(set) var commands: [TUNHelperCommand] = []
@@ -53,39 +54,37 @@ private func invoke(
     return InvocationResult(data: result.0, error: result.1, replyCount: counter.value())
 }
 
-@main
-struct TestHelperXPCEndpoint {
-    static func main() async throws {
+final class HelperXPCEndpointTests: XCTestCase {
+    func testServiceRepliesWithDispatcherResponse() async throws {
         let expectedResponse = Data("encoded response".utf8)
         let dispatcher = RecordingDispatcher(responseData: expectedResponse)
         let service = HelperXPCService(dispatcher: dispatcher)
         let request = Data("encoded request".utf8)
 
         let status = await invoke { service.getStatus(request, withReply: $0) }
-        precondition(status.data == expectedResponse && status.error == nil && status.replyCount == 1)
+        XCTAssert(status.data == expectedResponse && status.error == nil && status.replyCount == 1)
 
         let start = await invoke { service.startSession(request, withReply: $0) }
-        precondition(start.data == expectedResponse && start.error == nil && start.replyCount == 1)
+        XCTAssert(start.data == expectedResponse && start.error == nil && start.replyCount == 1)
 
         let stop = await invoke { service.stopSession(request, withReply: $0) }
-        precondition(stop.data == expectedResponse && stop.error == nil && stop.replyCount == 1)
+        XCTAssert(stop.data == expectedResponse && stop.error == nil && stop.replyCount == 1)
 
         let diagnostics = await invoke { service.readDiagnostics(request, withReply: $0) }
-        precondition(diagnostics.data == expectedResponse && diagnostics.error == nil && diagnostics.replyCount == 1)
+        XCTAssert(diagnostics.data == expectedResponse && diagnostics.error == nil && diagnostics.replyCount == 1)
 
         let commands = await dispatcher.commands
-        precondition(commands == [.status, .startSession, .stopSession, .readDiagnostics])
+        XCTAssert(commands == [.status, .startSession, .stopSession, .readDiagnostics])
 
         let oversizedDispatcher = RecordingDispatcher(
             responseData: Data(repeating: 0, count: TUNHelperProtocol.maximumResponseBytes + 1)
         )
         let oversizedService = HelperXPCService(dispatcher: oversizedDispatcher)
         let oversized = await invoke { oversizedService.getStatus(request, withReply: $0) }
-        precondition(oversized.data == nil)
-        precondition(oversized.error?.domain == HelperXPCService.errorDomain)
-        precondition(oversized.error?.localizedDescription.count ?? 0 <= 256)
-        precondition(oversized.replyCount == 1)
+        XCTAssert(oversized.data == nil)
+        XCTAssert(oversized.error?.domain == HelperXPCService.errorDomain)
+        XCTAssert(oversized.error?.localizedDescription.count ?? 0 <= 256)
+        XCTAssert(oversized.replyCount == 1)
 
-        print("test_helper_xpc_endpoint: all checks passed")
     }
 }
