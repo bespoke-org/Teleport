@@ -269,6 +269,6 @@ prepare-release version:
     # The release workflow refuses a tag that does not match the app's version.
     sed -i '' 's/MARKETING_VERSION = [^;]*;/MARKETING_VERSION = {{version}};/' {{project}}/project.pbxproj
 
-# Fail on commits since a revision that are not Conventional Commits. Usage: just lint-commits [origin/main]
-lint-commits since="origin/main":
+# Fail on commits since a revision that are not Conventional Commits. Usage: just lint-commits [origin/develop]
+lint-commits since="origin/develop":
     GIT_CLIFF__GIT__REQUIRE_CONVENTIONAL=true git-cliff "{{since}}..HEAD" -o /dev/null

@@ -10,7 +10,7 @@ scms:
     spec:
       owner: bespoke-org
       repository: Teleport
-      branch: main
+      branch: develop
       user: teleport-xray-update[bot]
       email: 347876928+teleport-xray-update[bot]@users.noreply.github.com
       commitmessage:
