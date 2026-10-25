@@ -1,6 +1,10 @@
 # Opens a pull request when XTLS/Xray-core publishes a new stable release.
-# Updatecli (updatecli/updatecli.d/xray.yaml) runs scripts/bump-xray.sh --test
-# in its own clone, so `just test` has to pass before anything is committed.
+# Updatecli (updatecli/updatecli.d/xray.yaml) runs scripts/bump-xray.sh in its
+# own clone and opens the pull request with a GitHub App token: events made with
+# GITHUB_TOKEN start no workflows, so the Pull request checks would not run.
+# The repository variable XRAY_UPDATE_APP_CLIENT_ID and the secret
+# XRAY_UPDATE_APP_PRIVATE_KEY identify the app; it needs read and write access
+# to contents and pull requests.
 name: Xray update
 
 on:
@@ -9,27 +13,25 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 concurrency:
   group: xray-update
 
 jobs:
   updatecli:
-    # macOS 26 arm64 image; its default Xcode (/Applications/Xcode.app) is 26.x,
-    # the version the project is developed with.
+    # bump-xray.sh splits and checks the universal executable with lipo.
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
-      - name: Show the Xcode in use
-        run: xcodebuild -version
-
-      - name: Install just
-        run: brew install just
+      - uses: actions/create-github-app-token@v3.3.0
+        id: app-token
+        with:
+          client-id: ${{ vars.XRAY_UPDATE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.XRAY_UPDATE_APP_PRIVATE_KEY }}
 
       - uses: updatecli/updatecli-action@v3.10.0
         with:
@@ -38,4 +40,4 @@ jobs:
       - name: Update Xray and open a pull request
         run: updatecli pipeline apply --config updatecli/updatecli.d
         env:
-          UPDATECLI_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPDATECLI_GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
