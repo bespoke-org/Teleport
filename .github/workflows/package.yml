@@ -1,0 +1,54 @@
+# Builds the Release package: just package, then the app zipped with ditto, which keeps its
+# signature and permissions. Test runs it on pushes to main, Release on version tags.
+name: Package
+
+on:
+  workflow_call:
+    outputs:
+      version:
+        description: CFBundleShortVersionString of the built app
+        value: ${{ jobs.package.outputs.version }}
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    # Without Config/Local.xcconfig the build is signed ad hoc.
+    runs-on: macos-26
+    env:
+      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+      APP: build/DerivedData/Build/Products/Release/Teleport.app
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install just
+        run: brew install just
+
+      - run: just package
+
+      - name: Read the app version
+        id: version
+        run: |
+          version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Archive the app
+        run: ditto -c -k --keepParent "$APP" "build/dist/Teleport-${{ steps.version.outputs.version }}.zip"
+
+      # archive: false uploads each file as it is, as an artifact named after the file.
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          path: build/dist/Teleport-${{ steps.version.outputs.version }}.dmg
+          archive: false
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          path: build/dist/Teleport-${{ steps.version.outputs.version }}.zip
+          archive: false
+          if-no-files-found: error
