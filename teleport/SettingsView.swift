@@ -8,8 +8,8 @@ struct SettingsView: View {
     @State private var portalsState = PortalsState()
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            List(SettingsSection.allCases, selection: Binding<SettingsSection?>(
-                get: { navigation.section },
+            List(SettingsSection.sidebarSections, selection: Binding<SettingsSection?>(
+                get: { navigation.section.sidebarSection },
                 set: { section in
                     if let section { navigation.select(section) }
                 }
@@ -17,7 +17,7 @@ struct SettingsView: View {
                 Label {
                     Text(section.title)
                 } icon: {
-                    SettingsSidebarIcon(section: section)
+                    SettingsSectionIcon(section: section)
                 }
                     .tag(section as SettingsSection?)
             }
@@ -69,16 +69,16 @@ struct SettingsView: View {
         case .geodata:
             GeodataSettingsView(viewModel: viewModel)
         case .advanced:
-            AdvancedSettingsView(viewModel: viewModel)
+            AdvancedSettingsView(viewModel: viewModel, onOpenLogs: { navigation.select(.logs) })
         case .logs:
-            LogsSettingsView(viewModel: viewModel)
+            LogsSettingsView()
         case .about:
             AboutSettingsView()
         }
     }
 }
 
-private struct SettingsSidebarIcon: View {
+struct SettingsSectionIcon: View {
     let section: SettingsSection
 
     private var image: Image {
@@ -252,277 +252,6 @@ private struct GeneralSettingsView: View {
     }
 }
 
-private struct LogsSettingsView: View {
-    @ObservedObject var viewModel: AppViewModel
-    @State private var selectedLog: SettingsLogFile = .app
-    @State private var logText = ""
-    @State private var logMetadata = ""
-    @State private var dumpsSystemState = UserDefaults.standard.bool(forKey: SystemStateDump.defaultsKey)
-
-    private let maxLogBytes: UInt64 = 256 * 1024
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            logSection
-        }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .onAppear {
-            Task { await refreshLog() }
-        }
-        .onChange(of: selectedLog) { _, _ in
-            Task { await refreshLog() }
-        }
-    }
-
-    private var logSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Diagnostics")
-                .font(.headline)
-
-            Toggle(isOn: $dumpsSystemState) {
-                Text("Dump system state around every change")
-                Text("Records the routing table, resolvers, packet filter and proxy settings before and after Teleport changes them. Off by default: each capture adds a few KB to the log and makes connecting take a moment longer.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .onChange(of: dumpsSystemState) { _, newValue in
-                UserDefaults.standard.set(newValue, forKey: SystemStateDump.defaultsKey)
-            }
-
-            HStack(spacing: 10) {
-                Picker("Log", selection: $selectedLog) {
-                    ForEach(SettingsLogFile.allCases) { logFile in
-                        Text(logFile.title).tag(logFile)
-                    }
-                }
-                .pickerStyle(.menu)
-                .frame(width: 180, alignment: .leading)
-
-                Spacer(minLength: 8)
-
-                Button("Refresh", systemImage: "arrow.clockwise") {
-                    Task { await refreshLog() }
-                }
-
-                Button("Copy Output", systemImage: "doc.on.doc") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(logText, forType: .string)
-                }
-                .disabled(logText.isEmpty)
-
-                Button("Reveal", systemImage: "folder") {
-                    NSWorkspace.shared.activateFileViewerSelecting([selectedLog.url])
-                }
-                // Helper-owned logs live in a root-only directory that Finder cannot
-                // enter; they reach this window only through the helper's read command.
-                .disabled(selectedLog.helperLogName != nil)
-                .help(selectedLog.helperLogName == nil
-                    ? "Show \(selectedLog.url.lastPathComponent) in Finder"
-                    : "Root-owned; readable only here, or with sudo from \(selectedLog.url.path)")
-            }
-
-            Text(logMetadata)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-
-            LogTextViewer(text: logText)
-                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
-                )
-        }
-        .frame(maxHeight: .infinity, alignment: .top)
-    }
-
-    private func refreshLog() async {
-        if let helperLogName = selectedLog.helperLogName {
-            do {
-                let response = try await PrivilegedHelperClient().readLog(logName: helperLogName, maxBytes: Int(maxLogBytes))
-                try response.validate()
-                logText = response.details ?? ""
-                logMetadata = response.summary ?? "Private helper log: \(helperLogName)"
-            } catch {
-                logText = ""
-                logMetadata = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-            }
-            return
-        }
-
-        // File reads of up to 256 KB and attribute lookups are blocking; keep
-        // them off the main actor so the Settings window stays responsive.
-        let url = selectedLog.url
-        let maxLogBytes = maxLogBytes
-        let (text, metadata) = await BlockingWork.run {
-            (Self.readTail(from: url, maxLogBytes: maxLogBytes), Self.metadata(for: url))
-        }
-        logText = text
-        logMetadata = metadata
-    }
-
-    nonisolated private static func readTail(from url: URL, maxLogBytes: UInt64) -> String {
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return "" }
-        defer { try? handle.close() }
-
-        let fileSize = (try? handle.seekToEnd()) ?? 0
-        let offset = fileSize > maxLogBytes ? fileSize - maxLogBytes : 0
-        try? handle.seek(toOffset: offset)
-        let data = (try? handle.readToEnd()) ?? Data()
-        let text = String(data: data, encoding: .utf8) ?? ""
-
-        if offset > 0 {
-            return "… showing last \(ByteCountFormatter.string(fromByteCount: Int64(maxLogBytes), countStyle: .file)) …\n" + text
-        }
-        return text
-    }
-
-    nonisolated private static func metadata(for url: URL) -> String {
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else {
-            return "Missing: \(url.path)"
-        }
-
-        let size = (attributes[.size] as? NSNumber)?.int64Value ?? 0
-        let modified = attributes[.modificationDate] as? Date
-        let modifiedText = modified.map { $0.formatted(date: .abbreviated, time: .standard) } ?? "unknown"
-        return "\(url.path) • \(ByteCountFormatter.string(fromByteCount: size, countStyle: .file)) • modified \(modifiedText)"
-    }
-}
-
-private struct LogTextViewer: NSViewRepresentable {
-    let text: String
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator()
-    }
-
-    func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSScrollView()
-        scrollView.hasVerticalScroller = true
-        scrollView.hasHorizontalScroller = true
-        scrollView.autohidesScrollers = true
-        scrollView.borderType = .noBorder
-        scrollView.drawsBackground = true
-        scrollView.backgroundColor = .textBackgroundColor
-
-        let textView = NSTextView()
-        textView.isEditable = false
-        textView.isSelectable = true
-        textView.isRichText = false
-        textView.importsGraphics = false
-        textView.usesFindBar = true
-        textView.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
-        textView.textColor = .labelColor
-        textView.backgroundColor = .textBackgroundColor
-        textView.textContainerInset = NSSize(width: 10, height: 10)
-        textView.isHorizontallyResizable = true
-        textView.isVerticallyResizable = true
-        textView.minSize = NSSize(width: 0, height: 0)
-        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        textView.textContainer?.widthTracksTextView = false
-        textView.textContainer?.containerSize = NSSize(
-            width: CGFloat.greatestFiniteMagnitude,
-            height: CGFloat.greatestFiniteMagnitude
-        )
-        textView.string = displayText
-
-        scrollView.documentView = textView
-        context.coordinator.textView = textView
-        return scrollView
-    }
-
-    func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        guard let textView = context.coordinator.textView else { return }
-        let nextText = displayText
-        guard textView.string != nextText else { return }
-
-        let visibleRect = scrollView.contentView.bounds
-        textView.string = nextText
-        textView.scrollToVisible(visibleRect)
-    }
-
-    private var displayText: String {
-        text.isEmpty ? "No log output yet." : text
-    }
-
-    final class Coordinator {
-        weak var textView: NSTextView?
-    }
-}
-
-private enum SettingsLogFile: String, CaseIterable, Identifiable, Hashable {
-    case app
-    case helper
-    case systemProxy
-    case tunConfig
-    case tun
-    case tunControl
-
-    var id: Self { self }
-
-    var title: String {
-        switch self {
-        case .app:
-            return "Teleport"
-        case .helper:
-            return "Helper"
-        case .systemProxy:
-            return "System Proxy"
-        case .tunConfig:
-            return "TUN Config"
-        case .tun:
-            return "TUN"
-        case .tunControl:
-            return "TUN Control"
-        }
-    }
-
-    var helperLogName: String? {
-        switch self {
-        case .app, .systemProxy:
-            return nil
-        case .helper:
-            return "helper.log"
-        case .tunConfig:
-            return "xray-tun-config.json"
-        case .tun:
-            return "xray-tun.log"
-        case .tunControl:
-            return "xray-tun-control.log"
-        }
-    }
-
-    var url: URL {
-        switch self {
-        case .app:
-            return TeleportLog.shared.fileURL
-        case .helper:
-            return Self.helperStateDirectoryURL.appendingPathComponent("helper.log")
-        case .systemProxy:
-            return Self.applicationSupportDirectoryURL.appendingPathComponent("xray.log")
-        case .tunConfig:
-            return Self.helperStateDirectoryURL.appendingPathComponent("xray-tun-config.json")
-        case .tun:
-            return Self.helperStateDirectoryURL.appendingPathComponent("xray-tun.log")
-        case .tunControl:
-            return Self.helperStateDirectoryURL.appendingPathComponent("xray-tun-control.log")
-        }
-    }
-
-    static var applicationSupportDirectoryURL: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("teleport", isDirectory: true)
-    }
-
-    static var helperStateDirectoryURL: URL {
-        URL(fileURLWithPath: PrivilegedHelperConstants.helperStateDirectoryPath, isDirectory: true)
-    }
-}
-
 enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
     case general
     case portals
@@ -533,6 +262,10 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
     case about
 
     var id: Self { self }
+
+    static var sidebarSections: [Self] { allCases.filter { $0 != .logs } }
+
+    var sidebarSection: Self { self == .logs ? .advanced : self }
 
     var title: String {
         switch self {
@@ -545,7 +278,7 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         case .geodata:
             return "Geodata"
         case .advanced:
-            return "Advanced"
+            return "Nerd Shit"
         case .logs:
             return "Logs"
         case .about:
@@ -583,9 +316,9 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         case .geodata:
             return Color(red: 50.0 / 255, green: 184.0 / 255, blue: 83.0 / 255)
         case .advanced:
-            return .gray
-        case .logs:
             return .orange
+        case .logs:
+            return .blue
         case .about:
             return .blue
         }
