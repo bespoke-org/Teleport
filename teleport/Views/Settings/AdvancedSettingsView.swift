@@ -60,7 +60,7 @@ struct AdvancedSettingsView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer()
-                    Button(viewModel.isUninstallingHelper ? "Uninstalling..." : "Uninstall...") {
+                    Button(viewModel.isUninstallingHelper ? "Uninstalling..." : "Uninstall") {
                         isConfirmingHelperUninstall = true
                     }
                     .fixedSize()
@@ -95,9 +95,6 @@ struct AdvancedSettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-            }
-
-            Section {
                 Button(action: onOpenLogs) {
                     HStack(spacing: 12) {
                         SettingsSectionIcon(section: .logs)

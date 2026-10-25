@@ -7,6 +7,7 @@ struct AboutSettingsView: View {
 
     private let sourceCodeURL = URL(string: "https://github.com/bespoke-org/Teleport")!
     private let issuesURL = URL(string: "https://github.com/bespoke-org/Teleport/issues")!
+    private let supportURL = URL(string: "https://github.com/bespoke-org/Teleport#buy-us-some-tokens")!
     private let licenseURL = URL(string: "https://github.com/bespoke-org/Teleport/blob/develop/LICENSE")!
     private let thirdPartyNoticesURL = URL(string: "https://github.com/bespoke-org/Teleport/blob/develop/THIRD_PARTY_NOTICES.md")!
 
@@ -37,8 +38,13 @@ struct AboutSettingsView: View {
             }
 
             Section {
-                Link("Source code", destination: sourceCodeURL)
-                Link("Report a bug", destination: issuesURL)
+                SourceCodeLink(destination: sourceCodeURL)
+                Link(destination: issuesURL) {
+                    Label("Report a bug", systemImage: "ladybug")
+                }
+                Link(destination: supportURL) {
+                    Label("Support development", systemImage: "heart")
+                }
             } header: {
                 Text("Project links")
             } footer: {
