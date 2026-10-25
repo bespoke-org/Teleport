@@ -122,6 +122,110 @@ final class GeodataTests: XCTestCase {
         XCTAssert(decoded.geodataSettings.geoipLastError == "Download failed with status 404")
     }
 
+    func testSourceCacheSurvivesSwitchesAndBundledReset() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = GeodataUpdateService(fileManager: TempFileManager(root: root))
+        let sourceA = URL(string: "https://a.example/geosite.dat")!
+        let sourceB = URL(string: "https://b.example/geosite.dat")!
+        let dataA = geositeFixture(domain: "a.example")
+        let dataB = geositeFixture(domain: "b.example")
+        let dateA = Date(timeIntervalSince1970: 1_700_000_000)
+        try service.store(dataA, for: .geosite)
+        try service.cacheCurrentDownload(for: .geosite, source: sourceA, updatedAt: dateA)
+        XCTAssertNil(service.cachedDownload(for: .geoip, source: sourceA))
+        XCTAssertNil(service.cachedDownload(for: .geosite, source: sourceB))
+
+        let updateB = try await service.prepareUpdate(kind: .geosite, from: sourceB, useCache: true) { _, _ in dataB }
+        defer { service.discard(updateB) }
+        try service.activate(updateB, for: .geosite)
+        XCTAssertEqual(try Data(contentsOf: service.customFileURL(for: .geosite)), dataB)
+
+        // Reconstruct the service to verify reuse also works after relaunch.
+        let reopened = GeodataUpdateService(fileManager: TempFileManager(root: root))
+        let updateA = try await reopened.prepareUpdate(kind: .geosite, from: sourceA, useCache: true) { _, _ in
+            throw CocoaError(.fileReadUnknown) // A cache hit must never call the downloader.
+        }
+        defer { reopened.discard(updateA) }
+        XCTAssertEqual(updateA.updatedAt, dateA)
+        try reopened.activate(updateA, for: .geosite)
+        XCTAssertEqual(try Data(contentsOf: reopened.customFileURL(for: .geosite)), dataA)
+
+        try reopened.removeCustomGeodata(for: .geosite)
+        let restored = try await reopened.prepareUpdate(kind: .geosite, from: sourceA, useCache: true) { _, _ in
+            throw CocoaError(.fileReadUnknown)
+        }
+        defer { reopened.discard(restored) }
+        try reopened.activate(restored, for: .geosite)
+        XCTAssertEqual(restored.updatedAt, dateA)
+        XCTAssertEqual(try Data(contentsOf: reopened.customFileURL(for: .geosite)), dataA)
+    }
+
+    func testExplicitRefreshBypassesCacheAndStagingPreservesActiveFile() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = GeodataUpdateService(fileManager: TempFileManager(root: root))
+        let source = URL(string: "https://example.com/geosite.dat")!
+        let original = geositeFixture(domain: "old.example")
+        let fresh = geositeFixture(domain: "new.example")
+        let oldDate = Date(timeIntervalSince1970: 1_700_000_000)
+        try service.store(original, for: .geosite)
+        try service.cacheDownload(.init(data: original, updatedAt: oldDate), for: .geosite, source: source)
+        let prepared = try await service.prepareUpdate(kind: .geosite, from: source, useCache: false) { _, _ in fresh }
+        XCTAssertTrue(prepared.changed)
+        XCTAssertGreaterThan(prepared.updatedAt, oldDate)
+        XCTAssertEqual(try Data(contentsOf: service.customFileURL(for: .geosite)), original)
+        service.discard(prepared)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: prepared.stagedURL.path))
+        XCTAssertEqual(try Data(contentsOf: service.customFileURL(for: .geosite)), original)
+        XCTAssertEqual(service.cachedDownload(for: .geosite, source: source)?.data, fresh)
+    }
+
+    func testCancelledDownloadLeavesActiveDataUntouched() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = GeodataUpdateService(fileManager: TempFileManager(root: root))
+        let source = URL(string: "https://example.com/geosite.dat")!
+        let original = geositeFixture()
+        try service.store(original, for: .geosite)
+        let started = expectation(description: "download started")
+        let request = Task {
+            try await service.prepareUpdate(kind: .geosite, from: source, useCache: true) { _, _ in
+                started.fulfill()
+                try await Task.sleep(for: .seconds(30))
+                return original
+            }
+        }
+        await fulfillment(of: [started], timeout: 2)
+        request.cancel()
+        do {
+            let prepared = try await request.value
+            service.discard(prepared)
+            XCTFail("Cancelled downloads must not prepare an activation")
+        } catch is CancellationError {
+            // Expected.
+        }
+        XCTAssertNil(service.cachedDownload(for: .geosite, source: source))
+        XCTAssertEqual(try Data(contentsOf: service.customFileURL(for: .geosite)), original)
+    }
+
+    func testIncompleteCacheIsDownloadedAgain() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = GeodataUpdateService(fileManager: TempFileManager(root: root))
+        let source = URL(string: "https://example.com/geosite.dat")!
+        try service.cacheDownload(.init(data: geositeFixture(), updatedAt: .distantPast), for: .geosite, source: source)
+        let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)!.allObjects as! [URL]
+        let receipt = try XCTUnwrap(files.first { $0.pathExtension == "json" })
+        try FileManager.default.removeItem(at: receipt)
+        XCTAssertNil(service.cachedDownload(for: .geosite, source: source))
+        let fresh = geositeFixture(domain: "fresh.example")
+        let prepared = try await service.prepareUpdate(kind: .geosite, from: source, useCache: true) { _, _ in fresh }
+        defer { service.discard(prepared) }
+        try service.activate(prepared, for: .geosite)
+        XCTAssertEqual(try Data(contentsOf: service.customFileURL(for: .geosite)), fresh)
+    }
+
     // MARK: - Protobuf fixtures
 
     private func varint(_ value: Int) -> [UInt8] {
