@@ -2,238 +2,156 @@ import SwiftUI
 
 struct GeodataSettingsView: View {
     @ObservedObject var viewModel: AppViewModel
-    @State private var configMode: ConfigMode = .preset
-    @State private var selectedPresetID: String?
-    @State private var geositeURLText: String = ""
-    @State private var geoipURLText: String = ""
-
-    private enum ConfigMode: Hashable {
-        case preset
-        case manual
-    }
-
-    private struct GeodataProviderPreset: Identifiable {
-        let name: String
-        let geositeURLString: String
-        let geoipURLString: String
-        var id: String { name }
-    }
+    @State private var draft = GeodataSourceDraft(settings: GeodataSourceSettings())
+    @State private var showsValidation = false
 
     private static let intervalOptions: [Int?] = [nil, 60, 360, 1440, 10080]
 
-    private static let presets: [GeodataProviderPreset] = [
-        GeodataProviderPreset(
-            name: "V2Fly (official)",
-            geositeURLString: "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat",
-            geoipURLString: "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat"
-        ),
-        GeodataProviderPreset(
-            name: "Loyalsoldier",
-            geositeURLString: "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat",
-            geoipURLString: "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat"
-        ),
-        GeodataProviderPreset(
-            name: "Rulite",
-            geositeURLString: "https://cdn.jsdelivr.net/gh/sendmiche/rulite@latest/geosite.dat",
-            geoipURLString: "https://github.com/sendmiche/rulite/releases/latest/download/geoip.dat"
-        ),
-        GeodataProviderPreset(
-            name: "RuNet Freedom (Russia)",
-            geositeURLString: "https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/geosite.dat",
-            geoipURLString: "https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/geoip.dat"
-        )
-    ]
-
-    private var isUpdatingEither: Bool {
-        !viewModel.updatingGeodataKinds.isEmpty
+    private var isUpdating: Bool { !viewModel.updatingGeodataKinds.isEmpty }
+    private var savedURLs: GeodataSourceDraft.URLs { GeodataSourceDraft.savedURLs(viewModel.geodataSettings) }
+    private var hasChanges: Bool {
+        draft.urls != savedURLs || GeodataKind.allCases.contains {
+            draft.urls[$0] == nil && viewModel.hasCustomGeodata(kind: $0)
+        }
+    }
+    private var actionTitle: String {
+        if draft.choice == .bundled { return "Use bundled data" }
+        if !draft.urls.usesDownloads { return "Download and apply" }
+        return hasChanges ? "Download and apply" : "Update now"
     }
 
     var body: some View {
         Form {
             Section {
-                Text("Geosite and geoip data power `geosite:`/`geoip:` split-tunnel rules. Custom sources override Teleport's bundled defaults.")
+                Picker("Source", selection: Binding(
+                    get: { draft.choice },
+                    set: { choice in
+                        draft.choice = choice
+                        showsValidation = false
+                        if GeodataKind.allCases.allSatisfy({ draft.validationError(for: $0) == nil }) {
+                            applySource(forceDownload: false)
+                        }
+                    }
+                )) {
+                    Text("Bundled with Teleport").tag(GeodataSourceDraft.Choice.bundled)
+                    ForEach(GeodataSourceDraft.presets) { provider in
+                        Text(provider.name).tag(GeodataSourceDraft.Choice.provider(provider.id))
+                    }
+                    Text("Custom URLs").tag(GeodataSourceDraft.Choice.custom)
+                }
+                .disabled(isUpdating)
+
+                if draft.choice == .custom {
+                    VStack(spacing: 12) {
+                        urlField("Geosite URL", kind: .geosite, text: $draft.geositeURL)
+                        urlField("GeoIP URL", kind: .geoip, text: $draft.geoipURL)
+                    }
+                }
+
+            } header: {
+                Text("Domain and IP lists used by split-tunneling rules.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-
-                Picker("", selection: $configMode) {
-                    Text("Preset").tag(ConfigMode.preset)
-                    Text("Manual").tag(ConfigMode.manual)
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
             }
 
-            if configMode == .preset {
-                presetSection
-            } else {
-                manualSection
-            }
-
-            Section {
-                Picker(
-                    selection: Binding(
-                        get: { viewModel.geodataSettings.autoUpdateIntervalMinutes },
-                        set: { viewModel.setGeodataAutoUpdateIntervalMinutes($0) }
-                    )
-                ) {
+            Section("Updates") {
+                Picker("Automatic updates", selection: Binding(
+                    get: { savedURLs.usesDownloads ? viewModel.geodataSettings.autoUpdateIntervalMinutes : nil },
+                    set: { viewModel.setGeodataAutoUpdateIntervalMinutes($0) }
+                )) {
                     ForEach(Self.intervalOptions, id: \.self) { option in
                         Text(intervalLabel(option)).tag(option)
                     }
-                } label: {
-                    Text("Auto update")
-                    Text("Applies to whichever source is configured above.")
                 }
+                .disabled(!savedURLs.usesDownloads)
+
+                if hasChanges || draft.choice == .custom || draft.urls.usesDownloads || isUpdating {
+                    HStack(spacing: 10) {
+                        Button(actionTitle) { applySource(forceDownload: !hasChanges) }
+                            .disabled(isUpdating)
+                        if isUpdating {
+                            Button("Cancel") { viewModel.cancelGeodataUpdates() }
+                        }
+                        Spacer()
+                    }
+                }
+            }
+
+            Section("Data") {
+                datasetRow(.geosite)
+                datasetRow(.geoip)
             }
         }
         .formStyle(.grouped)
         .padding(.top, -20)
         .navigationTitle("Geodata")
-        .onAppear {
-            geositeURLText = viewModel.geodataSettings.geositeURLString ?? ""
-            geoipURLText = viewModel.geodataSettings.geoipURLString ?? ""
+        .onAppear { draft = GeodataSourceDraft(settings: viewModel.geodataSettings) }
+    }
 
-            if let matchedPreset = Self.presets.first(where: {
-                $0.geositeURLString == viewModel.geodataSettings.geositeURLString
-                    && $0.geoipURLString == viewModel.geodataSettings.geoipURLString
-            }) {
-                configMode = .preset
-                selectedPresetID = matchedPreset.id
-            } else if viewModel.geodataSettings.geositeURLString != nil || viewModel.geodataSettings.geoipURLString != nil {
-                configMode = .manual
-            } else {
-                configMode = .preset
-                selectedPresetID = nil
+    private func urlField(_ title: String, kind: GeodataKind, text: Binding<String>) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(title)
+                .frame(width: 90, alignment: .leading)
+            VStack(alignment: .leading, spacing: 6) {
+                TextField(title, text: text, prompt: Text("https://…/\(kind.fileName)"))
+                    .labelsHidden()
+                    .accessibilityLabel(title)
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(isUpdating)
+                    .onSubmit { applySource(forceDownload: false) }
+                if showsValidation, let error = draft.validationError(for: kind) {
+                    Text(error).font(.caption).foregroundStyle(.red)
+                }
             }
         }
     }
 
-    private var presetSection: some View {
-        Section("Preset") {
-            Picker(
-                "Provider",
-                selection: Binding(
-                    get: { selectedPresetID },
-                    set: { newValue in
-                        if newValue != selectedPresetID {
-                            viewModel.cancelGeodataUpdates()
-                        }
-                        selectedPresetID = newValue
-                    }
-                )
-            ) {
-                Text("Select a provider").tag(String?.none)
-                ForEach(Self.presets) { preset in
-                    Text(preset.name).tag(Optional(preset.id))
-                }
-            }
-
-            HStack(spacing: 10) {
-                Button("Update Now", action: applySelectedPreset)
-                    .disabled(selectedPresetID == nil || isUpdatingEither)
-
-                if isUpdatingEither {
-                    ProgressView()
-                        .controlSize(.small)
-
-                    Button("Cancel") {
-                        viewModel.cancelGeodataUpdates()
-                    }
-                }
-
-                Spacer()
-            }
-
-            statusText(for: .geosite, label: "Geosite")
-            statusText(for: .geoip, label: "Geoip")
-        }
-    }
-
-    private var manualSection: some View {
-        Group {
-            Section("Geosite") {
-                geodataRow(kind: .geosite, urlText: $geositeURLText, onCommit: { viewModel.setGeositeURL($0) })
-            }
-
-            Section("GeoIP") {
-                geodataRow(kind: .geoip, urlText: $geoipURLText, onCommit: { viewModel.setGeoipURL($0) })
-            }
-        }
-    }
-
-    private func applySelectedPreset() {
-        guard let selectedPresetID, let preset = Self.presets.first(where: { $0.id == selectedPresetID }) else { return }
-        viewModel.setGeositeURL(preset.geositeURLString)
-        viewModel.setGeoipURL(preset.geoipURLString)
-        geositeURLText = preset.geositeURLString
-        geoipURLText = preset.geoipURLString
-        viewModel.updateGeodataNow(kind: .geosite)
-        viewModel.updateGeodataNow(kind: .geoip)
-    }
-
-    @ViewBuilder
-    private func geodataRow(kind: GeodataKind, urlText: Binding<String>, onCommit: @escaping (String?) -> Void) -> some View {
-        TextField("https://…/\(kind.fileName)", text: urlText)
-            .textFieldStyle(.roundedBorder)
-            .font(.caption.monospaced())
-            .onSubmit { onCommit(urlText.wrappedValue) }
-            .onChange(of: urlText.wrappedValue) { _, newValue in
-                onCommit(newValue)
-            }
-
-        HStack(spacing: 10) {
-            Button("Update Now") {
-                onCommit(urlText.wrappedValue)
-                viewModel.updateGeodataNow(kind: kind)
-            }
-            .disabled(urlText.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || viewModel.updatingGeodataKinds.contains(kind))
-
-            if viewModel.updatingGeodataKinds.contains(kind) {
-                ProgressView()
-                    .controlSize(.small)
-
-                Button("Cancel") {
-                    viewModel.cancelGeodataUpdate(kind: kind)
-                }
-            }
-
-            if viewModel.hasCustomGeodata(kind: kind) {
-                Button("Reset to Bundled") {
-                    urlText.wrappedValue = ""
-                    viewModel.resetGeodataToBundled(kind: kind)
-                }
-                .disabled(viewModel.updatingGeodataKinds.contains(kind))
-            }
-
-            Spacer()
-        }
-
-        statusText(for: kind, label: nil)
-    }
-
-    @ViewBuilder
-    private func statusText(for kind: GeodataKind, label: String?) -> some View {
+    private func datasetRow(_ kind: GeodataKind) -> some View {
         let settings = viewModel.geodataSettings
         let lastError = kind == .geosite ? settings.geositeLastError : settings.geoipLastError
-        let lastUpdatedAt = kind == .geosite ? settings.geositeLastUpdatedAt : settings.geoipLastUpdatedAt
-        let prefix = label.map { "\($0): " } ?? ""
+        let lastUpdated = kind == .geosite ? settings.geositeLastUpdatedAt : settings.geoipLastUpdatedAt
+        let downloaded = viewModel.hasCustomGeodata(kind: kind)
+        let updating = viewModel.updatingGeodataKinds.contains(kind)
 
-        if let lastError {
-            Text(prefix + lastError)
-                .font(.caption)
-                .foregroundStyle(.red)
-        } else if let lastUpdatedAt {
-            Text(prefix + "Updated \(Self.relativeFormatter.localizedString(for: lastUpdatedAt, relativeTo: Date()))")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        } else if viewModel.hasCustomGeodata(kind: kind) {
-            Text(prefix + "Using a previously downloaded file.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        } else {
-            Text(prefix + "Using Teleport's bundled default.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+        return HStack(spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(kind.displayName)
+                Text(kind == .geosite ? "Domains" : "IP ranges")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .fixedSize()
+            Spacer(minLength: 16)
+            if updating {
+                ProgressView().controlSize(.mini)
+                Text("Updating…").foregroundStyle(.secondary)
+            } else {
+                if downloaded, let lastUpdated {
+                    Text("Updated \(Self.relativeFormatter.localizedString(for: lastUpdated, relativeTo: Date()))")
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text(downloaded ? "Updated previously" : "Bundled")
+                        .foregroundStyle(.secondary)
+                }
+                if let lastError {
+                    Image(systemName: "exclamationmark.triangle")
+                        .foregroundStyle(.red)
+                        .help(lastError)
+                        .accessibilityLabel("Update failed: \(lastError)")
+                }
+            }
         }
+        .lineLimit(1)
+    }
+
+    private func applySource(forceDownload: Bool) {
+        guard !isUpdating else { return }
+        showsValidation = true
+        guard GeodataKind.allCases.allSatisfy({ draft.validationError(for: $0) == nil }) else { return }
+        let urls = draft.urls
+        viewModel.applyGeodataSources(geositeURLString: urls.geosite, geoipURLString: urls.geoip,
+                                     forceDownload: forceDownload)
+        showsValidation = false
     }
 
     private func intervalLabel(_ minutes: Int?) -> String {
