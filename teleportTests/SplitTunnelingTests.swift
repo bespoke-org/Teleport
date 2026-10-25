@@ -695,6 +695,7 @@ final class SplitTunnelingTests: XCTestCase {
         }
         XCTAssert(settings["gateway"] as? [String] == ["172.18.0.1/30", "fdfe:dcba:9876::1/126"])
         XCTAssert(settings["autoSystemRoutingTable"] as? [String] == ["0.0.0.0/0", "::/0"])
+        XCTAssert(settings["autoOutboundsInterface"] as? String == "")
 
         // Uplink without global IPv6: the TUN claims IPv4 only and DNS answers A only,
         // so nothing ever tries an IPv6 connection the tunnel could not deliver.
