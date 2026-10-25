@@ -50,8 +50,8 @@ cat <<'EOF'
 Teleport's privileged helper is removed.
 
 Left in place, per user, for you to remove if you want nothing of Teleport kept:
-  ~/Library/Application Support/teleport/   (app state, logs, downloaded geodata)
-  Keychain item "dev.x.teleport.configuration"   (saved connections and settings; Keychain Access or:
+  ~/Library/Application Support/teleport/   (encrypted connections and settings, logs, downloaded geodata)
+  Keychain item "dev.x.teleport.configuration"   (the key they are encrypted with; Keychain Access or:
       security delete-generic-password -s dev.x.teleport.configuration)
   Login item "Teleport"   (System Settings > General > Login Items, if it was enabled)
 EOF

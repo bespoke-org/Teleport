@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Security
 
@@ -10,14 +11,18 @@ final class ConfigurationStore {
     private let decoder = JSONDecoder()
     private let log: TeleportLog
 
+    /// The sealed snapshot and its copies, one directory per account so an
+    /// isolated test store never touches the files of the shipping app.
+    let sealedDirectoryURL: URL
+
     static let subsystem = "persistence"
 
     private static let defaultKeychainService = "dev.x.teleport.configuration"
     private static let defaultKeychainAccount = "app-snapshot"
 
     /// `keychainService`/`keychainAccount` are overridable so verification scripts can
-    /// exercise this store against an isolated Keychain item instead of the real one
-    /// used by the shipping app (which holds the user's actual saved connections).
+    /// exercise this store against an isolated key and directory instead of the real
+    /// ones used by the shipping app (which hold the user's actual saved connections).
     init(
         fileManager: FileManager = .default,
         keychainService: String = ConfigurationStore.defaultKeychainService,
@@ -31,29 +36,33 @@ final class ConfigurationStore {
         let baseURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let directoryURL = baseURL.appendingPathComponent("teleport", isDirectory: true)
         legacyFileURL = directoryURL.appendingPathComponent("state.json")
-        try? fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        sealedDirectoryURL = directoryURL
+            .appendingPathComponent("sealed", isDirectory: true)
+            .appendingPathComponent(keychainAccount, isDirectory: true)
+        try? fileManager.createDirectory(at: sealedDirectoryURL, withIntermediateDirectories: true)
         try? fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directoryURL.path)
+        try? fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: sealedDirectoryURL.path)
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     }
 
-    /// Set by the most recent `load()` when the Keychain item exists but could not be
-    /// read (e.g. access denied because the Keychain was still locked, or the app's
-    /// code signature changed since the item was written). Distinguishing this from
-    /// "no snapshot was ever saved" matters: if we silently treated it as empty, the
-    /// next `save()` would overwrite the real data in Keychain with a blank snapshot,
-    /// making the loss permanent. Callers should surface this to the user and avoid
+    /// Set by the most recent `load()` when a snapshot exists but could not be read
+    /// (e.g. the key could not be read because the Keychain was still locked, or the
+    /// app's code signature changed since the key was written). Distinguishing this
+    /// from "no snapshot was ever saved" matters: if we silently treated it as empty,
+    /// the next `save()` would overwrite the real data with a blank snapshot, making
+    /// the loss permanent. Callers should surface this to the user and avoid
     /// persisting until it is resolved (e.g. after unlocking Keychain and relaunching).
     private(set) var lastLoadError: Error?
 
-    /// Whether the most recent `load()` actually found a stored item. Callers used to
-    /// answer this with a second Keychain read, which could disagree with the one
-    /// `load()` made — and a disagreement that says "nothing saved" makes the caller
-    /// seed defaults and write them over the real snapshot. One read, one answer.
+    /// Whether the most recent `load()` actually found a stored snapshot. Callers used
+    /// to answer this with a second read, which could disagree with the one `load()`
+    /// made — and a disagreement that says "nothing saved" makes the caller seed
+    /// defaults and write them over the real snapshot. One read, one answer.
     private(set) var lastLoadFoundStoredSnapshot = false
 
-    /// How much user data the snapshot currently believed to be in the Keychain
-    /// holds, so `save()` can tell a save that drops some of it from one that does
-    /// not. Nil until a load or save establishes it.
+    /// How much user data the snapshot currently believed to be on disk holds, so
+    /// `save()` can tell a save that drops some of it from one that does not. Nil
+    /// until a load or save establishes it.
     private var persistedExtent: SnapshotExtent?
 
     /// The two collections a user builds up by hand and would notice missing.
@@ -91,11 +100,32 @@ final class ConfigurationStore {
         lastLoadError = nil
         lastLoadFoundStoredSnapshot = false
         persistedExtent = nil
+
+        // Everything below reads or writes sealed files, so the key comes first;
+        // without it nothing is touched.
+        do {
+            _ = try obtainKey()
+        } catch {
+            lastLoadError = error
+            log.error(Self.subsystem, "encryption key unavailable: \(LogFormat.error(error)); refusing to save")
+            return AppSnapshot(savedConnections: [], subscriptionSources: [], selectedConnectionID: nil, proxyEndpoint: .default)
+        }
+        migrateKeychainItemsIfPresent()
+        if lastLoadError != nil {
+            return AppSnapshot(savedConnections: [], subscriptionSources: [], selectedConnectionID: nil, proxyEndpoint: .default)
+        }
         importPlaintextBackupsIfPresent()
 
-        switch keychainSnapshotResult() {
-        case let .found(data):
+        if fileManager.fileExists(atPath: currentSnapshotFileURL.path) {
             lastLoadFoundStoredSnapshot = true
+            guard let data = readSealedFile(name: Self.currentSnapshotName) else {
+                // The file is there but does not open with the key, so it is
+                // either damaged or sealed under another key (another machine's,
+                // or one this Keychain no longer has). Treated like a read failure.
+                lastLoadError = ConfigurationStoreError.snapshotCouldNotBeOpened
+                log.error(Self.subsystem, "sealed snapshot could not be opened; refusing to save")
+                return AppSnapshot(savedConnections: [], subscriptionSources: [], selectedConnectionID: nil, proxyEndpoint: .default)
+            }
             if let snapshot = decodeSnapshot(from: data) {
                 persistedExtent = SnapshotExtent(snapshot)
                 // Every launch that reads a good snapshot leaves a copy behind, so
@@ -105,23 +135,18 @@ final class ConfigurationStore {
                 return snapshot
             }
 
-            // The item is there but this build cannot decode it, which one
+            // The snapshot is there but this build cannot decode it, which one
             // incompatible model change between two builds is enough to cause.
             // Treated exactly like a read failure rather than as "no data":
             // without the save-guard the first autosave after launch (a health
             // probe, a subscription refresh) would encode the current empty state
             // over the only copy of the user's connections.
-            let backupAccount = backUpUndecodableSnapshot(data)
-            lastLoadError = ConfigurationStoreError.snapshotCouldNotBeDecoded(backupAccount: backupAccount)
-            log.error(Self.subsystem, "keychain snapshot could not be decoded (\(data.count) bytes); refusing to save, raw copy kept as keychain item \(backupAccount ?? "<backup failed>")")
-            return AppSnapshot(savedConnections: [], subscriptionSources: [], selectedConnectionID: nil, proxyEndpoint: .default)
-        case .notFound:
-            log.info(Self.subsystem, "no keychain snapshot yet")
-        case let .failed(status):
-            lastLoadError = ConfigurationStoreError.keychainReadFailed(status)
-            log.error(Self.subsystem, "keychain read failed with OSStatus \(status); refusing to save")
+            let backupName = backUpUndecodableSnapshot(data)
+            lastLoadError = ConfigurationStoreError.snapshotCouldNotBeDecoded(backupName: backupName)
+            log.error(Self.subsystem, "snapshot could not be decoded (\(data.count) bytes); refusing to save, raw copy kept as sealed file \(backupName ?? "<backup failed>")")
             return AppSnapshot(savedConnections: [], subscriptionSources: [], selectedConnectionID: nil, proxyEndpoint: .default)
         }
+        log.info(Self.subsystem, "no sealed snapshot yet")
 
         if let data = try? Data(contentsOf: legacyFileURL) {
             lastLoadFoundStoredSnapshot = true
@@ -129,17 +154,17 @@ final class ConfigurationStore {
                 persistedExtent = SnapshotExtent(snapshot)
                 retainGoodSnapshot(data, reason: "legacy")
                 // Direct upgrades from v0.1.0 still have their only snapshot here.
-                // Delete the plaintext copy only after the Keychain migration succeeds.
+                // Delete the plaintext copy only after the sealed one is written.
                 if (try? save(snapshot)) != nil {
                     try? fileManager.removeItem(at: legacyFileURL)
-                    log.info(Self.subsystem, "migrated legacy state.json into keychain")
+                    log.info(Self.subsystem, "migrated legacy state.json into a sealed file")
                 }
                 return snapshot
             }
 
-            let backupAccount = backUpUndecodableSnapshot(data)
-            lastLoadError = ConfigurationStoreError.snapshotCouldNotBeDecoded(backupAccount: backupAccount)
-            log.error(Self.subsystem, "legacy state.json could not be decoded; refusing to save, raw copy kept as keychain item \(backupAccount ?? "<backup failed>")")
+            let backupName = backUpUndecodableSnapshot(data)
+            lastLoadError = ConfigurationStoreError.snapshotCouldNotBeDecoded(backupName: backupName)
+            log.error(Self.subsystem, "legacy state.json could not be decoded; refusing to save, raw copy kept as sealed file \(backupName ?? "<backup failed>")")
             return AppSnapshot(savedConnections: [], subscriptionSources: [], selectedConnectionID: nil, proxyEndpoint: .default)
         }
 
@@ -154,21 +179,21 @@ final class ConfigurationStore {
 
         // A save that drops connections or subscriptions is not refused — deleting
         // one is an ordinary thing to do — but it is never allowed to be the only
-        // copy. Whatever is in the Keychain right now is written aside first, so an
+        // copy. Whatever is on disk right now is written aside first, so an
         // in-memory state that lost data to a bug is recoverable rather than merely
         // logged.
         let extent = SnapshotExtent(snapshot)
         if let previous = persistedExtent, extent.shrinks(from: previous) {
             var kept = "<none>"
-            if case let .found(currentData) = keychainSnapshotResult() {
+            if let currentData = readSealedFile(name: Self.currentSnapshotName) {
                 kept = retainGoodSnapshot(currentData, reason: "shrink") ?? "<backup failed>"
             }
-            log.warn(Self.subsystem, "save drops connections \(previous.connections) -> \(extent.connections), subscriptions \(previous.subscriptions) -> \(extent.subscriptions); previous snapshot kept as keychain item \(kept)")
+            log.warn(Self.subsystem, "save drops connections \(previous.connections) -> \(extent.connections), subscriptions \(previous.subscriptions) -> \(extent.subscriptions); previous snapshot kept as sealed file \(kept)")
         }
 
         let data = try encoder.encode(snapshot)
         do {
-            try writeKeychainItem(data, account: keychainAccount)
+            try writeSealedFile(data, name: Self.currentSnapshotName)
         } catch {
             log.error(Self.subsystem, "save failed: \(LogFormat.error(error))")
             throw error
@@ -180,65 +205,61 @@ final class ConfigurationStore {
 
     // MARK: - Backup copies
 
-    /// Copies live in the Keychain beside the live item, under accounts derived
-    /// from it, so they get the same protection the live snapshot was moved into
-    /// the Keychain for: a snapshot holds every link, user id and password the user
-    /// has. A file under Application Support would have undone that move.
+    /// Copies live beside the live snapshot as files sealed under the same key, so
+    /// they get the protection the snapshot was moved into the Keychain for: a
+    /// snapshot holds every link, user id and password the user has. Each copy is
+    /// its own file that no save ever rewrites; only pruning removes one.
     ///
     /// They are still recoverable by hand:
     ///
-    ///     security find-generic-password -s dev.x.teleport.configuration \
-    ///         -a 'app-snapshot.retained.<stamp>-loaded' -w
-    private var retainedAccountPrefix: String { "\(keychainAccount).retained." }
-    private var unreadableAccountPrefix: String { "\(keychainAccount).unreadable." }
+    ///     just decrypt-snapshot retained.<stamp>-loaded
+    private static let retainedFilePrefix = "retained."
+    private static let unreadableFilePrefix = "unreadable."
 
     /// Rolling copies of snapshots that decoded cleanly. Kept separately from the
     /// unreadable ones because these are the ones worth restoring from directly:
     /// they are known-good, and the newest predates whatever went wrong.
-    /// Returns the account the copy lives under.
+    /// Returns the file name the copy lives under.
     @discardableResult
     private func retainGoodSnapshot(_ data: Data, reason: String) -> String? {
-        let existing = retainedSnapshotAccounts()
+        let existing = retainedSnapshotCopies()
 
         // An unchanged snapshot re-read on every launch would otherwise push the
         // generations that differ from it out of the window within five launches.
-        if let newest = existing.last, readKeychainItem(account: newest) == data {
+        if let newest = existing.last, readSealedFile(name: newest) == data {
             return newest
         }
 
-        let account = "\(retainedAccountPrefix)\(Self.fileStamp())-\(reason)"
-        guard (try? writeKeychainItem(data, account: account)) != nil else { return nil }
+        guard let name = writeNewSealedFile(data, base: "\(Self.retainedFilePrefix)\(Self.fileStamp())-\(reason)") else { return nil }
 
-        for stale in (existing + [account]).dropLast(Self.retainedSnapshotGenerations) {
-            deleteKeychainItem(account: stale)
+        for stale in (existing + [name]).dropLast(Self.retainedSnapshotGenerations) {
+            try? fileManager.removeItem(at: sealedFileURL(stale))
         }
-        return account
+        return name
     }
 
     /// Keeps the bytes we could not decode, so a snapshot this build rejects is
     /// still recoverable by hand (or by a later build that understands it). Stamped
     /// because a user who relaunches a few times before noticing should not
-    /// overwrite the first, most complete copy. Returns the account it lives under.
+    /// overwrite the first, most complete copy. Returns the file name it lives under.
     private func backUpUndecodableSnapshot(_ data: Data) -> String? {
-        let account = "\(unreadableAccountPrefix)\(Self.fileStamp())"
-        guard (try? writeKeychainItem(data, account: account)) != nil else { return nil }
-        return account
+        writeNewSealedFile(data, base: "\(Self.unreadableFilePrefix)\(Self.fileStamp())")
     }
 
-    /// Accounts of the retained good copies, oldest first. Names begin with a
+    /// File names of the retained good copies, oldest first. Names begin with a
     /// sortable timestamp, so lexicographic order is chronological order.
-    func retainedSnapshotAccounts() -> [String] {
-        keychainAccounts().filter { $0.hasPrefix(retainedAccountPrefix) }.sorted()
+    func retainedSnapshotCopies() -> [String] {
+        sealedFileNames().filter { $0.hasPrefix(Self.retainedFilePrefix) }
     }
 
-    /// Accounts of the copies this build could not decode, oldest first.
-    func unreadableSnapshotAccounts() -> [String] {
-        keychainAccounts().filter { $0.hasPrefix(unreadableAccountPrefix) }.sorted()
+    /// File names of the copies this build could not decode, oldest first.
+    func unreadableSnapshotCopies() -> [String] {
+        sealedFileNames().filter { $0.hasPrefix(Self.unreadableFilePrefix) }
     }
 
-    /// The raw bytes of one backup copy, for a recovery tool or a test.
-    func snapshotBackupData(account: String) -> Data? {
-        readKeychainItem(account: account)
+    /// The decrypted bytes of one backup copy, for a recovery tool or a test.
+    func snapshotBackupData(name: String) -> Data? {
+        readSealedFile(name: name)
     }
 
     /// Five launches back is far enough to cover "I only noticed a few restarts
@@ -251,15 +272,84 @@ final class ConfigurationStore {
         return formatter.string(from: Date()).replacingOccurrences(of: ":", with: "-")
     }
 
+    /// Earlier builds kept the snapshot and every copy as its own Keychain item.
+    /// Each item has its own access list, so an ad hoc signed update asked for the
+    /// Keychain password once per item it touched. The first load of this build
+    /// moves them into sealed files, deleting each item only once its bytes are on
+    /// disk. Temporary: safe to delete once no machine has run those builds.
+    ///
+    /// Runs only while there is no sealed snapshot yet. An item that outlives the
+    /// move (its delete failed) must not be read again: after the next update that
+    /// read asks for the password again, and a copy pruning removed would come back.
+    private func migrateKeychainItemsIfPresent() {
+        let accounts = keychainAccounts()
+        guard accounts.contains(keychainAccount),
+              !fileManager.fileExists(atPath: currentSnapshotFileURL.path) else { return }
+
+        // "app-snapshot.retained.<stamp>-loaded" → "retained.<stamp>-loaded".
+        // Deliberately not every account under the prefix: the key lives there too.
+        for account in accounts where account.hasPrefix("\(keychainAccount).") {
+            let name = String(account.dropFirst(keychainAccount.count + 1))
+            guard name.hasPrefix(Self.retainedFilePrefix) || name.hasPrefix(Self.unreadableFilePrefix) else { continue }
+            try? moveKeychainItem(account: account, toSealedFile: name)
+        }
+
+        // The live item last, since its sealed file is what ends the migration.
+        // One that did not move must stop the load: with no sealed snapshot and no
+        // error, the first autosave would write one over the user's connections.
+        do {
+            try moveKeychainItem(account: keychainAccount, toSealedFile: Self.currentSnapshotName)
+        } catch {
+            lastLoadError = error
+            log.error(Self.subsystem, "could not move the keychain snapshot into a sealed file: \(LogFormat.error(error)); refusing to save")
+            return
+        }
+        log.info(Self.subsystem, "moved keychain snapshot items into sealed files")
+    }
+
+    /// Reads the item only when its file is missing, so a rerun after a failed
+    /// live move costs no prompt for the copies already moved.
+    private func moveKeychainItem(account: String, toSealedFile name: String) throws {
+        if !fileManager.fileExists(atPath: sealedFileURL(name).path) {
+            switch readKeychainItemResult(account: account) {
+            case let .found(data):
+                try writeSealedFile(data, name: name)
+            case let .failed(status):
+                throw ConfigurationStoreError.keychainReadFailed(status)
+            case .notFound:
+                return
+            }
+        }
+        deleteMovedKeychainItem(account: account)
+    }
+
+    /// Only the build that created an item may delete it (errSecInvalidOwnerEdit
+    /// otherwise), and after an update every item was created by another build.
+    /// /usr/bin/security deletes it without a prompt.
+    private func deleteMovedKeychainItem(account: String) {
+        guard SecItemDelete(keychainQuery(account: account) as CFDictionary) == errSecInvalidOwnerEdit else { return }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        process.arguments = ["delete-generic-password", "-s", keychainService, "-a", account]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            log.warn(Self.subsystem, "could not delete keychain item \(account): \(LogFormat.error(error))")
+        }
+    }
+
     /// One earlier build of this branch kept its copies as plaintext files under
-    /// Application Support. Any still there are moved into the Keychain and the
-    /// files removed, so no plaintext copy of a link outlives this build's first
-    /// launch. Temporary: safe to delete once no machine has run that build.
+    /// Application Support. Any still there are sealed and the files removed, so
+    /// no plaintext copy of a link outlives this build's first launch. Temporary:
+    /// safe to delete once no machine has run that build.
     private func importPlaintextBackupsIfPresent() {
         let baseURL = legacyFileURL.deletingLastPathComponent()
         let directories = [
-            (baseURL.appendingPathComponent("snapshots", isDirectory: true), retainedAccountPrefix),
-            (baseURL.appendingPathComponent("unreadable-snapshots", isDirectory: true), unreadableAccountPrefix)
+            (baseURL.appendingPathComponent("snapshots", isDirectory: true), Self.retainedFilePrefix),
+            (baseURL.appendingPathComponent("unreadable-snapshots", isDirectory: true), Self.unreadableFilePrefix)
         ]
         for (directoryURL, prefix) in directories {
             guard fileManager.fileExists(atPath: directoryURL.path) else { continue }
@@ -271,12 +361,12 @@ final class ConfigurationStore {
                 guard let data = try? Data(contentsOf: fileURL) else { continue }
                 // "snapshot-<stamp>-<reason>.json" → "<stamp>-<reason>", keeping the order.
                 let stem = fileURL.deletingPathExtension().lastPathComponent.replacingOccurrences(of: "snapshot-", with: "")
-                if (try? writeKeychainItem(data, account: prefix + stem)) != nil {
+                if writeNewSealedFile(data, base: prefix + stem) != nil {
                     imported += 1
                 }
             }
             try? fileManager.removeItem(at: directoryURL)
-            log.info(Self.subsystem, "moved \(imported) of \(files.count) plaintext backup copies from \(directoryURL.lastPathComponent)/ into the keychain and removed the directory")
+            log.info(Self.subsystem, "moved \(imported) of \(files.count) plaintext backup copies from \(directoryURL.lastPathComponent)/ into sealed files and removed the directory")
         }
     }
 
@@ -284,16 +374,86 @@ final class ConfigurationStore {
         try? decoder.decode(AppSnapshot.self, from: data)
     }
 
+    // MARK: - Sealed files
+
+    private static let currentSnapshotName = "snapshot"
+
+    var currentSnapshotFileURL: URL { sealedFileURL(Self.currentSnapshotName) }
+
+    private func sealedFileURL(_ name: String) -> URL {
+        sealedDirectoryURL.appendingPathComponent(name)
+    }
+
+    /// Every file in the sealed directory, sorted.
+    private func sealedFileNames() -> [String] {
+        ((try? fileManager.contentsOfDirectory(atPath: sealedDirectoryURL.path)) ?? [])
+            .filter { !$0.hasPrefix(".") }
+            .sorted()
+    }
+
+    /// AES-GCM, nonce and tag in the file with the ciphertext; a changed byte makes
+    /// the file fail to open rather than decode to something else.
+    private func writeSealedFile(_ data: Data, name: String) throws {
+        let sealed = try AES.GCM.seal(data, using: obtainKey()).combined!
+        let fileURL = sealedFileURL(name)
+        try sealed.write(to: fileURL, options: .atomic)
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
+    }
+
+    /// Writes a copy under a name no existing copy has, so two copies made within
+    /// the same second both survive. Returns the name used.
+    private func writeNewSealedFile(_ data: Data, base: String) -> String? {
+        var name = base
+        var attempt = 2
+        while fileManager.fileExists(atPath: sealedFileURL(name).path) {
+            name = "\(base).\(attempt)"
+            attempt += 1
+        }
+        guard (try? writeSealedFile(data, name: name)) != nil else { return nil }
+        return name
+    }
+
+    /// Nil when the file is missing, unreadable, or does not open with the key.
+    private func readSealedFile(name: String) -> Data? {
+        guard let key = try? obtainKey(), let sealed = try? Data(contentsOf: sealedFileURL(name)) else { return nil }
+        return try? AES.GCM.open(AES.GCM.SealedBox(combined: sealed), using: key)
+    }
+
     // MARK: - Keychain
 
-    enum KeychainSnapshotResult: Equatable {
+    private var keyAccount: String { "\(keychainAccount).key" }
+    private var cachedKey: SymmetricKey?
+
+    /// The key is the only thing kept in the Keychain, so a build whose signature
+    /// changed asks for the Keychain password once, here, instead of once per item
+    /// it touches. Read once and kept for the life of the store.
+    private func obtainKey() throws -> SymmetricKey {
+        if let cachedKey { return cachedKey }
+        let key: SymmetricKey
+        switch readKeychainItemResult(account: keyAccount) {
+        case let .found(data):
+            key = SymmetricKey(data: data)
+        case let .failed(status):
+            throw ConfigurationStoreError.keychainReadFailed(status)
+        case .notFound:
+            // Only a store with nothing sealed yet may start a key: a new key next
+            // to existing files would lock them for good.
+            guard sealedFileNames().isEmpty else { throw ConfigurationStoreError.encryptionKeyMissing }
+            key = SymmetricKey(size: .bits256)
+            try addKeychainItem(key.withUnsafeBytes { Data($0) }, account: keyAccount)
+        }
+        cachedKey = key
+        return key
+    }
+
+    enum KeychainReadResult: Equatable {
         case found(Data)
         case notFound
         case failed(OSStatus)
     }
 
-    private func keychainSnapshotResult() -> KeychainSnapshotResult {
-        var query = keychainQuery(account: keychainAccount)
+    private func readKeychainItemResult(account: String) -> KeychainReadResult {
+        var query = keychainQuery(account: account)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
 
@@ -302,11 +462,11 @@ final class ConfigurationStore {
         return Self.classifyKeychainReadStatus(status, result: result)
     }
 
-    /// Pure mapping from a raw `SecItemCopyMatching` outcome to a `KeychainSnapshotResult`,
-    /// pulled out of `keychainSnapshotResult()` so it can be exercised deterministically by
+    /// Pure mapping from a raw `SecItemCopyMatching` outcome to a `KeychainReadResult`,
+    /// pulled out of `readKeychainItemResult()` so it can be exercised deterministically by
     /// verification scripts without needing to force real Keychain failures (which would
     /// require locking the system Keychain and risking flakiness/leftover state).
-    static func classifyKeychainReadStatus(_ status: OSStatus, result: CFTypeRef?) -> KeychainSnapshotResult {
+    static func classifyKeychainReadStatus(_ status: OSStatus, result: CFTypeRef?) -> KeychainReadResult {
         switch status {
         case errSecSuccess:
             guard let data = result as? Data else { return .failed(status) }
@@ -316,16 +476,6 @@ final class ConfigurationStore {
         default:
             return .failed(status)
         }
-    }
-
-    private func readKeychainItem(account: String) -> Data? {
-        var query = keychainQuery(account: account)
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-
-        var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess else { return nil }
-        return result as? Data
     }
 
     /// Every account under this store's service. Attributes are not protected
@@ -343,26 +493,15 @@ final class ConfigurationStore {
         return items.compactMap { $0[kSecAttrAccount as String] as? String }
     }
 
-    private func writeKeychainItem(_ data: Data, account: String) throws {
-        let attributes: [String: Any] = [
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        ]
-
-        let updateStatus = SecItemUpdate(keychainQuery(account: account) as CFDictionary, attributes as CFDictionary)
-        if updateStatus == errSecSuccess {
-            return
-        }
-
-        guard updateStatus == errSecItemNotFound else {
-            throw ConfigurationStoreError.keychainWriteFailed(updateStatus)
-        }
-
-        var addQuery = keychainQuery(account: account)
-        addQuery.merge(attributes) { _, new in new }
-        let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
-        guard addStatus == errSecSuccess else {
-            throw ConfigurationStoreError.keychainWriteFailed(addStatus)
+    /// Add only, never update: the key is written once and the item is never
+    /// touched again, so no later build has a reason to ask for it twice.
+    private func addKeychainItem(_ data: Data, account: String) throws {
+        var query = keychainQuery(account: account)
+        query[kSecValueData as String] = data
+        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        let status = SecItemAdd(query as CFDictionary, nil)
+        guard status == errSecSuccess else {
+            throw ConfigurationStoreError.keychainWriteFailed(status)
         }
     }
 
@@ -380,41 +519,57 @@ final class ConfigurationStore {
 
     // MARK: - Test hooks
 
-    /// Writes bytes into the live item without encoding them, so a verification
-    /// script can stage a snapshot this build cannot decode. The shipping app never
-    /// calls this.
+    /// Seals bytes into the live snapshot file without encoding them, so a
+    /// verification script can stage a snapshot this build cannot decode. The
+    /// shipping app never calls this.
     func writeRawSnapshotDataForTesting(_ data: Data) throws {
-        try writeKeychainItem(data, account: keychainAccount)
+        try writeSealedFile(data, name: Self.currentSnapshotName)
     }
 
-    /// Deletes the live item and every backup copy derived from it (bypassing the
-    /// `lastLoadError` save-guard). Only meaningful for tests that need to reset an
-    /// isolated item between runs; the shipping app never calls this.
-    func deleteKeychainItemForTesting() {
+    /// Forgets the key and deletes its Keychain item, leaving the sealed files
+    /// behind, so a test can stage a launch whose key is gone. The shipping app
+    /// never calls this.
+    func deleteEncryptionKeyForTesting() {
+        deleteKeychainItem(account: keyAccount)
+        cachedKey = nil
+    }
+
+    /// Deletes the key, every sealed file and any old-layout Keychain items
+    /// (bypassing the `lastLoadError` save-guard). Only meaningful for tests that
+    /// need to reset an isolated store between runs; the shipping app never calls this.
+    func deleteStoredDataForTesting() {
+        try? fileManager.removeItem(at: sealedDirectoryURL)
         deleteKeychainItem(account: keychainAccount)
         for account in keychainAccounts() where account.hasPrefix("\(keychainAccount).") {
             deleteKeychainItem(account: account)
         }
+        cachedKey = nil
     }
 }
 
 enum ConfigurationStoreError: LocalizedError {
     case keychainWriteFailed(OSStatus)
     case keychainReadFailed(OSStatus)
-    case snapshotCouldNotBeDecoded(backupAccount: String?)
+    case encryptionKeyMissing
+    case snapshotCouldNotBeOpened
+    case snapshotCouldNotBeDecoded(backupName: String?)
     case refusedToOverwriteAfterLoadFailure
 
     var errorDescription: String? {
         switch self {
         case let .keychainWriteFailed(status):
-            return "Failed to save Teleport configuration secrets to Keychain: OSStatus \(status)"
+            return "Failed to save Teleport's encryption key to Keychain: OSStatus \(status)"
         case let .keychainReadFailed(status):
-            return "Failed to read Teleport configuration secrets from Keychain (OSStatus \(status)). Your saved connections were not lost — unlock Keychain Access and restart Teleport."
-        case let .snapshotCouldNotBeDecoded(backupAccount):
-            let location = backupAccount.map { " A copy was kept in your Keychain as item “\($0)”." } ?? ""
+            return "Failed to read Teleport's encryption key from Keychain (OSStatus \(status)). Your saved connections were not lost — unlock Keychain Access and restart Teleport."
+        case .encryptionKeyMissing:
+            return "Teleport's saved settings are encrypted, but the key is missing from your Keychain. Nothing was deleted, and Teleport will not overwrite them."
+        case .snapshotCouldNotBeOpened:
+            return "Teleport could not decrypt its saved settings — the file does not match the key in your Keychain. Nothing was deleted, and Teleport will not overwrite them."
+        case let .snapshotCouldNotBeDecoded(backupName):
+            let location = backupName.map { " A copy was kept as the encrypted file “\($0)” in Teleport's Application Support folder." } ?? ""
             return "Teleport could not read its saved settings — they were written by a different version of the app. Nothing was deleted, and Teleport will not overwrite them.\(location)"
         case .refusedToOverwriteAfterLoadFailure:
-            return "Refusing to save: the previous Keychain read failed, so saving now could overwrite your existing settings."
+            return "Refusing to save: the previous load failed, so saving now could overwrite your existing settings."
         }
     }
 }
