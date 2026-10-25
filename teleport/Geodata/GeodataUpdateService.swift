@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 nonisolated enum GeodataKind: String, CaseIterable {
@@ -52,6 +53,22 @@ enum GeodataUpdateError: LocalizedError {
 /// (custom override if present, otherwise the bundled default) and is what
 /// gets delivered to the privileged helper for TUN mode.
 nonisolated struct GeodataUpdateService {
+    struct CachedDownload: Sendable {
+        let data: Data
+        let updatedAt: Date
+    }
+
+    struct PreparedUpdate: Sendable {
+        let stagedURL: URL
+        let updatedAt: Date
+        let changed: Bool
+    }
+
+    private struct CacheReceipt: Codable {
+        let updatedAt: Date
+        let digest: String
+    }
+
     private struct ResolvedAssetStamp: Codable, Equatable {
         let sourcePath: String
         let byteCount: Int
@@ -96,6 +113,93 @@ nonisolated struct GeodataUpdateService {
 
     func hasCustomGeodata(for kind: GeodataKind) -> Bool {
         fileManager.fileExists(atPath: customFileURL(for: kind).path)
+    }
+
+    private func cacheURL(for kind: GeodataKind, source: URL) -> URL {
+        let key = SHA256.hash(data: Data(source.absoluteString.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        return customDirectoryURL.appendingPathComponent("sources", isDirectory: true)
+            .appendingPathComponent(key, isDirectory: true).appendingPathComponent(kind.fileName)
+    }
+
+    func cachedDownload(for kind: GeodataKind, source: URL) -> CachedDownload? {
+        let file = cacheURL(for: kind, source: source)
+        guard let data = try? Data(contentsOf: file),
+              let receiptData = try? Data(contentsOf: file.appendingPathExtension("json")),
+              let receipt = try? JSONDecoder().decode(CacheReceipt.self, from: receiptData),
+              receipt.digest == Self.digest(data),
+              (try? GeodataFormat.validate(data, kind: kind)) != nil else { return nil }
+        return CachedDownload(data: data, updatedAt: receipt.updatedAt)
+    }
+
+    func cacheDownload(_ download: CachedDownload, for kind: GeodataKind, source: URL) throws {
+        try GeodataFormat.validate(download.data, kind: kind)
+        let file = cacheURL(for: kind, source: source)
+        try fileManager.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true,
+                                        attributes: [.posixPermissions: 0o700])
+        try download.data.write(to: file, options: .atomic)
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        let receipt = CacheReceipt(updatedAt: download.updatedAt, digest: Self.digest(download.data))
+        try JSONEncoder().encode(receipt).write(to: file.appendingPathExtension("json"), options: .atomic)
+    }
+
+    /// Preserve downloads made before the per-source cache was introduced.
+    func cacheCurrentDownload(for kind: GeodataKind, source: URL?, updatedAt: Date?) throws {
+        guard let source, let updatedAt, cachedDownload(for: kind, source: source) == nil,
+              let data = try? Data(contentsOf: customFileURL(for: kind)),
+              (try? GeodataFormat.validate(data, kind: kind)) != nil else { return }
+        try cacheDownload(CachedDownload(data: data, updatedAt: updatedAt), for: kind, source: source)
+    }
+
+    /// Prepare off the main actor; publishing the file is a separate, atomic step
+    /// so a cancelled or superseded request cannot replace the active dataset.
+    func prepareUpdate(
+        kind: GeodataKind, from source: URL, useCache: Bool,
+        download: (@Sendable (GeodataKind, URL) async throws -> Data)? = nil
+    ) async throws -> PreparedUpdate {
+        let cached = useCache ? await BlockingWork.run { cachedDownload(for: kind, source: source) } : nil
+        let result: CachedDownload
+        if let cached {
+            result = cached
+        } else {
+            let data: Data
+            if let download { data = try await download(kind, source) }
+            else { data = try await self.download(kind: kind, from: source) }
+            try Task.checkCancellation()
+            result = CachedDownload(data: data, updatedAt: Date())
+            try await BlockingWork.run { try cacheDownload(result, for: kind, source: source) }
+        }
+        try Task.checkCancellation()
+        return try await BlockingWork.run {
+            try fileManager.createDirectory(at: customDirectoryURL, withIntermediateDirectories: true,
+                                            attributes: [.posixPermissions: 0o700])
+            let stagedURL = customDirectoryURL.appendingPathComponent(".\(kind.rawValue)-\(UUID().uuidString).pending")
+            try result.data.write(to: stagedURL, options: .atomic)
+            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: stagedURL.path)
+            return PreparedUpdate(stagedURL: stagedURL, updatedAt: result.updatedAt,
+                                  changed: (try? Data(contentsOf: customFileURL(for: kind))) != result.data)
+        }
+    }
+
+    func activate(_ update: PreparedUpdate, for kind: GeodataKind) throws {
+        guard update.changed else {
+            discard(update)
+            return
+        }
+        let destination = customFileURL(for: kind)
+        if fileManager.fileExists(atPath: destination.path) {
+            _ = try fileManager.replaceItemAt(destination, withItemAt: update.stagedURL)
+        } else {
+            try fileManager.moveItem(at: update.stagedURL, to: destination)
+        }
+    }
+
+    func discard(_ update: PreparedUpdate) {
+        try? fileManager.removeItem(at: update.stagedURL)
+    }
+
+    private static func digest(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
     @discardableResult

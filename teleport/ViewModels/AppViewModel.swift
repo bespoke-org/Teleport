@@ -150,6 +150,7 @@ final class AppViewModel: ObservableObject {
     private var appliedSplitTunnelDefaultAction: SplitTunnelRuleAction?
     private var geodataUpdateTokens: [GeodataKind: UUID] = [:]
     private var geodataUpdateTasks: [GeodataKind: Task<Void, Never>] = [:]
+    private var pendingGeodataLiveApply = false
     private var savedConnectionsByID: [UUID: SavedConnection] = [:]
     private var importedConnectionsBySourceID: [UUID: [SavedConnection]] = [:]
     private var importedConnectionCountsBySourceID: [UUID: Int] = [:]
@@ -1104,6 +1105,7 @@ final class AppViewModel: ObservableObject {
         geodataUpdateTasks.removeValue(forKey: kind)?.cancel()
         geodataUpdateTokens[kind] = UUID()
         updatingGeodataKinds.remove(kind)
+        finishGeodataLiveApplyIfNeeded()
     }
 
     func cancelGeodataUpdates() {
@@ -1112,16 +1114,38 @@ final class AppViewModel: ObservableObject {
             geodataUpdateTokens[kind] = UUID()
         }
         updatingGeodataKinds.removeAll()
+        finishGeodataLiveApplyIfNeeded()
+    }
+
+    func applyGeodataSources(geositeURLString: String?, geoipURLString: String?, forceDownload: Bool = false) {
+        guard updatingGeodataKinds.isEmpty else { return }
+        for kind in GeodataKind.allCases {
+            let value = normalizedURLString(kind == .geosite ? geositeURLString : geoipURLString)
+            if let value {
+                guard let url = validatedGeodataURL(value) else {
+                    applyGeodataUpdateResult(kind: kind, error: GeodataUpdateError.invalidURL)
+                    continue
+                }
+                startGeodataUpdate(kind: kind, source: url, useCache: !forceDownload)
+            } else if geodataURLString(for: kind) != nil || hasCustomGeodata(kind: kind) {
+                startGeodataUpdate(kind: kind, source: nil, useCache: true)
+            }
+        }
     }
 
     func updateGeodataNow(kind: GeodataKind) {
-        cancelGeodataUpdate(kind: kind)
-
-        guard let urlString = geodataURLString(for: kind), let url = validatedGeodataURL(urlString) else {
+        guard let value = geodataURLString(for: kind), let url = validatedGeodataURL(value) else {
             applyGeodataUpdateResult(kind: kind, error: GeodataUpdateError.invalidURL)
             return
         }
+        startGeodataUpdate(kind: kind, source: url, useCache: false)
+    }
 
+    private func startGeodataUpdate(kind: GeodataKind, source: URL?, useCache: Bool) {
+        cancelGeodataUpdate(kind: kind)
+        let oldError = kind == .geosite ? geodataSettings.geositeLastError : geodataSettings.geoipLastError
+        let oldSource = oldError == nil ? geodataURLString(for: kind).flatMap(validatedGeodataURL) : nil
+        let oldUpdatedAt = geodataLastUpdatedAt(for: kind)
         let token = UUID()
         geodataUpdateTokens[kind] = token
         updatingGeodataKinds.insert(kind)
@@ -1129,12 +1153,29 @@ final class AppViewModel: ObservableObject {
         geodataUpdateTasks[kind] = Task { @MainActor [weak self] in
             let service = GeodataUpdateService()
             do {
-                let data = try await service.download(kind: kind, from: url)
-                // The .dat files are tens of MB, so the atomic disk write belongs
-                // neither on the main actor nor on a cooperative thread.
-                let changed = try await BlockingWork.run { try service.store(data, for: kind) }
-                guard self?.geodataUpdateTokens[kind] == token else { return }
-                self?.applyGeodataUpdateResult(kind: kind, token: token, error: nil, changed: changed)
+                try await BlockingWork.run {
+                    try service.cacheCurrentDownload(for: kind, source: oldSource, updatedAt: oldUpdatedAt)
+                }
+                try Task.checkCancellation()
+                if let source {
+                    let prepared = try await service.prepareUpdate(kind: kind, from: source, useCache: useCache)
+                    defer { service.discard(prepared) }
+                    guard let self, self.geodataUpdateTokens[kind] == token, !Task.isCancelled else { return }
+                    // Only the current request may publish its staged file. No await
+                    // between the token check, atomic rename, and settings update.
+                    try service.activate(prepared, for: kind)
+                    if kind == .geosite { self.setGeositeURL(source.absoluteString) }
+                    else { self.setGeoipURL(source.absoluteString) }
+                    self.applyGeodataUpdateResult(kind: kind, token: token, error: nil,
+                                                  changed: prepared.changed, updatedAt: prepared.updatedAt)
+                } else {
+                    guard let self, self.geodataUpdateTokens[kind] == token, !Task.isCancelled else { return }
+                    let changed = service.hasCustomGeodata(for: kind)
+                    try service.removeCustomGeodata(for: kind)
+                    self.clearGeodataURL(kind: kind)
+                    self.applyGeodataUpdateResult(kind: kind, token: token, error: nil,
+                                                  changed: changed, updatedAt: nil)
+                }
             } catch is CancellationError {
                 return
             } catch {
@@ -1142,21 +1183,6 @@ final class AppViewModel: ObservableObject {
                 self?.applyGeodataUpdateResult(kind: kind, token: token, error: error)
             }
         }
-    }
-
-    /// Deletes a downloaded custom override so TUN mode falls back to Teleport's
-    /// bundled default for that kind on the next connect.
-    func resetGeodataToBundled(kind: GeodataKind) {
-        guard !updatingGeodataKinds.contains(kind) else { return }
-        try? GeodataUpdateService().removeCustomGeodata(for: kind)
-        splitTunnelGeodataMatcher.resetCache()
-        isSplitTunnelGeodataReady = false
-        prepareSplitTunnelGeodataMatcher()
-        clearGeodataURL(kind: kind)
-        setGeodataError(kind: kind, error: nil)
-        setGeodataLastUpdatedAt(kind: kind, date: nil)
-        schedulePersist()
-        applyGeodataLiveIfNeeded()
     }
 
     func hasCustomGeodata(kind: GeodataKind) -> Bool {
@@ -1212,24 +1238,31 @@ final class AppViewModel: ObservableObject {
         GeodataUpdateService.validatedSourceURL(value)
     }
 
-    private func applyGeodataUpdateResult(kind: GeodataKind, token: UUID? = nil, error: Error?, changed: Bool = true) {
+    private func applyGeodataUpdateResult(kind: GeodataKind, token: UUID? = nil, error: Error?,
+                                          changed: Bool = true, updatedAt: Date? = Date()) {
         if let token, geodataUpdateTokens[kind] != token { return }
         geodataUpdateTokens[kind] = nil
+        geodataUpdateTasks[kind] = nil
         updatingGeodataKinds.remove(kind)
         setGeodataError(kind: kind, error: error)
         if error == nil {
             splitTunnelGeodataMatcher.resetCache()
             isSplitTunnelGeodataReady = false
             prepareSplitTunnelGeodataMatcher()
-            setGeodataLastUpdatedAt(kind: kind, date: Date())
+            setGeodataLastUpdatedAt(kind: kind, date: updatedAt)
         }
         schedulePersist()
         // Geodata only takes effect at Xray startup, so only bounce a live tunnel
         // when the stored bytes actually changed — an identical scheduled
         // re-download must not drop a connected user's session.
-        if error == nil, changed {
-            applyGeodataLiveIfNeeded()
-        }
+        if error == nil, changed { pendingGeodataLiveApply = true }
+        finishGeodataLiveApplyIfNeeded()
+    }
+
+    private func finishGeodataLiveApplyIfNeeded() {
+        guard updatingGeodataKinds.isEmpty, pendingGeodataLiveApply else { return }
+        pendingGeodataLiveApply = false
+        applyGeodataLiveIfNeeded()
     }
 
     /// Geodata is read by Xray at process startup, so an update only takes
