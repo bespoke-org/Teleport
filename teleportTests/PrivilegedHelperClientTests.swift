@@ -1,4 +1,10 @@
 import Foundation
+import XCTest
+
+/// Thrown by scripted transports for a command the test did not expect, after recording the failure.
+private struct UnexpectedCommand: Error {
+    let command: TUNHelperCommand
+}
 
 private final class ScriptedTransport: TUNHelperTransport, @unchecked Sendable {
     typealias Handler = (TUNHelperCommand, Data, TimeInterval, Int) throws -> Data
@@ -91,7 +97,7 @@ private final class LostStopReplyProxy: NSObject, TUNHelperXPCProtocol, @uncheck
         lock.withLock { statusCalls += 1 }
         do {
             let envelope: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(request)
-            reply(try TestPrivilegedHelperClient.response(
+            reply(try response(
                 requestID: envelope.requestID,
                 sessionID: sessionID,
                 payload: StatusResponse(helperVersion: "8", phase: .idle, summary: nil, details: nil)
@@ -159,32 +165,14 @@ private final class LostStopReplyConnectionFactory: @unchecked Sendable {
 
     func make() -> any TUNHelperXPCConnection {
         lock.withLock {
-            precondition(!connections.isEmpty, "Unexpected XPC connection creation")
+            XCTAssert(!connections.isEmpty, "Unexpected XPC connection creation")
             return connections.removeFirst()
         }
     }
 }
 
-enum TestPrivilegedHelperClient {
-    static func main() async throws {
-        try await verifyDeadlinesPayloadsAndNormalMapping()
-        try await verifyCommandSpecificSuccessPayloadValidation()
-        try await verifyResponseIdentityAndRevisionValidation()
-        try await verifyStructuredCommandFailureMapping()
-        try await verifyLostStartReconcilesOnce()
-        try await verifyLostStopReconcilesOnce()
-        try await verifyFailedReconciliationIsCommandFailure()
-        try await verifyUnavailableAndUnknownReconciliationAreIndeterminate()
-        try await verifyStartCorrelationPersistenceOrderingAndFailureRetention()
-        try await verifyFailedRuntimeStartRollsBackMatchingSession()
-        try await verifyUnavailableRuntimeStopReinstallsAndRetries()
-        try await verifyLostXPCStopReplyDoesNotReplayMutation()
-        try await verifyRuntimeResolvesMissingSessionWithoutInventingIdentity()
-        try await verifyInvalidStopResponsePreservesCachedState()
-        print("test_privileged_helper_client: all checks passed")
-    }
-
-    private static func verifyDeadlinesPayloadsAndNormalMapping() async throws {
+final class PrivilegedHelperClientTests: XCTestCase {
+    func testDeadlinesPayloadsAndNormalMapping() async throws {
         let sessionID = UUID()
         let transport = ScriptedTransport { command, data, _, _ in
             switch command {
@@ -197,7 +185,7 @@ enum TestPrivilegedHelperClient {
                 )
             case .readDiagnostics:
                 let request: TUNHelperRequestEnvelope<ReadDiagnosticsRequest> = try TUNHelperCodec.decodeRequest(data)
-                precondition(request.payload.maximumBytes == TUNHelperProtocol.maximumDiagnosticsBytes)
+                XCTAssert(request.payload.maximumBytes == TUNHelperProtocol.maximumDiagnosticsBytes)
                 return try response(
                     requestID: request.requestID,
                     sessionID: nil,
@@ -205,7 +193,7 @@ enum TestPrivilegedHelperClient {
                 )
             case .startSession:
                 let request: TUNHelperRequestEnvelope<StartSessionRequest> = try TUNHelperCodec.decodeRequest(data)
-                precondition(request.sessionID == sessionID)
+                XCTAssert(request.sessionID == sessionID)
                 return try response(
                     requestID: request.requestID,
                     sessionID: sessionID,
@@ -213,7 +201,7 @@ enum TestPrivilegedHelperClient {
                 )
             case .stopSession:
                 let request: TUNHelperRequestEnvelope<StopSessionRequest> = try TUNHelperCodec.decodeRequest(data)
-                precondition(request.sessionID == sessionID)
+                XCTAssert(request.sessionID == sessionID)
                 return try response(
                     requestID: request.requestID,
                     sessionID: sessionID,
@@ -223,7 +211,7 @@ enum TestPrivilegedHelperClient {
                 let request: TUNHelperRequestEnvelope<EngageLeakGuardRequest> = try TUNHelperCodec.decodeRequest(data)
                 // The guard spans the teardown and rebuild a session change consists
                 // of, so it is deliberately not scoped to one session.
-                precondition(request.sessionID == nil)
+                XCTAssert(request.sessionID == nil)
                 return try response(
                     requestID: request.requestID,
                     sessionID: nil,
@@ -231,7 +219,7 @@ enum TestPrivilegedHelperClient {
                 )
             case .releaseLeakGuard:
                 let request: TUNHelperRequestEnvelope<ReleaseLeakGuardRequest> = try TUNHelperCodec.decodeRequest(data)
-                precondition(request.sessionID == nil)
+                XCTAssert(request.sessionID == nil)
                 return try response(
                     requestID: request.requestID,
                     sessionID: nil,
@@ -244,13 +232,13 @@ enum TestPrivilegedHelperClient {
         let launch = launchSession()
 
         let status = try await client.status()
-        precondition(status.success && status.version == "8" && status.phase == .idle)
+        XCTAssert(status.success && status.version == "8" && status.phase == .idle)
         let diagnostics = try await client.readLog(logName: "xray-tun.log", maxBytes: Int.max)
-        precondition(diagnostics.success && diagnostics.details == "diagnostic")
+        XCTAssert(diagnostics.success && diagnostics.details == "diagnostic")
         let config = try await client.readLog(logName: "xray-tun-config.json", maxBytes: Int.max)
-        precondition(config.success && config.payload.log == .config && config.details == "diagnostic")
+        XCTAssert(config.success && config.payload.log == .config && config.details == "diagnostic")
         let processIdentifier = try await client.start(session: launch, paths: paths, sessionID: sessionID)
-        precondition(processIdentifier == nil)
+        XCTAssert(processIdentifier == nil)
         try await client.stop(paths: paths, protectedHosts: launch.protectedHosts, outboundInterface: launch.outboundInterface, sessionID: sessionID)
         try await client.engageLeakGuard(
             tunnelInterfaceName: launch.tunnelInterfaceName,
@@ -259,8 +247,8 @@ enum TestPrivilegedHelperClient {
         )
         try await client.releaseLeakGuard()
 
-        precondition(transport.calls.map(\.0) == [.status, .readDiagnostics, .readDiagnostics, .startSession, .stopSession, .engageLeakGuard, .releaseLeakGuard])
-        precondition(transport.calls.map(\.2) == [3, 5, 5, 20, 15, 10, 10])
+        XCTAssert(transport.calls.map(\.0) == [.status, .readDiagnostics, .readDiagnostics, .startSession, .stopSession, .engageLeakGuard, .releaseLeakGuard])
+        XCTAssert(transport.calls.map(\.2) == [3, 5, 5, 20, 15, 10, 10])
         let requestIDs = try transport.calls.map { command, data, _ -> UUID in
             switch command {
             case .status:
@@ -283,10 +271,10 @@ enum TestPrivilegedHelperClient {
                 return request.requestID
             }
         }
-        precondition(Set(requestIDs).count == requestIDs.count)
+        XCTAssert(Set(requestIDs).count == requestIDs.count)
     }
 
-    private static func verifyCommandSpecificSuccessPayloadValidation() async throws {
+    func testCommandSpecificSuccessPayloadValidation() async throws {
         let sessionID = UUID()
         let invalidStart = ScriptedTransport { _, data, _, _ in
             let request: TUNHelperRequestEnvelope<StartSessionRequest> = try TUNHelperCodec.decodeRequest(data)
@@ -318,7 +306,7 @@ enum TestPrivilegedHelperClient {
 
         let mismatchedDiagnostics = ScriptedTransport { _, data, _, _ in
             let request: TUNHelperRequestEnvelope<ReadDiagnosticsRequest> = try TUNHelperCodec.decodeRequest(data)
-            precondition(request.payload.log == .xray)
+            XCTAssert(request.payload.log == .xray)
             return try response(
                 requestID: request.requestID,
                 sessionID: nil,
@@ -332,7 +320,7 @@ enum TestPrivilegedHelperClient {
         }
     }
 
-    private static func verifyResponseIdentityAndRevisionValidation() async throws {
+    func testResponseIdentityAndRevisionValidation() async throws {
         let mismatchTransport = ScriptedTransport { _, _, _, _ in
             try response(
                 requestID: UUID(),
@@ -342,7 +330,7 @@ enum TestPrivilegedHelperClient {
         }
         do {
             _ = try await PrivilegedHelperClient(transport: mismatchTransport).status()
-            preconditionFailure("Expected request identifier mismatch")
+            XCTFail("Expected request identifier mismatch")
         } catch PrivilegedHelperClientError.invalidResponse {}
 
         let expectedSessionID = UUID()
@@ -358,7 +346,7 @@ enum TestPrivilegedHelperClient {
             _ = try await PrivilegedHelperClient(transport: sessionMismatchTransport).start(
                 session: launchSession(), paths: XrayTunRuntimePaths(), sessionID: expectedSessionID
             )
-            preconditionFailure("Expected session identifier mismatch")
+            XCTFail("Expected session identifier mismatch")
         } catch PrivilegedHelperClientError.invalidResponse {}
 
         let staleTransport = ScriptedTransport { _, data, _, _ in
@@ -374,11 +362,11 @@ enum TestPrivilegedHelperClient {
         }
         do {
             _ = try await PrivilegedHelperClient(transport: staleTransport).status()
-            preconditionFailure("Expected incompatible service")
+            XCTFail("Expected incompatible service")
         } catch PrivilegedHelperClientError.incompatibleService {}
     }
 
-    private static func verifyStructuredCommandFailureMapping() async throws {
+    func testStructuredCommandFailureMapping() async throws {
         let transport = ScriptedTransport { _, data, _, _ in
             let request: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(data)
             return try TUNHelperCodec.encodeResponse(TUNHelperResponseEnvelope<StatusResponse>(
@@ -396,23 +384,23 @@ enum TestPrivilegedHelperClient {
         }
         do {
             _ = try await PrivilegedHelperClient(transport: transport).status()
-            preconditionFailure("Expected structured command failure")
+            XCTFail("Expected structured command failure")
         } catch let PrivilegedHelperClientError.commandFailed(summary, details) {
-            precondition(summary == "status failed")
-            precondition(details == "bounded details")
+            XCTAssert(summary == "status failed")
+            XCTAssert(details == "bounded details")
         }
     }
 
-    private static func verifyLostStartReconcilesOnce() async throws {
+    func testLostStartReconcilesOnce() async throws {
         let sessionID = UUID()
         let transport = reconciliationTransport(mutating: .startSession, sessionID: sessionID, phase: .running)
         let client = PrivilegedHelperClient(transport: transport)
         _ = try await client.start(session: launchSession(), paths: XrayTunRuntimePaths(), sessionID: sessionID)
-        precondition(transport.calls.map(\.0) == [.startSession, .status])
-        precondition(transport.invalidations == 1)
+        XCTAssert(transport.calls.map(\.0) == [.startSession, .status])
+        XCTAssert(transport.invalidations == 1)
     }
 
-    private static func verifyLostStopReconcilesOnce() async throws {
+    func testLostStopReconcilesOnce() async throws {
         let sessionID = UUID()
         let transport = reconciliationTransport(
             mutating: .stopSession,
@@ -427,11 +415,11 @@ enum TestPrivilegedHelperClient {
             outboundInterface: "en0",
             sessionID: sessionID
         )
-        precondition(transport.calls.map(\.0) == [.stopSession, .status])
-        precondition(transport.invalidations == 1)
+        XCTAssert(transport.calls.map(\.0) == [.stopSession, .status])
+        XCTAssert(transport.invalidations == 1)
     }
 
-    private static func verifyFailedReconciliationIsCommandFailure() async throws {
+    func testFailedReconciliationIsCommandFailure() async throws {
         let sessionID = UUID()
         let transport = reconciliationTransport(
             mutating: .startSession,
@@ -444,15 +432,15 @@ enum TestPrivilegedHelperClient {
             _ = try await PrivilegedHelperClient(transport: transport).start(
                 session: launchSession(), paths: XrayTunRuntimePaths(), sessionID: sessionID
             )
-            preconditionFailure("Expected command failure")
+            XCTFail("Expected command failure")
         } catch let PrivilegedHelperClientError.commandFailed(summary, details) {
-            precondition(summary == "start failed")
-            precondition(details == "bounded details")
+            XCTAssert(summary == "start failed")
+            XCTAssert(details == "bounded details")
         }
-        precondition(transport.calls.count == 2)
+        XCTAssert(transport.calls.count == 2)
     }
 
-    private static func verifyUnavailableAndUnknownReconciliationAreIndeterminate() async throws {
+    func testUnavailableAndUnknownReconciliationAreIndeterminate() async throws {
         let unavailableSession = UUID()
         let unavailable = ScriptedTransport { command, _, _, _ in
             if command == .startSession { throw TUNHelperTransportError.interrupted }
@@ -463,7 +451,7 @@ enum TestPrivilegedHelperClient {
                 session: launchSession(), paths: XrayTunRuntimePaths(), sessionID: unavailableSession
             )
         }
-        precondition(unavailable.calls.map(\.0) == [.startSession, .status])
+        XCTAssert(unavailable.calls.map(\.0) == [.startSession, .status])
 
         let unknownSession = UUID()
         let unknown = reconciliationTransport(mutating: .stopSession, sessionID: unknownSession, phase: .unknown)
@@ -472,10 +460,10 @@ enum TestPrivilegedHelperClient {
                 paths: XrayTunRuntimePaths(), protectedHosts: nil, outboundInterface: nil, sessionID: unknownSession
             )
         }
-        precondition(unknown.calls.map(\.0) == [.stopSession, .status])
+        XCTAssert(unknown.calls.map(\.0) == [.stopSession, .status])
     }
 
-    private static func verifyStartCorrelationPersistenceOrderingAndFailureRetention() async throws {
+    func testStartCorrelationPersistenceOrderingAndFailureRetention() async throws {
         enum ExpectedFailure: Error { case start }
 
         var failedEvents: [String] = []
@@ -487,9 +475,9 @@ enum TestPrivilegedHelperClient {
                     throw ExpectedFailure.start
                 }
             )
-            preconditionFailure("Expected start failure")
+            XCTFail("Expected start failure")
         } catch ExpectedFailure.start {}
-        precondition(failedEvents == ["persist:nil", "start"])
+        XCTAssert(failedEvents == ["persist:nil", "start"])
 
         var successfulEvents: [String] = []
         let pid = try await XrayTunStartCorrelation.perform(
@@ -499,11 +487,11 @@ enum TestPrivilegedHelperClient {
                 return 42
             }
         )
-        precondition(pid == 42)
-        precondition(successfulEvents == ["persist:nil", "start", "persist:42"])
+        XCTAssert(pid == 42)
+        XCTAssert(successfulEvents == ["persist:nil", "start", "persist:42"])
     }
 
-    private static func verifyFailedRuntimeStartRollsBackMatchingSession() async throws {
+    func testFailedRuntimeStartRollsBackMatchingSession() async throws {
         let paths = try temporaryRuntimePaths(named: "failed-start-rollback")
         defer { removeTemporaryRuntimePaths(paths) }
         let probe = RecoveryProbe()
@@ -527,7 +515,7 @@ enum TestPrivilegedHelperClient {
                 ))
             case .stopSession:
                 let request: TUNHelperRequestEnvelope<StopSessionRequest> = try TUNHelperCodec.decodeRequest(data)
-                precondition(request.sessionID == probe.sessionID)
+                XCTAssert(request.sessionID == probe.sessionID)
                 return try response(
                     requestID: request.requestID,
                     sessionID: request.sessionID,
@@ -535,14 +523,15 @@ enum TestPrivilegedHelperClient {
                 )
             case .readDiagnostics:
                 let request: TUNHelperRequestEnvelope<ReadDiagnosticsRequest> = try TUNHelperCodec.decodeRequest(data)
-                precondition(request.payload.log == .control)
+                XCTAssert(request.payload.log == .control)
                 return try response(
                     requestID: request.requestID,
                     sessionID: nil,
                     payload: DiagnosticsResponse(log: .control, text: "specific control failure", metadata: "test", wasTruncated: false)
                 )
             default:
-                preconditionFailure("Unexpected command: \(command)")
+                XCTFail("Unexpected command: \(command)")
+                throw UnexpectedCommand(command: command)
             }
         }
         let manager = PrivilegedXrayRuntimeManager(
@@ -556,16 +545,16 @@ enum TestPrivilegedHelperClient {
 
         do {
             try await manager.start(session: launchSession())
-            preconditionFailure("Expected start failure")
+            XCTFail("Expected start failure")
         } catch let XrayTunRuntimeError.startFailed(_, details) {
-            precondition(details.contains("specific control failure"))
+            XCTAssert(details.contains("specific control failure"))
         }
 
-        precondition(transport.calls.map(\.0) == [.startSession, .stopSession, .readDiagnostics])
-        precondition(!FileManager.default.fileExists(atPath: paths.sessionStateFileURL.path))
+        XCTAssert(transport.calls.map(\.0) == [.startSession, .stopSession, .readDiagnostics])
+        XCTAssert(!FileManager.default.fileExists(atPath: paths.sessionStateFileURL.path))
     }
 
-    private static func verifyUnavailableRuntimeStopReinstallsAndRetries() async throws {
+    func testUnavailableRuntimeStopReinstallsAndRetries() async throws {
         let paths = try temporaryRuntimePaths(named: "unavailable-stop-recovery")
         defer { removeTemporaryRuntimePaths(paths) }
         let sessionID = UUID()
@@ -582,9 +571,9 @@ enum TestPrivilegedHelperClient {
 
         let probe = RecoveryProbe()
         let transport = ScriptedTransport { command, data, _, index in
-            precondition(command == .stopSession)
+            XCTAssert(command == .stopSession)
             let request: TUNHelperRequestEnvelope<StopSessionRequest> = try TUNHelperCodec.decodeRequest(data)
-            precondition(request.sessionID == sessionID)
+            XCTAssert(request.sessionID == sessionID)
             if index == 0 { throw TUNHelperTransportError.unavailable("not running") }
             return try response(
                 requestID: request.requestID,
@@ -601,12 +590,12 @@ enum TestPrivilegedHelperClient {
 
         try await manager.stop()
 
-        precondition(probe.installCount == 1)
-        precondition(transport.calls.map(\.0) == [.stopSession, .stopSession])
-        precondition(!FileManager.default.fileExists(atPath: paths.sessionStateFileURL.path))
+        XCTAssert(probe.installCount == 1)
+        XCTAssert(transport.calls.map(\.0) == [.stopSession, .stopSession])
+        XCTAssert(!FileManager.default.fileExists(atPath: paths.sessionStateFileURL.path))
     }
 
-    private static func verifyLostXPCStopReplyDoesNotReplayMutation() async throws {
+    func testLostXPCStopReplyDoesNotReplayMutation() async throws {
         let sessionID = UUID()
         let mutatingProxy = LostStopReplyProxy(sessionID: sessionID, losesStopReply: true)
         let statusProxy = LostStopReplyProxy(sessionID: sessionID, losesStopReply: false)
@@ -624,17 +613,17 @@ enum TestPrivilegedHelperClient {
             sessionID: sessionID
         )
 
-        precondition(mutatingProxy.counts.stop == 1)
-        precondition(mutatingProxy.counts.status == 0)
-        precondition(statusProxy.counts.stop == 0)
-        precondition(statusProxy.counts.status == 1)
+        XCTAssert(mutatingProxy.counts.stop == 1)
+        XCTAssert(mutatingProxy.counts.status == 0)
+        XCTAssert(statusProxy.counts.stop == 0)
+        XCTAssert(statusProxy.counts.status == 1)
     }
 
-    private static func verifyRuntimeResolvesMissingSessionWithoutInventingIdentity() async throws {
+    func testRuntimeResolvesMissingSessionWithoutInventingIdentity() async throws {
         let idlePaths = try temporaryRuntimePaths(named: "idle")
         defer { removeTemporaryRuntimePaths(idlePaths) }
         let idleTransport = ScriptedTransport { command, data, _, _ in
-            precondition(command == .status)
+            XCTAssert(command == .status)
             let request: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(data)
             return try response(
                 requestID: request.requestID,
@@ -648,7 +637,7 @@ enum TestPrivilegedHelperClient {
         )
         try await idleManager.stop()
         try await idleManager.stop()
-        precondition(idleTransport.calls.map(\.0) == [.status, .status])
+        XCTAssert(idleTransport.calls.map(\.0) == [.status, .status])
 
         let observedSessionID = UUID()
         let runningPaths = try temporaryRuntimePaths(named: "running")
@@ -664,14 +653,15 @@ enum TestPrivilegedHelperClient {
                 )
             case .stopSession:
                 let request: TUNHelperRequestEnvelope<StopSessionRequest> = try TUNHelperCodec.decodeRequest(data)
-                precondition(request.sessionID == observedSessionID)
+                XCTAssert(request.sessionID == observedSessionID)
                 return try response(
                     requestID: request.requestID,
                     sessionID: observedSessionID,
                     payload: StopSessionResponse(phase: .idle, summary: nil, details: nil)
                 )
             default:
-                preconditionFailure("Unexpected command: \(command)")
+                XCTFail("Unexpected command: \(command)")
+                throw UnexpectedCommand(command: command)
             }
         }
         let runningManager = PrivilegedXrayRuntimeManager(
@@ -679,7 +669,7 @@ enum TestPrivilegedHelperClient {
             paths: runningPaths
         )
         try await runningManager.stop()
-        precondition(runningTransport.calls.map(\.0) == [.status, .stopSession])
+        XCTAssert(runningTransport.calls.map(\.0) == [.status, .stopSession])
 
         let cleanupPaths = try temporaryRuntimePaths(named: "cleanup")
         defer { removeTemporaryRuntimePaths(cleanupPaths) }
@@ -694,26 +684,27 @@ enum TestPrivilegedHelperClient {
                 )
             case .stopSession:
                 let request: TUNHelperRequestEnvelope<StopSessionRequest> = try TUNHelperCodec.decodeRequest(data)
-                precondition(request.sessionID == observedSessionID)
+                XCTAssert(request.sessionID == observedSessionID)
                 return try response(
                     requestID: request.requestID,
                     sessionID: observedSessionID,
                     payload: StopSessionResponse(phase: .idle, summary: nil, details: nil)
                 )
             default:
-                preconditionFailure("Unexpected command: \(command)")
+                XCTFail("Unexpected command: \(command)")
+                throw UnexpectedCommand(command: command)
             }
         }
         try await PrivilegedXrayRuntimeManager(
             helperClient: PrivilegedHelperClient(transport: cleanupTransport),
             paths: cleanupPaths
         ).cleanupIfHelperAvailable()
-        precondition(cleanupTransport.calls.map(\.0) == [.status, .stopSession])
+        XCTAssert(cleanupTransport.calls.map(\.0) == [.status, .stopSession])
 
         let unidentifiedPaths = try temporaryRuntimePaths(named: "unidentified")
         defer { removeTemporaryRuntimePaths(unidentifiedPaths) }
         let unidentifiedTransport = ScriptedTransport { command, data, _, _ in
-            precondition(command == .status)
+            XCTAssert(command == .status)
             let request: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(data)
             return try response(
                 requestID: request.requestID,
@@ -727,16 +718,16 @@ enum TestPrivilegedHelperClient {
         )
         do {
             try await unidentifiedManager.stop()
-            preconditionFailure("Expected an indeterminate unidentified-session failure")
+            XCTFail("Expected an indeterminate unidentified-session failure")
         } catch let XrayTunRuntimeError.stopFailed(summary, _) {
-            precondition(summary.localizedCaseInsensitiveContains("session"))
+            XCTAssert(summary.localizedCaseInsensitiveContains("session"))
         }
-        precondition(unidentifiedTransport.calls.map(\.0) == [.status])
+        XCTAssert(unidentifiedTransport.calls.map(\.0) == [.status])
 
         let cleanupUnidentifiedPaths = try temporaryRuntimePaths(named: "cleanup-unidentified")
         defer { removeTemporaryRuntimePaths(cleanupUnidentifiedPaths) }
         let cleanupUnidentifiedTransport = ScriptedTransport { command, data, _, _ in
-            precondition(command == .status)
+            XCTAssert(command == .status)
             let request: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(data)
             return try response(
                 requestID: request.requestID,
@@ -749,14 +740,14 @@ enum TestPrivilegedHelperClient {
                 helperClient: PrivilegedHelperClient(transport: cleanupUnidentifiedTransport),
                 paths: cleanupUnidentifiedPaths
             ).cleanupIfHelperAvailable()
-            preconditionFailure("Expected cleanup to report unidentified running state")
+            XCTFail("Expected cleanup to report unidentified running state")
         } catch let PrivilegedHelperClientError.indeterminateStatus(summary) {
-            precondition(summary.localizedCaseInsensitiveContains("correlation"))
+            XCTAssert(summary.localizedCaseInsensitiveContains("correlation"))
         }
-        precondition(cleanupUnidentifiedTransport.calls.map(\.0) == [.status])
+        XCTAssert(cleanupUnidentifiedTransport.calls.map(\.0) == [.status])
     }
 
-    private static func verifyInvalidStopResponsePreservesCachedState() async throws {
+    func testInvalidStopResponsePreservesCachedState() async throws {
         let paths = try temporaryRuntimePaths(named: "invalid-stop")
         defer { removeTemporaryRuntimePaths(paths) }
         let sessionID = UUID()
@@ -772,7 +763,7 @@ enum TestPrivilegedHelperClient {
         try JSONEncoder().encode(state).write(to: paths.sessionStateFileURL, options: .atomic)
 
         let transport = ScriptedTransport { command, data, _, _ in
-            precondition(command == .stopSession)
+            XCTAssert(command == .stopSession)
             let request: TUNHelperRequestEnvelope<StopSessionRequest> = try TUNHelperCodec.decodeRequest(data)
             return try response(
                 requestID: request.requestID,
@@ -786,13 +777,13 @@ enum TestPrivilegedHelperClient {
         )
         do {
             try await manager.stop()
-            preconditionFailure("Expected invalid stop response")
+            XCTFail("Expected invalid stop response")
         } catch XrayTunRuntimeError.stopFailed {}
-        precondition(FileManager.default.fileExists(atPath: paths.sessionStateFileURL.path))
-        precondition(transport.calls.map(\.0) == [.stopSession])
+        XCTAssert(FileManager.default.fileExists(atPath: paths.sessionStateFileURL.path))
+        XCTAssert(transport.calls.map(\.0) == [.stopSession])
     }
 
-    private static func temporaryRuntimePaths(named name: String) throws -> XrayTunRuntimePaths {
+    private func temporaryRuntimePaths(named name: String) throws -> XrayTunRuntimePaths {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("teleport-task6-\(name)-\(UUID().uuidString)", isDirectory: true)
         let stateDirectory = URL(
@@ -809,18 +800,18 @@ enum TestPrivilegedHelperClient {
         )
     }
 
-    private static func removeTemporaryRuntimePaths(_ paths: XrayTunRuntimePaths) {
+    private func removeTemporaryRuntimePaths(_ paths: XrayTunRuntimePaths) {
         try? FileManager.default.removeItem(at: paths.sessionStateFileURL.deletingLastPathComponent())
     }
 
-    private static func assertInvalidResponse(_ operation: () async throws -> Void) async throws {
+    private func assertInvalidResponse(_ operation: () async throws -> Void) async throws {
         do {
             try await operation()
-            preconditionFailure("Expected invalid response")
+            XCTFail("Expected invalid response")
         } catch PrivilegedHelperClientError.invalidResponse {}
     }
 
-    private static func reconciliationTransport(
+    private func reconciliationTransport(
         mutating command: TUNHelperCommand,
         sessionID: UUID,
         phase: TUNHelperSessionPhase,
@@ -829,13 +820,13 @@ enum TestPrivilegedHelperClient {
         transportFailure: TUNHelperTransportError = .deadlineExceeded
     ) -> ScriptedTransport {
         ScriptedTransport { actualCommand, data, _, index in
-            precondition(index < 2)
+            XCTAssert(index < 2)
             if actualCommand == command {
                 throw transportFailure
             }
-            precondition(actualCommand == .status)
+            XCTAssert(actualCommand == .status)
             let request: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(data)
-            precondition(request.sessionID == nil)
+            XCTAssert(request.sessionID == nil)
             return try response(
                 requestID: request.requestID,
                 sessionID: sessionID,
@@ -844,17 +835,17 @@ enum TestPrivilegedHelperClient {
         }
     }
 
-    private static func assertIndeterminate(sessionID: UUID, operation: () async throws -> Void) async throws {
+    private func assertIndeterminate(sessionID: UUID, operation: () async throws -> Void) async throws {
         do {
             try await operation()
-            preconditionFailure("Expected indeterminate result")
+            XCTFail("Expected indeterminate result")
         } catch let PrivilegedHelperClientError.indeterminate(requestID, actualSessionID, _) {
-            precondition(requestID != UUID())
-            precondition(actualSessionID == sessionID)
+            XCTAssert(requestID != UUID())
+            XCTAssert(actualSessionID == sessionID)
         }
     }
 
-    private static func launchSession() -> XrayTunLaunchSession {
+    private func launchSession() -> XrayTunLaunchSession {
         XrayTunLaunchSession(
             configData: Data("{}".utf8),
             protectedHosts: ["example.com"],
@@ -862,20 +853,20 @@ enum TestPrivilegedHelperClient {
             outboundInterface: "en0"
         )
     }
+}
 
-    fileprivate static func response<Payload>(
-        requestID: UUID,
-        sessionID: UUID?,
-        payload: Payload
-    ) throws -> Data where Payload: Codable & Sendable & Equatable {
-        try TUNHelperCodec.encodeResponse(TUNHelperResponseEnvelope(
-            revision: TUNHelperProtocol.revision,
-            requestID: requestID,
-            sessionID: sessionID,
-            payload: payload,
-            failure: nil
-        ))
-    }
+private func response<Payload>(
+    requestID: UUID,
+    sessionID: UUID?,
+    payload: Payload
+) throws -> Data where Payload: Codable & Sendable & Equatable {
+    try TUNHelperCodec.encodeResponse(TUNHelperResponseEnvelope(
+        revision: TUNHelperProtocol.revision,
+        requestID: requestID,
+        sessionID: sessionID,
+        payload: payload,
+        failure: nil
+    ))
 }
 
 private extension NSLock {

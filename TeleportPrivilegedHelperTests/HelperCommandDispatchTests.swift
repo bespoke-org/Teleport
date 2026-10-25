@@ -1,4 +1,5 @@
 import Foundation
+import XCTest
 
 private struct PresentableFailure: TUNHelperClientPresentableError {
     let clientSummary: String
@@ -94,7 +95,7 @@ private final class RecordingExecutor: HelperCommandExecuting, @unchecked Sendab
         lock.unlock()
         if blockStart {
             startEntered.signal()
-            precondition(releaseStart.wait(timeout: .now() + 5) == .success)
+            XCTAssert(releaseStart.wait(timeout: .now() + 5) == .success)
         }
         if shouldFail { throw DispatchTestError.failedStart }
         return StartSessionResponse(phase: .running, summary: nil, details: nil)
@@ -107,7 +108,7 @@ private final class RecordingExecutor: HelperCommandExecuting, @unchecked Sendab
         lock.unlock()
         if blockStop {
             stopEntered.signal()
-            precondition(releaseStop.wait(timeout: .now() + 5) == .success)
+            XCTAssert(releaseStop.wait(timeout: .now() + 5) == .success)
         }
         return StopSessionResponse(phase: .idle, summary: nil, details: nil)
     }
@@ -134,27 +135,8 @@ private final class RecordingExecutor: HelperCommandExecuting, @unchecked Sendab
     }
 }
 
-@main
-private enum TestHelperCommandDispatch {
-    static func main() async throws {
-        try await verifyMatchingCommandsDispatchOnlyTheirExecutorMethod()
-        try await verifyMalformedOversizedAndMismatchedRequestsNeverExecute()
-        try await verifyEveryMismatchedPayloadIsRejected()
-        try await verifyRevisionMismatchIsStructured()
-        try await verifySameDaemonStatusCorrelation()
-        try await verifyStatusAdmittedDuringStartUsesQueuedSessionCorrelation()
-        try await verifyStatusAdmittedDuringStopUsesQueuedSessionCorrelation()
-        try await verifyMismatchedStopDoesNotExecute()
-        try await verifyFailedStartAdvancesStopCorrelation()
-        try await verifyPresentableCommandFailurePreservesSafeSummary()
-        try await verifyCommandFailureDoesNotExposeSecrets()
-        try await verifyCompletedDuplicateReturnsExactBytesOnce()
-        try await verifyInProgressDuplicateIsDeterministic()
-        try await verifyChangedDuplicateConflicts()
-        print("test_helper_command_dispatch: all checks passed")
-    }
-
-    private static func verifyMatchingCommandsDispatchOnlyTheirExecutorMethod() async throws {
+final class HelperCommandDispatchTests: XCTestCase {
+    func testMatchingCommandsDispatchOnlyTheirExecutorMethod() async throws {
         let executor = RecordingExecutor()
         let dispatcher = HelperCommandDispatcher(executor: executor)
         let sessionID = UUID()
@@ -167,12 +149,12 @@ private enum TestHelperCommandDispatch {
         ))
         let statusResponse = await dispatcher.dispatch(command: .status, requestData: statusData)
         let decodedStatus: TUNHelperResponseEnvelope<StatusResponse> = try TUNHelperCodec.decodeResponse(statusResponse)
-        precondition(decodedStatus.payload?.phase == .idle)
+        XCTAssert(decodedStatus.payload?.phase == .idle)
 
         let startData = try makeStartData(requestID: UUID(), sessionID: sessionID, protectedHosts: ["example.com"])
         let startResponse = await dispatcher.dispatch(command: .startSession, requestData: startData)
         let decodedStart: TUNHelperResponseEnvelope<StartSessionResponse> = try TUNHelperCodec.decodeResponse(startResponse)
-        precondition(decodedStart.payload?.phase == .running)
+        XCTAssert(decodedStart.payload?.phase == .running)
 
         let stopData = try TUNHelperCodec.encodeRequest(TUNHelperRequestEnvelope(
             revision: TUNHelperProtocol.revision,
@@ -186,7 +168,7 @@ private enum TestHelperCommandDispatch {
         ))
         let stopResponse = await dispatcher.dispatch(command: .stopSession, requestData: stopData)
         let decodedStop: TUNHelperResponseEnvelope<StopSessionResponse> = try TUNHelperCodec.decodeResponse(stopResponse)
-        precondition(decodedStop.payload?.phase == .idle)
+        XCTAssert(decodedStop.payload?.phase == .idle)
 
         let diagnosticsData = try TUNHelperCodec.encodeRequest(TUNHelperRequestEnvelope(
             revision: TUNHelperProtocol.revision,
@@ -196,12 +178,12 @@ private enum TestHelperCommandDispatch {
         ))
         let diagnosticsResponse = await dispatcher.dispatch(command: .readDiagnostics, requestData: diagnosticsData)
         let decodedDiagnostics: TUNHelperResponseEnvelope<DiagnosticsResponse> = try TUNHelperCodec.decodeResponse(diagnosticsResponse)
-        precondition(decodedDiagnostics.payload?.log == .control)
+        XCTAssert(decodedDiagnostics.payload?.log == .control)
 
-        precondition(executor.commands == [.status, .startSession, .stopSession, .readDiagnostics])
+        XCTAssert(executor.commands == [.status, .startSession, .stopSession, .readDiagnostics])
     }
 
-    private static func verifyMalformedOversizedAndMismatchedRequestsNeverExecute() async throws {
+    func testMalformedOversizedAndMismatchedRequestsNeverExecute() async throws {
         let executor = RecordingExecutor()
         let dispatcher = HelperCommandDispatcher(executor: executor)
 
@@ -223,10 +205,10 @@ private enum TestHelperCommandDispatch {
         let mismatched = await dispatcher.dispatch(command: .startSession, requestData: statusData)
         try assertFailure(mismatched, as: StartSessionResponse.self, code: .malformedPayload)
 
-        precondition(executor.commands.isEmpty)
+        XCTAssert(executor.commands.isEmpty)
     }
 
-    private static func verifyEveryMismatchedPayloadIsRejected() async throws {
+    func testEveryMismatchedPayloadIsRejected() async throws {
         let executor = RecordingExecutor()
         let dispatcher = HelperCommandDispatcher(executor: executor)
         let sessionID = UUID()
@@ -244,10 +226,10 @@ private enum TestHelperCommandDispatch {
                 try assertMalformedFailure(response, command: dispatchedCommand)
             }
         }
-        precondition(executor.commands.isEmpty)
+        XCTAssert(executor.commands.isEmpty)
     }
 
-    private static func verifyRevisionMismatchIsStructured() async throws {
+    func testRevisionMismatchIsStructured() async throws {
         let executor = RecordingExecutor()
         let dispatcher = HelperCommandDispatcher(executor: executor)
         let request = TUNHelperRequestEnvelope(
@@ -259,16 +241,16 @@ private enum TestHelperCommandDispatch {
         let rawData = try JSONEncoder().encode(request)
         let response = await dispatcher.dispatch(command: .status, requestData: rawData)
         try assertFailure(response, as: StatusResponse.self, code: .incompatibleService)
-        precondition(executor.commands.isEmpty)
+        XCTAssert(executor.commands.isEmpty)
     }
 
-    private static func verifySameDaemonStatusCorrelation() async throws {
+    func testSameDaemonStatusCorrelation() async throws {
         let freshDispatcher = HelperCommandDispatcher(executor: RecordingExecutor())
         let freshStatus: TUNHelperResponseEnvelope<StatusResponse> = try TUNHelperCodec.decodeResponse(
             await freshDispatcher.dispatch(command: .status, requestData: try makeStatusData(requestID: UUID()))
         )
-        precondition(freshStatus.sessionID == nil)
-        precondition(freshStatus.payload?.phase == .idle)
+        XCTAssert(freshStatus.sessionID == nil)
+        XCTAssert(freshStatus.payload?.phase == .idle)
 
         let executor = RecordingExecutor()
         let dispatcher = HelperCommandDispatcher(executor: executor)
@@ -280,8 +262,8 @@ private enum TestHelperCommandDispatch {
         let running: TUNHelperResponseEnvelope<StatusResponse> = try TUNHelperCodec.decodeResponse(
             await dispatcher.dispatch(command: .status, requestData: try makeStatusData(requestID: UUID()))
         )
-        precondition(running.sessionID == sessionID)
-        precondition(running.payload?.phase == .running)
+        XCTAssert(running.sessionID == sessionID)
+        XCTAssert(running.payload?.phase == .running)
 
         _ = await dispatcher.dispatch(
             command: .stopSession,
@@ -290,11 +272,11 @@ private enum TestHelperCommandDispatch {
         let idle: TUNHelperResponseEnvelope<StatusResponse> = try TUNHelperCodec.decodeResponse(
             await dispatcher.dispatch(command: .status, requestData: try makeStatusData(requestID: UUID()))
         )
-        precondition(idle.sessionID == nil)
-        precondition(idle.payload?.phase == .idle)
+        XCTAssert(idle.sessionID == nil)
+        XCTAssert(idle.payload?.phase == .idle)
     }
 
-    private static func verifyStatusAdmittedDuringStartUsesQueuedSessionCorrelation() async throws {
+    func testStatusAdmittedDuringStartUsesQueuedSessionCorrelation() async throws {
         let executor = RecordingExecutor(blockStart: true)
         let statusAdmitted = DispatchSemaphore(value: 0)
         let dispatcher = HelperCommandDispatcher(executor: executor) { command in
@@ -305,20 +287,20 @@ private enum TestHelperCommandDispatch {
         let statusData = try makeStatusData(requestID: UUID())
 
         async let startResponseData = dispatcher.dispatch(command: .startSession, requestData: startData)
-        precondition(executor.startEntered.wait(timeout: .now() + 5) == .success)
+        XCTAssert(executor.startEntered.wait(timeout: .now() + 5) == .success)
         async let statusResponseData = dispatcher.dispatch(command: .status, requestData: statusData)
-        precondition(statusAdmitted.wait(timeout: .now() + 5) == .success)
+        XCTAssert(statusAdmitted.wait(timeout: .now() + 5) == .success)
         executor.releaseStart.signal()
 
         let startResponse: TUNHelperResponseEnvelope<StartSessionResponse> = try await TUNHelperCodec.decodeResponse(startResponseData)
         let statusResponse: TUNHelperResponseEnvelope<StatusResponse> = try await TUNHelperCodec.decodeResponse(statusResponseData)
-        precondition(startResponse.payload?.phase == .running)
-        precondition(statusResponse.payload?.phase == .starting)
-        precondition(statusResponse.sessionID == sessionID)
-        precondition(executor.commands == [.startSession])
+        XCTAssert(startResponse.payload?.phase == .running)
+        XCTAssert(statusResponse.payload?.phase == .starting)
+        XCTAssert(statusResponse.sessionID == sessionID)
+        XCTAssert(executor.commands == [.startSession])
     }
 
-    private static func verifyStatusAdmittedDuringStopUsesQueuedSessionCorrelation() async throws {
+    func testStatusAdmittedDuringStopUsesQueuedSessionCorrelation() async throws {
         let executor = RecordingExecutor(blockStop: true)
         let statusAdmitted = DispatchSemaphore(value: 0)
         let dispatcher = HelperCommandDispatcher(executor: executor) { command in
@@ -329,20 +311,20 @@ private enum TestHelperCommandDispatch {
         let statusData = try makeStatusData(requestID: UUID())
 
         async let stopResponseData = dispatcher.dispatch(command: .stopSession, requestData: stopData)
-        precondition(executor.stopEntered.wait(timeout: .now() + 5) == .success)
+        XCTAssert(executor.stopEntered.wait(timeout: .now() + 5) == .success)
         async let statusResponseData = dispatcher.dispatch(command: .status, requestData: statusData)
-        precondition(statusAdmitted.wait(timeout: .now() + 5) == .success)
+        XCTAssert(statusAdmitted.wait(timeout: .now() + 5) == .success)
         executor.releaseStop.signal()
 
         let stopResponse: TUNHelperResponseEnvelope<StopSessionResponse> = try await TUNHelperCodec.decodeResponse(stopResponseData)
         let statusResponse: TUNHelperResponseEnvelope<StatusResponse> = try await TUNHelperCodec.decodeResponse(statusResponseData)
-        precondition(stopResponse.payload?.phase == .idle)
-        precondition(statusResponse.payload?.phase == .stopping)
-        precondition(statusResponse.sessionID == sessionID)
-        precondition(executor.commands == [.stopSession])
+        XCTAssert(stopResponse.payload?.phase == .idle)
+        XCTAssert(statusResponse.payload?.phase == .stopping)
+        XCTAssert(statusResponse.sessionID == sessionID)
+        XCTAssert(executor.commands == [.stopSession])
     }
 
-    private static func verifyMismatchedStopDoesNotExecute() async throws {
+    func testMismatchedStopDoesNotExecute() async throws {
         let executor = RecordingExecutor()
         let dispatcher = HelperCommandDispatcher(executor: executor)
         let activeSessionID = UUID()
@@ -361,15 +343,15 @@ private enum TestHelperCommandDispatch {
         )
 
         try assertFailure(response, as: StopSessionResponse.self, code: .requestConflict)
-        precondition(executor.commands == [.startSession])
+        XCTAssert(executor.commands == [.startSession])
         let status: TUNHelperResponseEnvelope<StatusResponse> = try TUNHelperCodec.decodeResponse(
             await dispatcher.dispatch(command: .status, requestData: try makeStatusData(requestID: UUID()))
         )
-        precondition(status.sessionID == activeSessionID)
-        precondition(status.payload?.phase == .running)
+        XCTAssert(status.sessionID == activeSessionID)
+        XCTAssert(status.payload?.phase == .running)
     }
 
-    private static func verifyFailedStartAdvancesStopCorrelation() async throws {
+    func testFailedStartAdvancesStopCorrelation() async throws {
         let executor = RecordingExecutor(failedStartNumber: 2)
         let dispatcher = HelperCommandDispatcher(executor: executor)
         let previousSessionID = UUID()
@@ -393,19 +375,19 @@ private enum TestHelperCommandDispatch {
         let status: TUNHelperResponseEnvelope<StatusResponse> = try TUNHelperCodec.decodeResponse(
             await dispatcher.dispatch(command: .status, requestData: try makeStatusData(requestID: UUID()))
         )
-        precondition(status.sessionID == failedSessionID)
-        precondition(status.payload?.phase == .failed)
+        XCTAssert(status.sessionID == failedSessionID)
+        XCTAssert(status.payload?.phase == .failed)
 
         let stop = await dispatcher.dispatch(
             command: .stopSession,
             requestData: try makeStopData(requestID: UUID(), sessionID: failedSessionID)
         )
         let stopResponse: TUNHelperResponseEnvelope<StopSessionResponse> = try TUNHelperCodec.decodeResponse(stop)
-        precondition(stopResponse.payload?.phase == .idle)
-        precondition(executor.commands == [.startSession, .stopSession, .startSession, .stopSession])
+        XCTAssert(stopResponse.payload?.phase == .idle)
+        XCTAssert(executor.commands == [.startSession, .stopSession, .startSession, .stopSession])
     }
 
-    private static func verifyPresentableCommandFailurePreservesSafeSummary() async throws {
+    func testPresentableCommandFailurePreservesSafeSummary() async throws {
         let summary = "Installed Xray runtime is missing"
         let dispatcher = HelperCommandDispatcher(executor: PresentableFailingExecutor(summary: summary))
         let responseData = await dispatcher.dispatch(
@@ -413,12 +395,12 @@ private enum TestHelperCommandDispatch {
             requestData: try makeStatusData(requestID: UUID())
         )
         let response: TUNHelperResponseEnvelope<StatusResponse> = try TUNHelperCodec.decodeResponse(responseData)
-        precondition(response.failure?.code == .commandFailed)
-        precondition(response.failure?.summary == summary)
-        precondition(response.failure?.details == nil)
+        XCTAssert(response.failure?.code == .commandFailed)
+        XCTAssert(response.failure?.summary == summary)
+        XCTAssert(response.failure?.details == nil)
     }
 
-    private static func verifyCommandFailureDoesNotExposeSecrets() async throws {
+    func testCommandFailureDoesNotExposeSecrets() async throws {
         let secret = "SENTINEL_ROOT_LOG_SECRET"
         let dispatcher = HelperCommandDispatcher(executor: SecretFailingExecutor(secret: secret))
         let responseData = await dispatcher.dispatch(
@@ -426,14 +408,14 @@ private enum TestHelperCommandDispatch {
             requestData: try makeStatusData(requestID: UUID())
         )
         let response: TUNHelperResponseEnvelope<StatusResponse> = try TUNHelperCodec.decodeResponse(responseData)
-        precondition(response.failure?.code == .commandFailed)
-        precondition(response.failure?.summary == "The privileged helper command failed")
-        precondition(response.failure?.details == nil)
-        precondition(!String(decoding: responseData, as: UTF8.self).contains(secret))
+        XCTAssert(response.failure?.code == .commandFailed)
+        XCTAssert(response.failure?.summary == "The privileged helper command failed")
+        XCTAssert(response.failure?.details == nil)
+        XCTAssert(!String(decoding: responseData, as: UTF8.self).contains(secret))
 
     }
 
-    private static func verifyCompletedDuplicateReturnsExactBytesOnce() async throws {
+    func testCompletedDuplicateReturnsExactBytesOnce() async throws {
         let executor = RecordingExecutor()
         let dispatcher = HelperCommandDispatcher(executor: executor)
         let data = try makeStartData(requestID: UUID(), sessionID: UUID(), protectedHosts: ["example.com"])
@@ -441,27 +423,27 @@ private enum TestHelperCommandDispatch {
         let first = await dispatcher.dispatch(command: .startSession, requestData: data)
         let second = await dispatcher.dispatch(command: .startSession, requestData: data)
 
-        precondition(first == second)
-        precondition(executor.commands == [.startSession])
+        XCTAssert(first == second)
+        XCTAssert(executor.commands == [.startSession])
     }
 
-    private static func verifyInProgressDuplicateIsDeterministic() async throws {
+    func testInProgressDuplicateIsDeterministic() async throws {
         let executor = RecordingExecutor(blockStart: true)
         let dispatcher = HelperCommandDispatcher(executor: executor)
         let data = try makeStartData(requestID: UUID(), sessionID: UUID(), protectedHosts: ["example.com"])
 
         async let firstResponse = dispatcher.dispatch(command: .startSession, requestData: data)
-        precondition(executor.startEntered.wait(timeout: .now() + 5) == .success)
+        XCTAssert(executor.startEntered.wait(timeout: .now() + 5) == .success)
         let duplicate = await dispatcher.dispatch(command: .startSession, requestData: data)
         try assertFailure(duplicate, as: StartSessionResponse.self, code: .inProgress)
         executor.releaseStart.signal()
         let completed = await firstResponse
         let decoded: TUNHelperResponseEnvelope<StartSessionResponse> = try TUNHelperCodec.decodeResponse(completed)
-        precondition(decoded.payload?.phase == .running)
-        precondition(executor.commands == [.startSession])
+        XCTAssert(decoded.payload?.phase == .running)
+        XCTAssert(executor.commands == [.startSession])
     }
 
-    private static func verifyChangedDuplicateConflicts() async throws {
+    func testChangedDuplicateConflicts() async throws {
         let executor = RecordingExecutor()
         let dispatcher = HelperCommandDispatcher(executor: executor)
         let requestID = UUID()
@@ -473,10 +455,10 @@ private enum TestHelperCommandDispatch {
         let response = await dispatcher.dispatch(command: .startSession, requestData: changed)
 
         try assertFailure(response, as: StartSessionResponse.self, code: .requestConflict)
-        precondition(executor.commands == [.startSession])
+        XCTAssert(executor.commands == [.startSession])
     }
 
-    private static func makeStatusData(requestID: UUID) throws -> Data {
+    private func makeStatusData(requestID: UUID) throws -> Data {
         try TUNHelperCodec.encodeRequest(TUNHelperRequestEnvelope(
             revision: TUNHelperProtocol.revision,
             requestID: requestID,
@@ -485,7 +467,7 @@ private enum TestHelperCommandDispatch {
         ))
     }
 
-    private static func makeStartData(requestID: UUID, sessionID: UUID, protectedHosts: [String]) throws -> Data {
+    private func makeStartData(requestID: UUID, sessionID: UUID, protectedHosts: [String]) throws -> Data {
         try TUNHelperCodec.encodeRequest(TUNHelperRequestEnvelope(
             revision: TUNHelperProtocol.revision,
             requestID: requestID,
@@ -501,7 +483,7 @@ private enum TestHelperCommandDispatch {
         ))
     }
 
-    private static func makeStopData(requestID: UUID, sessionID: UUID) throws -> Data {
+    private func makeStopData(requestID: UUID, sessionID: UUID) throws -> Data {
         try TUNHelperCodec.encodeRequest(TUNHelperRequestEnvelope(
             revision: TUNHelperProtocol.revision,
             requestID: requestID,
@@ -514,7 +496,7 @@ private enum TestHelperCommandDispatch {
         ))
     }
 
-    private static func makeDiagnosticsData(requestID: UUID) throws -> Data {
+    private func makeDiagnosticsData(requestID: UUID) throws -> Data {
         try TUNHelperCodec.encodeRequest(TUNHelperRequestEnvelope(
             revision: TUNHelperProtocol.revision,
             requestID: requestID,
@@ -523,7 +505,7 @@ private enum TestHelperCommandDispatch {
         ))
     }
 
-    private static func assertMalformedFailure(_ data: Data, command: TUNHelperCommand) throws {
+    private func assertMalformedFailure(_ data: Data, command: TUNHelperCommand) throws {
         switch command {
         case .status:
             try assertFailure(data, as: StatusResponse.self, code: .malformedPayload)
@@ -538,13 +520,13 @@ private enum TestHelperCommandDispatch {
         }
     }
 
-    private static func assertFailure<Payload>(
+    private func assertFailure<Payload>(
         _ data: Data,
         as payloadType: Payload.Type,
         code: TUNHelperFailureCode
     ) throws where Payload: Codable & Sendable & Equatable {
         let response: TUNHelperResponseEnvelope<Payload> = try TUNHelperCodec.decodeResponse(data)
-        precondition(response.payload == nil)
-        precondition(response.failure?.code == code, "Expected \(code), got \(String(describing: response.failure?.code))")
+        XCTAssert(response.payload == nil)
+        XCTAssert(response.failure?.code == code, "Expected \(code), got \(String(describing: response.failure?.code))")
     }
 }

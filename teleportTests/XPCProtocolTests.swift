@@ -1,20 +1,8 @@
 import Foundation
+import XCTest
 
-@main
-struct XPCProtocolVerification {
-    static func main() throws {
-        try verifyExactRevisionAndStartRoundTrip()
-        try verifyAllResponseRoundTrips()
-        try verifyStructuredFailureRoundTripsWithoutSessionIDs()
-        try verifyRevisionRejection()
-        try verifyRequestSessionValidation()
-        try verifyConfigurationBounds()
-        try verifyDiagnosticsBounds()
-        try verifyLeakGuardRoundTripAndBounds()
-        print("test_xpc_protocol: all checks passed")
-    }
-
-    private static func verifyExactRevisionAndStartRoundTrip() throws {
+final class XPCProtocolTests: XCTestCase {
+    func testExactRevisionAndStartRoundTrip() throws {
         let requestID = UUID()
         let sessionID = UUID()
         let request = TUNHelperRequestEnvelope(
@@ -32,13 +20,13 @@ struct XPCProtocolVerification {
         )
         let encoded = try TUNHelperCodec.encodeRequest(request)
         let decoded: TUNHelperRequestEnvelope<StartSessionRequest> = try TUNHelperCodec.decodeRequest(encoded)
-        precondition(decoded == request)
+        XCTAssert(decoded == request)
     }
 
     /// The guard spans the teardown and rebuild a session change consists of, so it
     /// carries no session identifier, and its lease is bounded so a client cannot
     /// ask for one it never has to renew.
-    private static func verifyLeakGuardRoundTripAndBounds() throws {
+    func testLeakGuardRoundTripAndBounds() throws {
         let request = TUNHelperRequestEnvelope(
             revision: TUNHelperProtocol.revision,
             requestID: UUID(),
@@ -51,7 +39,7 @@ struct XPCProtocolVerification {
         )
         let encoded = try TUNHelperCodec.encodeRequest(request)
         let decoded: TUNHelperRequestEnvelope<EngageLeakGuardRequest> = try TUNHelperCodec.decodeRequest(encoded)
-        precondition(decoded == request)
+        XCTAssert(decoded == request)
 
         // A standby guard has no tunnel yet, which is the state it exists for.
         let standby = TUNHelperRequestEnvelope(
@@ -60,7 +48,7 @@ struct XPCProtocolVerification {
             sessionID: nil,
             payload: EngageLeakGuardRequest(tunnelInterfaceName: nil, protectedHosts: [], leaseSeconds: 60)
         )
-        precondition((try? TUNHelperCodec.encodeRequest(standby)) != nil, "a standby guard request must encode")
+        XCTAssert((try? TUNHelperCodec.encodeRequest(standby)) != nil, "a standby guard request must encode")
 
         let sessionScoped = TUNHelperRequestEnvelope(
             revision: TUNHelperProtocol.revision,
@@ -68,7 +56,7 @@ struct XPCProtocolVerification {
             sessionID: UUID(),
             payload: EngageLeakGuardRequest(tunnelInterfaceName: "utun9", protectedHosts: [], leaseSeconds: 60)
         )
-        precondition((try? TUNHelperCodec.encodeRequest(sessionScoped)) == nil, "a guard request must not carry a session identifier")
+        XCTAssert((try? TUNHelperCodec.encodeRequest(sessionScoped)) == nil, "a guard request must not carry a session identifier")
 
         let unbounded = TUNHelperRequestEnvelope(
             revision: TUNHelperProtocol.revision,
@@ -80,10 +68,10 @@ struct XPCProtocolVerification {
                 leaseSeconds: TUNHelperProtocol.maximumLeakGuardLeaseSeconds + 1
             )
         )
-        precondition((try? TUNHelperCodec.encodeRequest(unbounded)) == nil, "a lease beyond the protocol limit must be rejected")
+        XCTAssert((try? TUNHelperCodec.encodeRequest(unbounded)) == nil, "a lease beyond the protocol limit must be rejected")
     }
 
-    private static func verifyAllResponseRoundTrips() throws {
+    func testAllResponseRoundTrips() throws {
         let requestID = UUID()
         let sessionID = UUID()
 
@@ -122,7 +110,7 @@ struct XPCProtocolVerification {
         ))
     }
 
-    private static func verifyStructuredFailureRoundTripsWithoutSessionIDs() throws {
+    func testStructuredFailureRoundTripsWithoutSessionIDs() throws {
         let failure = TUNHelperProtocolFailure(
             code: .commandFailed,
             summary: "Command failed",
@@ -145,7 +133,7 @@ struct XPCProtocolVerification {
         ))
     }
 
-    private static func verifyRevisionRejection() throws {
+    func testRevisionRejection() throws {
         let request = TUNHelperRequestEnvelope(
             revision: TUNHelperProtocol.revision + 1,
             requestID: UUID(),
@@ -158,7 +146,7 @@ struct XPCProtocolVerification {
         }
     }
 
-    private static func verifyRequestSessionValidation() throws {
+    func testRequestSessionValidation() throws {
         expectRequestSessionFailure(TUNHelperRequestEnvelope(
             revision: TUNHelperProtocol.revision,
             requestID: UUID(),
@@ -196,7 +184,7 @@ struct XPCProtocolVerification {
         ))
     }
 
-    private static func verifyConfigurationBounds() throws {
+    func testConfigurationBounds() throws {
         let accepted = startRequest(configData: Data(repeating: 0x61, count: TUNHelperProtocol.maximumConfigurationBytes))
         _ = try TUNHelperCodec.encodeRequest(accepted)
 
@@ -206,7 +194,7 @@ struct XPCProtocolVerification {
         }
     }
 
-    private static func verifyDiagnosticsBounds() throws {
+    func testDiagnosticsBounds() throws {
         let accepted = diagnosticsResponse(textBytes: TUNHelperProtocol.maximumDiagnosticsBytes)
         _ = try TUNHelperCodec.encodeResponse(accepted)
 
@@ -216,7 +204,7 @@ struct XPCProtocolVerification {
         }
     }
 
-    private static func startRequest(configData: Data) -> TUNHelperRequestEnvelope<StartSessionRequest> {
+    private func startRequest(configData: Data) -> TUNHelperRequestEnvelope<StartSessionRequest> {
         TUNHelperRequestEnvelope(
             revision: TUNHelperProtocol.revision,
             requestID: UUID(),
@@ -232,7 +220,7 @@ struct XPCProtocolVerification {
         )
     }
 
-    private static func diagnosticsResponse(textBytes: Int) -> TUNHelperResponseEnvelope<DiagnosticsResponse> {
+    private func diagnosticsResponse(textBytes: Int) -> TUNHelperResponseEnvelope<DiagnosticsResponse> {
         TUNHelperResponseEnvelope(
             revision: TUNHelperProtocol.revision,
             requestID: UUID(),
@@ -247,14 +235,14 @@ struct XPCProtocolVerification {
         )
     }
 
-    private static func roundTrip<Payload>(_ response: TUNHelperResponseEnvelope<Payload>) throws
+    private func roundTrip<Payload>(_ response: TUNHelperResponseEnvelope<Payload>) throws
     where Payload: Codable & Sendable & Equatable {
         let encoded = try TUNHelperCodec.encodeResponse(response)
         let decoded: TUNHelperResponseEnvelope<Payload> = try TUNHelperCodec.decodeResponse(encoded)
-        precondition(decoded == response)
+        XCTAssert(decoded == response)
     }
 
-    private static func expectRequestSessionFailure<Payload>(
+    private func expectRequestSessionFailure<Payload>(
         _ request: TUNHelperRequestEnvelope<Payload>
     ) where Payload: Codable & Sendable & Equatable {
         expectFailure(.malformedPayload) {
@@ -265,24 +253,25 @@ struct XPCProtocolVerification {
         do {
             rawData = try JSONEncoder().encode(request)
         } catch {
-            preconditionFailure("Could not create malformed request fixture: \(error)")
+            XCTFail("Could not create malformed request fixture: \(error)")
+            return
         }
         expectFailure(.malformedPayload) {
             let _: TUNHelperRequestEnvelope<Payload> = try TUNHelperCodec.decodeRequest(rawData)
         }
     }
 
-    private static func expectFailure(
+    private func expectFailure(
         _ code: TUNHelperFailureCode,
         operation: () throws -> Void
     ) {
         do {
             try operation()
-            preconditionFailure("Expected protocol failure \(code.rawValue)")
+            XCTFail("Expected protocol failure \(code.rawValue)")
         } catch let failure as TUNHelperProtocolFailure {
-            precondition(failure.code == code)
+            XCTAssert(failure.code == code)
         } catch {
-            preconditionFailure("Unexpected error: \(error)")
+            XCTFail("Unexpected error: \(error)")
         }
     }
 }

@@ -21,6 +21,34 @@
                ReferencedContainer = "container:teleport.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "NO"
+            buildForProfiling = "NO"
+            buildForArchiving = "NO"
+            buildForAnalyzing = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "C2A500092FB1000000CCB832"
+               BuildableName = "teleportTests.xctest"
+               BlueprintName = "teleportTests"
+               ReferencedContainer = "container:teleport.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "NO"
+            buildForProfiling = "NO"
+            buildForArchiving = "NO"
+            buildForAnalyzing = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "C2A500122FB1000000CCB832"
+               BuildableName = "TeleportPrivilegedHelperTests.xctest"
+               BlueprintName = "TeleportPrivilegedHelperTests"
+               ReferencedContainer = "container:teleport.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
       </BuildActionEntries>
    </BuildAction>
    <TestAction
@@ -29,6 +57,28 @@
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
       shouldUseLaunchSchemeArgsEnv = "YES"
       shouldAutocreateTestPlan = "YES">
+      <Testables>
+         <TestableReference
+            skipped = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "C2A500092FB1000000CCB832"
+               BuildableName = "teleportTests.xctest"
+               BlueprintName = "teleportTests"
+               ReferencedContainer = "container:teleport.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+         <TestableReference
+            skipped = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "C2A500122FB1000000CCB832"
+               BuildableName = "TeleportPrivilegedHelperTests.xctest"
+               BlueprintName = "TeleportPrivilegedHelperTests"
+               ReferencedContainer = "container:teleport.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+      </Testables>
    </TestAction>
    <LaunchAction
       buildConfiguration = "Debug"

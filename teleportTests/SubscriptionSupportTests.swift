@@ -1,41 +1,21 @@
 import Foundation
+import XCTest
 
-struct TestSubscriptionSupport {
-    static func main() throws {
-        try testXrayJSONSubscription()
-        try testMalformedJSONPaste()
-        try testMixedJSONAndSkipReasons()
-        try testUnsupportedJSONSettingsAreNotLost()
-        try testLocalJSONSettings()
-        try testEmptyJSONServerNameAndHostValidation()
-        try testJSONIdentityAndRefresh()
-        try testLegacyDuplicateRefresh()
-        try testJSONTransportsAndRuntimeRoundTrip()
-        try testPlainAndBase64SubscriptionPayloadParsing()
-        try testInsecureTLSParsingAndPersistence()
-        try testSubscriptionSnapshotRoundTrip()
-        try testLegacyMultiConfigSnapshotDecoding()
-        try testLegacySubscriptionDefaultsDuplicateFilteringToEnabled()
-        try testDuplicateSubscriptionImportFiltering()
-        try testSelectionPreservationAcrossRefresh()
-        try testCustomNameSurvivesRefresh()
-        print("test_subscription_support: all checks passed")
-    }
-
-    private static func testXrayJSONSubscription() throws {
+final class SubscriptionSupportTests: XCTestCase {
+    func testXrayJSONSubscription() throws {
         let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .appendingPathComponent("fixtures/subscriptions/xray-single.json")
         let links = try SubscriptionPayloadDecoder().decode(Data(contentsOf: fixture))
         let result = try SubscriptionImportProcessor.importEntries(
             candidates: links, parser: ConnectionLinkParser(), sourceID: UUID(), filterDuplicateImports: true
         )
-        precondition(result.importedEntries.count == 1)
+        XCTAssert(result.importedEntries.count == 1)
         let config = result.importedEntries[0].configuration
-        precondition(config.host == "vpn.example.com")
-        precondition(config.security == .reality)
-        precondition(config.vlessFlow == "xtls-rprx-vision")
-        precondition(config.serverName == "www.example.com" && config.shortID == "a1b2c3d4")
-        precondition(config.publicKey == "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+        XCTAssert(config.host == "vpn.example.com")
+        XCTAssert(config.security == .reality)
+        XCTAssert(config.vlessFlow == "xtls-rprx-vision")
+        XCTAssert(config.serverName == "www.example.com" && config.shortID == "a1b2c3d4")
+        XCTAssert(config.publicKey == "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
         let writer = XrayConfigurationWriter(proxyEndpoint: .default)
         let output = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
         defer { try? FileManager.default.removeItem(at: output) }
@@ -44,40 +24,40 @@ struct TestSubscriptionSupport {
         let outbound = (payload["outbounds"] as! [[String: Any]])[0]
         let stream = outbound["streamSettings"] as! [String: Any]
         let reality = stream["realitySettings"] as! [String: Any]
-        precondition(reality["publicKey"] as? String == config.publicKey)
-        precondition(reality["shortId"] as? String == config.shortID)
-        precondition(reality["serverName"] as? String == config.serverName)
+        XCTAssert(reality["publicKey"] as? String == config.publicKey)
+        XCTAssert(reality["shortId"] as? String == config.shortID)
+        XCTAssert(reality["serverName"] as? String == config.serverName)
     }
 
-    private static func testMalformedJSONPaste() throws {
+    func testMalformedJSONPaste() throws {
         for proto in ["vless", "trojan", "hysteria"] {
             do {
                 _ = try ConnectionLinkParser().parse("{\"outbounds\":[{\"protocol\":\"\(proto)\"")
-                preconditionFailure("Malformed JSON was accepted")
+                XCTFail("Malformed JSON was accepted")
             } catch ConfigurationError.invalidXrayJSON {
                 // A JSON syntax error belongs to the format, not a protocol.
             }
         }
     }
 
-    private static func xrayProfile() throws -> [String: Any] {
+    private func xrayProfile() throws -> [String: Any] {
         let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .appendingPathComponent("fixtures/subscriptions/xray-single.json")
         return try JSONSerialization.jsonObject(with: Data(contentsOf: fixture)) as! [String: Any]
     }
 
-    private static func importJSON(_ value: Any, filterDuplicates: Bool = true) throws -> SubscriptionImportResult {
+    private func importJSON(_ value: Any, filterDuplicates: Bool = true) throws -> SubscriptionImportResult {
         try importPayload(JSONSerialization.data(withJSONObject: value), filterDuplicates: filterDuplicates)
     }
 
-    private static func importPayload(_ data: Data, filterDuplicates: Bool = true) throws -> SubscriptionImportResult {
+    private func importPayload(_ data: Data, filterDuplicates: Bool = true) throws -> SubscriptionImportResult {
         try SubscriptionImportProcessor.importEntries(
             candidates: SubscriptionPayloadDecoder().decode(data), parser: ConnectionLinkParser(),
             sourceID: UUID(), filterDuplicateImports: filterDuplicates
         )
     }
 
-    private static func changingProxy(_ update: (inout [String: Any]) -> Void) throws -> [String: Any] {
+    private func changingProxy(_ update: (inout [String: Any]) -> Void) throws -> [String: Any] {
         var profile = try xrayProfile()
         var outbounds = profile["outbounds"] as! [[String: Any]]
         update(&outbounds[0])
@@ -85,7 +65,7 @@ struct TestSubscriptionSupport {
         return profile
     }
 
-    private static func testMixedJSONAndSkipReasons() throws {
+    func testMixedJSONAndSkipReasons() throws {
         let valid = try xrayProfile()
         let hysteria = try changingProxy { $0["protocol"] = "hysteria" }
         let shadowsocks = try changingProxy { $0["protocol"] = "shadowsocks" }
@@ -95,27 +75,27 @@ struct TestSubscriptionSupport {
             $0["streamSettings"] = ["network": "xhttp", "security": "tls", "xhttpSettings": ["extra": ["xPaddingBytes": "100-200"]]]
         }
         let result = try importJSON([valid, hysteria, shadowsocks, balanced, xhttp, 42] as [Any])
-        precondition(result.importedEntries.count == 1)
-        precondition(result.skippedCount == 5)
-        precondition(result.skippedReasons.keys.contains { $0.contains("Hysteria") })
-        precondition(result.skippedReasons["Shadowsocks is not supported"] == 1)
-        precondition(result.statusMessage!.contains("Imported 1, skipped 5"))
-        precondition(result.statusMessage!.contains("Balancer/observatory"))
-        precondition(result.statusMessage!.contains("XHTTP"))
+        XCTAssert(result.importedEntries.count == 1)
+        XCTAssert(result.skippedCount == 5)
+        XCTAssert(result.skippedReasons.keys.contains { $0.contains("Hysteria") })
+        XCTAssert(result.skippedReasons["Shadowsocks is not supported"] == 1)
+        XCTAssert(result.statusMessage!.contains("Imported 1, skipped 5"))
+        XCTAssert(result.statusMessage!.contains("Balancer/observatory"))
+        XCTAssert(result.statusMessage!.contains("XHTTP"))
         do {
             _ = try importJSON([hysteria, shadowsocks])
-            preconditionFailure("An all-unsupported subscription must explain why nothing imported")
+            XCTFail("An all-unsupported subscription must explain why nothing imported")
         } catch let error as SubscriptionError {
-            precondition(error.localizedDescription.contains("Hysteria"))
-            precondition(error.localizedDescription.contains("Shadowsocks"))
-            precondition(error.localizedDescription.contains("skipped 2"))
+            XCTAssert(error.localizedDescription.contains("Hysteria"))
+            XCTAssert(error.localizedDescription.contains("Shadowsocks"))
+            XCTAssert(error.localizedDescription.contains("skipped 2"))
         }
         let mixedLinks = sampleLinks().joined(separator: "\n") + "\nss://REDACTED\nhy2://"
         let mixed = try importPayload(Data(mixedLinks.utf8))
-        precondition(mixed.importedEntries.count == 2 && mixed.skippedCount == 2)
+        XCTAssert(mixed.importedEntries.count == 2 && mixed.skippedCount == 2)
     }
 
-    private static func testUnsupportedJSONSettingsAreNotLost() throws {
+    func testUnsupportedJSONSettingsAreNotLost() throws {
         var multi = try xrayProfile()
         var outbounds = multi["outbounds"] as! [[String: Any]]
         outbounds.append(outbounds[0])
@@ -147,18 +127,18 @@ struct TestSubscriptionSupport {
         ]
         for profile in unsupported {
             let result = try importJSON([try xrayProfile(), profile])
-            precondition(result.importedEntries.count == 1 && result.skippedCount == 1)
-            precondition(!result.statusMessage!.contains("secret"))
+            XCTAssert(result.importedEntries.count == 1 && result.skippedCount == 1)
+            XCTAssert(!result.statusMessage!.contains("secret"))
         }
         for payload in ["{broken", "[", "[]", "<html>Subscription login</html>", "  ", "null"] {
             do {
                 _ = try importPayload(Data(payload.utf8))
-                preconditionFailure("Malformed or empty payload must fail")
+                XCTFail("Malformed or empty payload must fail")
             } catch is SubscriptionError {}
         }
     }
 
-    private static func testLocalJSONSettings() throws {
+    func testLocalJSONSettings() throws {
         let original = try importJSON(xrayProfile()).importedEntries[0].configuration
         var profile = try changingProxy {
             $0["mux"] = ["concurrency": 8]
@@ -180,12 +160,12 @@ struct TestSubscriptionSupport {
         profile["stats"] = [String: Any]()
         profile["api"] = ["tag": "api", "services": ["StatsService"]]
         let imported = try importJSON(profile).importedEntries[0].configuration
-        precondition(imported == original, "Local runtime settings must not change the imported endpoint or identity")
+        XCTAssert(imported == original, "Local runtime settings must not change the imported endpoint or identity")
 
         for mux: [String: Any] in [[:], ["enabled": false], ["enabled": false, "concurrency": 8]] {
             let variant = try changingProxy { $0["mux"] = mux }
             let config = try importJSON(variant).importedEntries[0].configuration
-            precondition(config == original)
+            XCTAssert(config == original)
         }
         for level: Any in [0, 8, UInt32.max] {
             let trojan = try changingProxy {
@@ -194,7 +174,7 @@ struct TestSubscriptionSupport {
                 $0["streamSettings"] = ["security": "tls", "tlsSettings": ["show": false]]
             }
             let config = try importJSON(trojan).importedEntries[0].configuration
-            precondition(config.trojanPassword == "test")
+            XCTAssert(config.trojanPassword == "test")
         }
         for level: Any in [true, -1, 1.5, "8", Double(UInt32.max) + 1] {
             let invalid = try changingProxy {
@@ -202,11 +182,11 @@ struct TestSubscriptionSupport {
                 $0["settings"] = ["servers": [["address": "vpn.example.com", "port": 443, "password": "test", "level": level]]]
             }
             let result = try importJSON([try xrayProfile(), invalid])
-            precondition(result.skippedCount == 1)
+            XCTAssert(result.skippedCount == 1)
         }
     }
 
-    private static func testEmptyJSONServerNameAndHostValidation() throws {
+    func testEmptyJSONServerNameAndHostValidation() throws {
         var configs: [ConnectionConfiguration] = []
         for tls: [String: Any] in [[:], ["serverName": ""]] {
             let profile = try changingProxy {
@@ -216,18 +196,18 @@ struct TestSubscriptionSupport {
             }
             let config = try importJSON(profile).importedEntries[0].configuration
             configs.append(config)
-            precondition(config.serverName == nil && config.vlessFlow == nil)
+            XCTAssert(config.serverName == nil && config.vlessFlow == nil)
             let data = try XrayConfigurationWriter(proxyEndpoint: .default).tunnelConfigData(
                 for: config, interfaceName: "utun9", proxyServerAddress: "192.0.2.1"
             )
             let payload = try JSONSerialization.jsonObject(with: data) as! [String: Any]
             let outbound = (payload["outbounds"] as! [[String: Any]]).first { $0["tag"] as? String == "proxy" }!
             let stream = outbound["streamSettings"] as! [String: Any]
-            precondition((stream["tlsSettings"] as! [String: Any])["serverName"] as? String == "vpn.example.com")
+            XCTAssert((stream["tlsSettings"] as! [String: Any])["serverName"] as? String == "vpn.example.com")
             let endpoint = ((outbound["settings"] as! [String: Any])["vnext"] as! [[String: Any]])[0]
-            precondition(endpoint["address"] as? String == "192.0.2.1")
+            XCTAssert(endpoint["address"] as? String == "192.0.2.1")
         }
-        precondition(configs[0] == configs[1], "Empty optional fields must preserve canonical identity")
+        XCTAssert(configs[0] == configs[1], "Empty optional fields must preserve canonical identity")
 
         for host in ["a:b", "[a:b]", "[2001:db8::1", "2001:db8::1]", "fe80::1%en0", "[example.com]", "bad host", "example.com/path"] {
             let invalid = try changingProxy {
@@ -235,7 +215,7 @@ struct TestSubscriptionSupport {
                 $0["settings"] = ["servers": [["address": host, "port": 443, "password": "test"]]]
             }
             let result = try importJSON([try xrayProfile(), invalid])
-            precondition(result.skippedCount == 1, "Malformed host must be rejected: \(host)")
+            XCTAssert(result.skippedCount == 1, "Malformed host must be rejected: \(host)")
         }
         for host in ["2001:db8::1", "[2001:db8::1]", "::1", "::ffff:192.0.2.1", "192.0.2.1", "vpn.example.com"] {
             let valid = try changingProxy {
@@ -243,11 +223,11 @@ struct TestSubscriptionSupport {
                 $0["settings"] = ["servers": [["address": host, "port": 443, "password": "test"]]]
             }
             let config = try importJSON(valid).importedEntries[0].configuration
-            precondition(config.host == host.trimmingCharacters(in: CharacterSet(charactersIn: "[]")))
+            XCTAssert(config.host == host.trimmingCharacters(in: CharacterSet(charactersIn: "[]")))
         }
     }
 
-    private static func testLegacyDuplicateRefresh() throws {
+    func testLegacyDuplicateRefresh() throws {
         let sourceID = UUID()
         let entryID = sampleLinks()[0]
         let configuration = try ConnectionLinkParser().parse(entryID)
@@ -266,25 +246,25 @@ struct TestSubscriptionSupport {
                 importedEntries: [ImportedSubscriptionEntry(sourceEntryID: entryID, configuration: configuration)],
                 fetchedAt: Date(), autoSelectFirstImported: false
             )
-            precondition(result.savedConnections.count == 1)
+            XCTAssert(result.savedConnections.count == 1)
             let kept = result.savedConnections[0]
-            precondition(kept.id == expected.id && result.selectedConnectionID == expected.id)
-            precondition(kept.savedAt == expected.savedAt && kept.customName == expected.customName)
-            precondition(kept.healthCheck == expected.healthCheck)
+            XCTAssert(kept.id == expected.id && result.selectedConnectionID == expected.id)
+            XCTAssert(kept.savedAt == expected.savedAt && kept.customName == expected.customName)
+            XCTAssert(kept.healthCheck == expected.healthCheck)
         }
     }
 
-    private static func testJSONIdentityAndRefresh() throws {
+    func testJSONIdentityAndRefresh() throws {
         let profile = try xrayProfile()
         let compact = try JSONSerialization.data(withJSONObject: [profile])
         let reordered = try JSONSerialization.data(withJSONObject: [profile], options: [.sortedKeys, .prettyPrinted])
         let initial = try importPayload(compact)
         let refreshed = try importPayload(reordered)
-        precondition(initial.importedEntries[0].sourceEntryID == refreshed.importedEntries[0].sourceEntryID)
+        XCTAssert(initial.importedEntries[0].sourceEntryID == refreshed.importedEntries[0].sourceEntryID)
         let base64 = try importPayload(Data(reordered.base64EncodedString().utf8))
-        precondition(base64.importedEntries[0].configuration == refreshed.importedEntries[0].configuration)
+        XCTAssert(base64.importedEntries[0].configuration == refreshed.importedEntries[0].configuration)
         let duplicated = try importJSON([profile, profile], filterDuplicates: false)
-        precondition(duplicated.importedEntries.count == 1, "Exact duplicate identities cannot be saved twice")
+        XCTAssert(duplicated.importedEntries.count == 1, "Exact duplicate identities cannot be saved twice")
         let sourceID = UUID()
         let connectionID = UUID()
         let saved = SavedConnection(
@@ -296,16 +276,16 @@ struct TestSubscriptionSupport {
             existingConnections: [saved], sourceID: sourceID, selectedConnectionID: connectionID,
             importedEntries: refreshed.importedEntries, fetchedAt: Date(), autoSelectFirstImported: false
         )
-        precondition(replacement.selectedConnectionID == connectionID)
-        precondition(replacement.savedConnections[0].customName == "My saved server")
-        precondition(replacement.savedConnections[0].savedAt == saved.savedAt)
+        XCTAssert(replacement.selectedConnectionID == connectionID)
+        XCTAssert(replacement.savedConnections[0].customName == "My saved server")
+        XCTAssert(replacement.savedConnections[0].savedAt == saved.savedAt)
         let encoded = try JSONEncoder().encode(replacement.savedConnections[0])
         let restored = try JSONDecoder().decode(SavedConnection.self, from: encoded)
         let reparsed = try ConnectionLinkParser().parse(restored.configuration.rawLink)
-        precondition(reparsed == restored.configuration)
+        XCTAssert(reparsed == restored.configuration)
     }
 
-    private static func testJSONTransportsAndRuntimeRoundTrip() throws {
+    func testJSONTransportsAndRuntimeRoundTrip() throws {
         let transports: [(String, [String: Any])] = [
             ("tcp", [:]), ("raw", [:]),
             ("ws", ["path": "/edge?token=%25&x=1", "headers": ["Host": "cdn.example.com"]]),
@@ -323,22 +303,22 @@ struct TestSubscriptionSupport {
                 ]
             }
             let config = try importJSON(profile).importedEntries[0].configuration
-            precondition(config.transport.rawValue == network)
-            precondition(config.allowsInsecureTLS && config.fingerprint == "firefox")
-            precondition(config.alpn == ["h2", "http/1.1"])
+            XCTAssert(config.transport.rawValue == network)
+            XCTAssert(config.allowsInsecureTLS && config.fingerprint == "firefox")
+            XCTAssert(config.alpn == ["h2", "http/1.1"])
             let reparsed = try ConnectionLinkParser().parse(config.rawLink)
-            precondition(reparsed == config)
+            XCTAssert(reparsed == config)
             let writer = XrayConfigurationWriter(proxyEndpoint: .default)
             let data = try writer.tunnelConfigData(for: config, interfaceName: "utun9")
             let payload = try JSONSerialization.jsonObject(with: data) as! [String: Any]
             let outbound = (payload["outbounds"] as! [[String: Any]]).first { $0["tag"] as? String == "proxy" }!
             let stream = outbound["streamSettings"] as! [String: Any]
-            precondition(stream["network"] as? String == network)
+            XCTAssert(stream["network"] as? String == network)
             let tls = stream["tlsSettings"] as! [String: Any]
-            precondition(tls["allowInsecure"] as? Bool == true)
-            precondition(tls["serverName"] as? String == "www.example.com")
+            XCTAssert(tls["allowInsecure"] as? Bool == true)
+            XCTAssert(tls["serverName"] as? String == "www.example.com")
             if !settings.isEmpty {
-                precondition(NSDictionary(dictionary: stream[network + "Settings"] as! [String: Any]) == NSDictionary(dictionary: settings))
+                XCTAssert(NSDictionary(dictionary: stream[network + "Settings"] as! [String: Any]) == NSDictionary(dictionary: settings))
             }
         }
 
@@ -350,41 +330,41 @@ struct TestSubscriptionSupport {
         }
         trojan["remarks"] = "Literal %25 name"
         let config = try importJSON(trojan).importedEntries[0].configuration
-        precondition(config.protocolType == .trojan && config.trojanPassword == password)
-        precondition(config.host == "2001:db8::1" && config.remarks == "Literal %25 name")
+        XCTAssert(config.protocolType == .trojan && config.trojanPassword == password)
+        XCTAssert(config.host == "2001:db8::1" && config.remarks == "Literal %25 name")
         let reparsed = try ConnectionLinkParser().parse(config.rawLink)
-        precondition(reparsed == config)
+        XCTAssert(reparsed == config)
     }
 
-    private static func testPlainAndBase64SubscriptionPayloadParsing() throws {
+    func testPlainAndBase64SubscriptionPayloadParsing() throws {
         let plainPayload = sampleLinks().joined(separator: "\n")
         let plain = try importPayload(Data(plainPayload.utf8))
         let encoded = try importPayload(Data(Data(plainPayload.utf8).base64EncodedString().utf8))
         let withBOM = try importPayload(Data(("\u{FEFF} \n" + plainPayload).utf8))
-        precondition(withBOM.importedEntries.count == 2)
-        precondition(plain.importedEntries.count == 2 && plain.skippedCount == 0)
-        precondition(encoded.importedEntries.map(\.configuration) == plain.importedEntries.map(\.configuration))
-        precondition(plain.importedEntries[0].configuration.protocolType == .vless)
-        precondition(plain.importedEntries[1].configuration.protocolType == .trojan)
+        XCTAssert(withBOM.importedEntries.count == 2)
+        XCTAssert(plain.importedEntries.count == 2 && plain.skippedCount == 0)
+        XCTAssert(encoded.importedEntries.map(\.configuration) == plain.importedEntries.map(\.configuration))
+        XCTAssert(plain.importedEntries[0].configuration.protocolType == .vless)
+        XCTAssert(plain.importedEntries[1].configuration.protocolType == .trojan)
     }
 
-    private static func testInsecureTLSParsingAndPersistence() throws {
+    func testInsecureTLSParsingAndPersistence() throws {
         let parser = ConnectionLinkParser()
         let configuration = try parser.parse(trojanInsecureTLSLink())
 
-        precondition(configuration.protocolType == .trojan)
-        precondition(configuration.security == .tls)
-        precondition(configuration.transport == .ws)
-        precondition(configuration.allowsInsecureTLS)
-        precondition(configuration.securityWarningText == "TLS certificate verification is disabled")
-        precondition(configuration.descriptiveSummary.contains("Insecure TLS"))
+        XCTAssert(configuration.protocolType == .trojan)
+        XCTAssert(configuration.security == .tls)
+        XCTAssert(configuration.transport == .ws)
+        XCTAssert(configuration.allowsInsecureTLS)
+        XCTAssert(configuration.securityWarningText == "TLS certificate verification is disabled")
+        XCTAssert(configuration.descriptiveSummary.contains("Insecure TLS"))
 
         let data = try JSONEncoder().encode(configuration)
         let decoded = try JSONDecoder().decode(ConnectionConfiguration.self, from: data)
-        precondition(decoded.allowsInsecureTLS)
+        XCTAssert(decoded.allowsInsecureTLS)
     }
 
-    private static func testSubscriptionSnapshotRoundTrip() throws {
+    func testSubscriptionSnapshotRoundTrip() throws {
         let parser = ConnectionLinkParser()
         let sourceID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
         let importedConnection = SavedConnection(
@@ -413,14 +393,14 @@ struct TestSubscriptionSupport {
         let data = try JSONEncoder().encode(snapshot)
         let decoded = try JSONDecoder().decode(AppSnapshot.self, from: data)
 
-        precondition(decoded.subscriptionSources.count == 1)
-        precondition(decoded.savedConnections.count == 1)
-        precondition(decoded.savedConnections[0].source?.subscriptionSourceID == sourceID)
-        precondition(decoded.selectedConnectionID == importedConnection.id)
-        precondition(decoded.subscriptionSources[0].filterDuplicateImports == false)
+        XCTAssert(decoded.subscriptionSources.count == 1)
+        XCTAssert(decoded.savedConnections.count == 1)
+        XCTAssert(decoded.savedConnections[0].source?.subscriptionSourceID == sourceID)
+        XCTAssert(decoded.selectedConnectionID == importedConnection.id)
+        XCTAssert(decoded.subscriptionSources[0].filterDuplicateImports == false)
     }
 
-    private static func testLegacyMultiConfigSnapshotDecoding() throws {
+    func testLegacyMultiConfigSnapshotDecoding() throws {
         let legacyJSON = """
         {
           "savedConnections": [
@@ -459,13 +439,13 @@ struct TestSubscriptionSupport {
         """.data(using: .utf8)!
 
         let decoded = try JSONDecoder().decode(AppSnapshot.self, from: legacyJSON)
-        precondition(decoded.subscriptionSources.isEmpty)
-        precondition(decoded.savedConnections.count == 1)
-        precondition(decoded.savedConnections[0].source == nil)
-        precondition(decoded.savedConnections[0].configuration.allowsInsecureTLS == false)
+        XCTAssert(decoded.subscriptionSources.isEmpty)
+        XCTAssert(decoded.savedConnections.count == 1)
+        XCTAssert(decoded.savedConnections[0].source == nil)
+        XCTAssert(decoded.savedConnections[0].configuration.allowsInsecureTLS == false)
     }
 
-    private static func testLegacySubscriptionDefaultsDuplicateFilteringToEnabled() throws {
+    func testLegacySubscriptionDefaultsDuplicateFilteringToEnabled() throws {
         let legacyJSON = """
         {
           "savedConnections": [],
@@ -491,11 +471,11 @@ struct TestSubscriptionSupport {
         """.data(using: .utf8)!
 
         let decoded = try JSONDecoder().decode(AppSnapshot.self, from: legacyJSON)
-        precondition(decoded.subscriptionSources.count == 1)
-        precondition(decoded.subscriptionSources[0].filterDuplicateImports == true)
+        XCTAssert(decoded.subscriptionSources.count == 1)
+        XCTAssert(decoded.subscriptionSources[0].filterDuplicateImports == true)
     }
 
-    private static func testDuplicateSubscriptionImportFiltering() throws {
+    func testDuplicateSubscriptionImportFiltering() throws {
         let parser = ConnectionLinkParser()
         let sourceID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
         let links = [
@@ -510,9 +490,9 @@ struct TestSubscriptionSupport {
             sourceID: sourceID,
             filterDuplicateImports: true
         )
-        precondition(filtered.importedEntries.count == 2)
-        precondition(filtered.importedEntries[0].configuration.displayName == "Alpha")
-        precondition(filtered.importedEntries[1].configuration.displayName == "Beta")
+        XCTAssert(filtered.importedEntries.count == 2)
+        XCTAssert(filtered.importedEntries[0].configuration.displayName == "Alpha")
+        XCTAssert(filtered.importedEntries[1].configuration.displayName == "Beta")
 
         let unfiltered = try AppViewModel.importSubscriptionEntries(
             links: links,
@@ -520,13 +500,13 @@ struct TestSubscriptionSupport {
             sourceID: sourceID,
             filterDuplicateImports: false
         )
-        precondition(unfiltered.importedEntries.count == 3)
+        XCTAssert(unfiltered.importedEntries.count == 3)
     }
 
     /// A name the user gave an imported connection has to survive the next
     /// refresh, which rebuilds every imported entry from the source. Storing it
     /// inside the link would lose it here.
-    private static func testCustomNameSurvivesRefresh() throws {
+    func testCustomNameSurvivesRefresh() throws {
         let parser = ConnectionLinkParser()
         let sourceID = UUID()
         let connectionID = UUID()
@@ -540,11 +520,11 @@ struct TestSubscriptionSupport {
             source: ConnectionSourceMetadata(subscriptionSourceID: sourceID, subscriptionEntryID: sourceEntry),
             customName: "Work"
         )
-        precondition(named.displayName == "Work")
+        XCTAssert(named.displayName == "Work")
         // Sharing carries the chosen name even though the stored link is untouched.
-        precondition(named.configuration.rawLink == configuration.rawLink)
+        XCTAssert(named.configuration.rawLink == configuration.rawLink)
         let sharedConfiguration = try parser.parse(named.shareableLink)
-        precondition(sharedConfiguration.remarks == "Work")
+        XCTAssert(sharedConfiguration.remarks == "Work")
 
         let refreshed = SubscriptionConnectionReconciler().reconcile(
             existingConnections: [named],
@@ -555,8 +535,8 @@ struct TestSubscriptionSupport {
             autoSelectFirstImported: false
         )
         let refreshedConnection = refreshed.savedConnections.first { $0.id == connectionID }
-        precondition(refreshedConnection?.customName == "Work", "expected a user name to survive a subscription refresh")
-        precondition(refreshedConnection?.displayName == "Work")
+        XCTAssert(refreshedConnection?.customName == "Work", "expected a user name to survive a subscription refresh")
+        XCTAssert(refreshedConnection?.displayName == "Work")
 
         // A connection with no name of its own still reads as the source named it.
         let unnamed = SavedConnection(
@@ -565,11 +545,11 @@ struct TestSubscriptionSupport {
             savedAt: Date(timeIntervalSince1970: 100),
             source: nil
         )
-        precondition(unnamed.displayName == configuration.displayName)
-        precondition(unnamed.shareableLink == configuration.rawLink)
+        XCTAssert(unnamed.displayName == configuration.displayName)
+        XCTAssert(unnamed.shareableLink == configuration.rawLink)
     }
 
-    private static func testSelectionPreservationAcrossRefresh() throws {
+    func testSelectionPreservationAcrossRefresh() throws {
         let parser = ConnectionLinkParser()
         let sourceID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
         let selectedID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
@@ -599,7 +579,7 @@ struct TestSubscriptionSupport {
             autoSelectFirstImported: false
         )
 
-        precondition(preserved.selectedConnectionID == selectedID)
+        XCTAssert(preserved.selectedConnectionID == selectedID)
 
         let removed = reconciler.reconcile(
             existingConnections: [existingImported, manual],
@@ -610,17 +590,17 @@ struct TestSubscriptionSupport {
             autoSelectFirstImported: false
         )
 
-        precondition(removed.selectedConnectionID == manualID)
+        XCTAssert(removed.selectedConnectionID == manualID)
     }
 
-    private static func sampleLinks() -> [String] {
+    private func sampleLinks() -> [String] {
         [
             "vless://123e4567-e89b-12d3-a456-426614174000@example.com:443?security=tls&type=tcp&sni=example.com#Alpha",
             "trojan://secret-password@example.org:443?security=tls&type=ws&sni=example.org&host=cdn.example.org&path=%2Fsocket#Beta"
         ]
     }
 
-    private static func trojanInsecureTLSLink() -> String {
+    private func trojanInsecureTLSLink() -> String {
         "trojan://secret-password@example.org:443?security=tls&type=ws&sni=example.org&host=cdn.example.org&path=%2Fsocket&allowInsecure=1#Beta"
     }
 }

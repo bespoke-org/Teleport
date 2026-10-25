@@ -1,10 +1,12 @@
 import Foundation
+import XCTest
 import Security
 
-@main
-struct TestBuildApproval {
-    static func main() throws {
-        let app = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? "build/DerivedData/Build/Products/Debug/Teleport.app")
+final class BuildApprovalTests: XCTestCase {
+    func testBuiltAppApproval() throws {
+        // The scheme builds the app for testing into the products directory that holds this bundle.
+        let app = Bundle(for: BuildApprovalTests.self).bundleURL.deletingLastPathComponent().appendingPathComponent("Teleport.app")
+        XCTAssert(FileManager.default.fileExists(atPath: app.path), "Teleport.app was not built next to the test bundle")
         let helper = app.appendingPathComponent("Contents/Library/PrivilegedHelperTools/dev.x.teleport.PrivilegedHelper")
         let manifest = HelperInstallationManifest(
             helperVersion: PrivilegedHelperConstants.version,
@@ -12,16 +14,16 @@ struct TestBuildApproval {
             helperCDHashes: try BundledArtifactVerifier.codeDirectoryHashes(at: helper),
             xraySHA256: BundledArtifactPolicy.current.xraySHA256
         )
-        precondition(manifest.isValid)
+        XCTAssert(manifest.isValid)
         let encoded = try JSONEncoder().encode(manifest)
         let decoded = try JSONDecoder().decode(HelperInstallationManifest.self, from: encoded)
-        precondition(decoded == manifest)
+        XCTAssert(decoded == manifest)
         let verifier = BundledArtifactVerifier()
         try verifier.verify(appBundleURL: app, helperURL: helper,
                             runtimeURL: app.appendingPathComponent("Contents/Resources/xray"), manifest: manifest)
         do {
             try verifier.verifyCodeSignature(at: helper, requirement: manifest.clientRequirement)
-            fatalError("A different executable must not satisfy app approval")
+            XCTFail("A different executable must not satisfy app approval")
         } catch is PrivilegedHelperInstallerError {}
 
         // A build changed under the same signing identifier must lose approval.
@@ -35,37 +37,37 @@ struct TestBuildApproval {
         signer.arguments = ["--force", "--sign", "-", "--identifier", "dev.x.teleport", "--options", "runtime", changed.path]
         try signer.run()
         signer.waitUntilExit()
-        precondition(signer.terminationStatus == 0)
+        XCTAssert(signer.terminationStatus == 0)
         do {
             try verifier.verifyCodeSignature(at: changed, requirement: manifest.helperRequirement)
-            fatalError("Changed code signature must require approval again")
+            XCTFail("Changed code signature must require approval again")
         } catch is PrivilegedHelperInstallerError {}
 
         let approval = directory.appendingPathComponent("approval.json")
         try encoded.write(to: approval)
-        precondition(HelperInstallationManifest.loadApproved(at: approval.path) == nil,
+        XCTAssert(HelperInstallationManifest.loadApproved(at: approval.path) == nil,
                      "A user-owned approval must never authorize a client")
         let link = directory.appendingPathComponent("link.json")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: approval)
-        precondition(HelperInstallationManifest.loadApproved(at: link.path) == nil)
-        precondition(HelperInstallationManifest.loadApproved(at: directory.appendingPathComponent("missing").path) == nil)
+        XCTAssert(HelperInstallationManifest.loadApproved(at: link.path) == nil)
+        XCTAssert(HelperInstallationManifest.loadApproved(at: directory.appendingPathComponent("missing").path) == nil)
 
         var object = try JSONSerialization.jsonObject(with: encoded) as! [String: Any]
         for value in ["", "abc", String(repeating: "z", count: 40), "\" or true"] {
             object["appCDHashes"] = [value]
             let data = try JSONSerialization.data(withJSONObject: object)
             let invalid = try JSONDecoder().decode(HelperInstallationManifest.self, from: data)
-            precondition(!invalid.isValid)
+            XCTAssert(!invalid.isValid)
         }
         for hashes in [[], [manifest.appCDHashes[0], manifest.appCDHashes[0]]] {
             object["appCDHashes"] = hashes
             let data = try JSONSerialization.data(withJSONObject: object)
             let invalid = try JSONDecoder().decode(HelperInstallationManifest.self, from: data)
-            precondition(!invalid.isValid)
+            XCTAssert(!invalid.isValid)
         }
         object.removeValue(forKey: "appCDHashes")
         let legacy = try JSONSerialization.data(withJSONObject: object)
-        precondition((try? JSONDecoder().decode(HelperInstallationManifest.self, from: legacy)) == nil)
+        XCTAssert((try? JSONDecoder().decode(HelperInstallationManifest.self, from: legacy)) == nil)
 
         try verifyUniversalApproval(in: directory, verifier: verifier)
 
@@ -80,20 +82,19 @@ struct TestBuildApproval {
         shell.arguments = ["-n", scriptURL.path]
         try shell.run()
         shell.waitUntilExit()
-        precondition(shell.terminationStatus == 0)
-        print("test_build_approval: all checks passed")
+        XCTAssert(shell.terminationStatus == 0)
     }
 
     /// Release apps have two slices. Requiring only the host cdhash rejects the
     /// other slice during codesign verification, even though neither changed.
-    private static func verifyUniversalApproval(in directory: URL, verifier: BundledArtifactVerifier) throws {
+    private func verifyUniversalApproval(in directory: URL, verifier: BundledArtifactVerifier) throws {
         let source = directory.appendingPathComponent("fixture.c")
         let executable = directory.appendingPathComponent("universal-fixture")
         try "int main(void) { return 0; }\n".write(to: source, atomically: true, encoding: .utf8)
         try run("/usr/bin/xcrun", ["clang", "-arch", "arm64", "-arch", "x86_64", source.path, "-o", executable.path])
         try run("/usr/bin/codesign", ["--force", "--sign", "-", "--identifier", "dev.x.teleport", executable.path])
         let hashes = try BundledArtifactVerifier.codeDirectoryHashes(at: executable)
-        precondition(hashes.count == 2, "Both architectures must be approved")
+        XCTAssert(hashes.count == 2, "Both architectures must be approved")
         let approval = HelperInstallationManifest(
             helperVersion: PrivilegedHelperConstants.version,
             appCDHashes: hashes,
@@ -104,17 +105,17 @@ struct TestBuildApproval {
         for hash in hashes {
             do {
                 try verifier.verifyCodeSignature(at: executable, requirement: "cdhash H\"\(hash)\"")
-                fatalError("Approving one architecture must not approve the other")
+                XCTFail("Approving one architecture must not approve the other")
             } catch is PrivilegedHelperInstallerError {}
         }
     }
 
-    private static func run(_ executable: String, _ arguments: [String]) throws {
+    private func run(_ executable: String, _ arguments: [String]) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
         try process.run()
         process.waitUntilExit()
-        precondition(process.terminationStatus == 0, "Fixture command failed: \(executable)")
+        XCTAssert(process.terminationStatus == 0, "Fixture command failed: \(executable)")
     }
 }

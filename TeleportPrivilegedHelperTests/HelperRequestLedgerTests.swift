@@ -1,4 +1,5 @@
 import Foundation
+import XCTest
 
 private final class MutableTestClock {
     var now: Date
@@ -8,18 +9,8 @@ private final class MutableTestClock {
     }
 }
 
-@main
-private enum TestHelperRequestLedger {
-    static func main() throws {
-        try verifyLookupLifecycleAndConflicts()
-        try verifyCountEvictsOldestCompletedEntry()
-        try verifyAgeEvictsExpiredEntries()
-        try verifyInProgressEntriesAgeOnlyAfterCompletion()
-        try verifyCapacityPreservesInProgressEntries()
-        print("test_helper_request_ledger: all checks passed")
-    }
-
-    private static func verifyLookupLifecycleAndConflicts() throws {
+final class HelperRequestLedgerTests: XCTestCase {
+    func testLookupLifecycleAndConflicts() throws {
         let clock = MutableTestClock(now: Date(timeIntervalSince1970: 1_000))
         var ledger = HelperRequestLedger(maximumEntries: 2, maximumAge: 600, now: { clock.now })
         let requestID = UUID()
@@ -28,18 +19,18 @@ private enum TestHelperRequestLedger {
         let conflictingCommandFingerprint = HelperRequestFingerprint(command: .stopSession, payload: Data("a".utf8))
         let responseData = Data("response".utf8)
 
-        precondition(ledger.lookup(requestID: requestID, fingerprint: fingerprint) == .unknown)
+        XCTAssert(ledger.lookup(requestID: requestID, fingerprint: fingerprint) == .unknown)
         try ledger.begin(requestID: requestID, fingerprint: fingerprint)
-        precondition(ledger.lookup(requestID: requestID, fingerprint: fingerprint) == .inProgress)
-        precondition(ledger.lookup(requestID: requestID, fingerprint: conflictingFingerprint) == .conflict)
-        precondition(ledger.lookup(requestID: requestID, fingerprint: conflictingCommandFingerprint) == .conflict)
+        XCTAssert(ledger.lookup(requestID: requestID, fingerprint: fingerprint) == .inProgress)
+        XCTAssert(ledger.lookup(requestID: requestID, fingerprint: conflictingFingerprint) == .conflict)
+        XCTAssert(ledger.lookup(requestID: requestID, fingerprint: conflictingCommandFingerprint) == .conflict)
 
         ledger.complete(requestID: requestID, fingerprint: fingerprint, responseData: responseData)
-        precondition(ledger.lookup(requestID: requestID, fingerprint: fingerprint) == .completed(responseData))
-        precondition(ledger.lookup(requestID: requestID, fingerprint: conflictingFingerprint) == .conflict)
+        XCTAssert(ledger.lookup(requestID: requestID, fingerprint: fingerprint) == .completed(responseData))
+        XCTAssert(ledger.lookup(requestID: requestID, fingerprint: conflictingFingerprint) == .conflict)
     }
 
-    private static func verifyCountEvictsOldestCompletedEntry() throws {
+    func testCountEvictsOldestCompletedEntry() throws {
         let clock = MutableTestClock(now: Date(timeIntervalSince1970: 1_000))
         var ledger = HelperRequestLedger(maximumEntries: 2, maximumAge: 600, now: { clock.now })
         let firstID = UUID()
@@ -58,12 +49,12 @@ private enum TestHelperRequestLedger {
         try ledger.begin(requestID: thirdID, fingerprint: third)
         ledger.complete(requestID: thirdID, fingerprint: third, responseData: Data("three".utf8))
 
-        precondition(ledger.lookup(requestID: firstID, fingerprint: first) == .unknown)
-        precondition(ledger.lookup(requestID: secondID, fingerprint: second) == .completed(Data("two".utf8)))
-        precondition(ledger.lookup(requestID: thirdID, fingerprint: third) == .completed(Data("three".utf8)))
+        XCTAssert(ledger.lookup(requestID: firstID, fingerprint: first) == .unknown)
+        XCTAssert(ledger.lookup(requestID: secondID, fingerprint: second) == .completed(Data("two".utf8)))
+        XCTAssert(ledger.lookup(requestID: thirdID, fingerprint: third) == .completed(Data("three".utf8)))
     }
 
-    private static func verifyAgeEvictsExpiredEntries() throws {
+    func testAgeEvictsExpiredEntries() throws {
         let clock = MutableTestClock(now: Date(timeIntervalSince1970: 1_000))
         var ledger = HelperRequestLedger(maximumEntries: 2, maximumAge: 600, now: { clock.now })
         let requestID = UUID()
@@ -73,10 +64,10 @@ private enum TestHelperRequestLedger {
         ledger.complete(requestID: requestID, fingerprint: fingerprint, responseData: Data("result".utf8))
         clock.now.addTimeInterval(601)
 
-        precondition(ledger.lookup(requestID: requestID, fingerprint: fingerprint) == .unknown)
+        XCTAssert(ledger.lookup(requestID: requestID, fingerprint: fingerprint) == .unknown)
     }
 
-    private static func verifyInProgressEntriesAgeOnlyAfterCompletion() throws {
+    func testInProgressEntriesAgeOnlyAfterCompletion() throws {
         let clock = MutableTestClock(now: Date(timeIntervalSince1970: 1_000))
         var ledger = HelperRequestLedger(maximumEntries: 2, maximumAge: 600, now: { clock.now })
         let requestID = UUID()
@@ -86,18 +77,18 @@ private enum TestHelperRequestLedger {
 
         try ledger.begin(requestID: requestID, fingerprint: fingerprint)
         clock.now.addTimeInterval(601)
-        precondition(ledger.lookup(requestID: requestID, fingerprint: fingerprint) == .inProgress)
-        precondition(ledger.lookup(requestID: requestID, fingerprint: conflict) == .conflict)
+        XCTAssert(ledger.lookup(requestID: requestID, fingerprint: fingerprint) == .inProgress)
+        XCTAssert(ledger.lookup(requestID: requestID, fingerprint: conflict) == .conflict)
 
         ledger.complete(requestID: requestID, fingerprint: fingerprint, responseData: response)
-        precondition(ledger.lookup(requestID: requestID, fingerprint: fingerprint) == .completed(response))
+        XCTAssert(ledger.lookup(requestID: requestID, fingerprint: fingerprint) == .completed(response))
         clock.now.addTimeInterval(600)
-        precondition(ledger.lookup(requestID: requestID, fingerprint: fingerprint) == .completed(response))
+        XCTAssert(ledger.lookup(requestID: requestID, fingerprint: fingerprint) == .completed(response))
         clock.now.addTimeInterval(1)
-        precondition(ledger.lookup(requestID: requestID, fingerprint: fingerprint) == .unknown)
+        XCTAssert(ledger.lookup(requestID: requestID, fingerprint: fingerprint) == .unknown)
     }
 
-    private static func verifyCapacityPreservesInProgressEntries() throws {
+    func testCapacityPreservesInProgressEntries() throws {
         let clock = MutableTestClock(now: Date(timeIntervalSince1970: 1_000))
         var ledger = HelperRequestLedger(maximumEntries: 2, maximumAge: 600, now: { clock.now })
         let firstID = UUID()
@@ -112,13 +103,13 @@ private enum TestHelperRequestLedger {
 
         do {
             try ledger.begin(requestID: thirdID, fingerprint: third)
-            preconditionFailure("A full ledger containing only in-progress requests must reject new work")
+            XCTFail("A full ledger containing only in-progress requests must reject new work")
         } catch HelperRequestLedgerError.capacityExceeded {
             // Expected: active entries cannot be evicted to admit another request.
         }
 
-        precondition(ledger.lookup(requestID: firstID, fingerprint: first) == .inProgress)
-        precondition(ledger.lookup(requestID: secondID, fingerprint: second) == .inProgress)
-        precondition(ledger.lookup(requestID: thirdID, fingerprint: third) == .unknown)
+        XCTAssert(ledger.lookup(requestID: firstID, fingerprint: first) == .inProgress)
+        XCTAssert(ledger.lookup(requestID: secondID, fingerprint: second) == .inProgress)
+        XCTAssert(ledger.lookup(requestID: thirdID, fingerprint: third) == .unknown)
     }
 }
