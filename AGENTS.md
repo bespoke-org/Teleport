@@ -4,7 +4,7 @@
 
 Before every commit, search the GitHub issues (`gh issue list --search ...`) for ones the change
 resolves, and end the message with a `Closes #N` trailer for each of them. GitHub closes the issue
-when the commit reaches `main`. An issue the commit only partly addresses is mentioned in the body
+when the commit reaches `develop`. An issue the commit only partly addresses is mentioned in the body
 instead.
 
 ## Releases

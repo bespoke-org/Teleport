@@ -1,5 +1,5 @@
 # Builds the Release package: just package, then the app zipped with ditto, which keeps its
-# signature and permissions. Main runs it on pushes to main, Release on version tags.
+# signature and permissions. Main runs it on pushes to develop, Release on version tags.
 name: Package
 
 on:
