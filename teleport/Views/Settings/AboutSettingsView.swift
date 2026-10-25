@@ -7,47 +7,53 @@ struct AboutSettingsView: View {
 
     private let sourceCodeURL = URL(string: "https://github.com/bespoke-org/Teleport")!
     private let issuesURL = URL(string: "https://github.com/bespoke-org/Teleport/issues")!
+    private let licenseURL = URL(string: "https://github.com/bespoke-org/Teleport/blob/develop/LICENSE")!
+    private let thirdPartyNoticesURL = URL(string: "https://github.com/bespoke-org/Teleport/blob/develop/THIRD_PARTY_NOTICES.md")!
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(alignment: .center, spacing: 16) {
-                Image(nsImage: NSApp.applicationIconImage)
-                    .resizable()
-                    .frame(width: 72, height: 72)
+        Form {
+            Section {
+                HStack(spacing: 16) {
+                    Image(nsImage: NSApp.applicationIconImage)
+                        .resizable()
+                        .frame(width: 56, height: 56)
+                        .accessibilityHidden(true)
 
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Teleport")
+                            .font(.title2.weight(.semibold))
+                        Text("Tiny menu bar Xray client for your Mac")
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+
+            Section("Versions") {
+                LabeledContent("App version", value: appVersion)
+                LabeledContent("Xray version", value: xrayVersionNumber)
+                    .help(xrayVersion)
+                LabeledContent("Helper version", value: PrivilegedHelperConstants.version)
+            }
+
+            Section {
+                Link("Source code", destination: sourceCodeURL)
+                Link("Report a bug", destination: issuesURL)
+            } header: {
+                Text("Project links")
+            } footer: {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Teleport")
-                        .font(.largeTitle.weight(.semibold))
-                    Text("A tiny Xray menu bar client.")
-                        .foregroundStyle(.secondary)
+                    Text(copyrightText)
+                    HStack(spacing: 12) {
+                        Link("GPL-3.0-or-later", destination: licenseURL)
+                        Link("Third-party notices", destination: thirdPartyNoticesURL)
+                    }
                 }
             }
-
-            VStack(alignment: .leading, spacing: 12) {
-                aboutRow("App version", appVersion)
-                aboutRow("Helper version", PrivilegedHelperConstants.version)
-                aboutRow("Xray version", xrayVersion)
-                aboutRow("Copyright", copyrightText)
-                aboutRow("License", "GPL-3.0-or-later")
-            }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
-
-            HStack(spacing: 10) {
-                Button("Source code") {
-                    NSWorkspace.shared.open(sourceCodeURL)
-                }
-
-                Button("Report a Bug") {
-                    NSWorkspace.shared.open(issuesURL)
-                }
-            }
-
-            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 16)
+        .formStyle(.grouped)
+        .textSelection(.enabled)
+        .padding(.top, -20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .task {
             xrayVersion = await Self.readXrayVersion()
@@ -63,16 +69,10 @@ struct AboutSettingsView: View {
         "© 2026 Michael Chernigin, Nikita Rydanov"
     }
 
-    private func aboutRow(_ title: String, _ value: String) -> some View {
-        Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 16, verticalSpacing: 0) {
-            GridRow {
-                Text(title)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 110, alignment: .leading)
-                Text(value)
-                    .textSelection(.enabled)
-            }
-        }
+    private var xrayVersionNumber: String {
+        let parts = xrayVersion.split(whereSeparator: \.isWhitespace)
+        guard parts.count > 1, parts[0] == "Xray" else { return xrayVersion }
+        return String(parts[1])
     }
 
     private enum XrayVersionProbe: Sendable {

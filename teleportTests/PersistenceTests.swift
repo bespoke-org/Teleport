@@ -332,6 +332,8 @@ final class PersistenceTests: XCTestCase {
 
             let snapshot = store.load()
             XCTAssert(snapshot.savedConnections.isEmpty, "expected defaults for a never-saved store")
+            XCTAssertTrue(snapshot.showsInDock)
+            XCTAssertFalse(snapshot.connectsOnLaunch)
             XCTAssert(store.lastLoadError == nil, "a missing item is not a load failure")
         }
     }
@@ -343,7 +345,9 @@ final class PersistenceTests: XCTestCase {
                 subscriptionSources: [],
                 selectedConnectionID: nil,
                 proxyEndpoint: .default,
-                showsLatencyInMenuBarPicker: false
+                showsLatencyInMenuBarPicker: false,
+                showsInDock: false,
+                connectsOnLaunch: true
             )
             try store.save(saved)
 
@@ -351,7 +355,18 @@ final class PersistenceTests: XCTestCase {
             let loaded = store.load()
             XCTAssert(store.lastLoadError == nil, "a successful save/load round trip should not report a load error")
             XCTAssert(loaded.showsLatencyInMenuBarPicker == false, "expected the round-tripped snapshot to match what was saved")
+            XCTAssertFalse(loaded.showsInDock, "An explicit choice to hide the Dock icon must survive relaunch")
+            XCTAssertTrue(loaded.connectsOnLaunch)
         }
+    }
+
+    func testExistingSnapshotsDefaultToShowingInDock() throws {
+        let snapshot = try JSONDecoder().decode(AppSnapshot.self, from: Data("{}".utf8))
+        XCTAssertTrue(snapshot.showsInDock)
+        XCTAssertFalse(snapshot.connectsOnLaunch)
+
+        let hidden = try JSONDecoder().decode(AppSnapshot.self, from: Data(#"{"showsInDock":false}"#.utf8))
+        XCTAssertFalse(hidden.showsInDock)
     }
 
     func testHysteriaSaveAndLoad() throws {

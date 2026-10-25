@@ -848,6 +848,8 @@ struct AppSnapshot: Codable, Equatable {
     var subscriptionConnectionSort: SubscriptionConnectionSort
     var showsLatencyInMenuBarPicker: Bool
     var animatesMenuBarIcon: Bool
+    var showsInDock: Bool
+    var connectsOnLaunch: Bool
     var splitTunnelProfiles: [SplitTunnelProfile]
     var selectedSplitTunnelProfileID: UUID?
     var isSplitTunnelEnabled: Bool
@@ -866,6 +868,8 @@ struct AppSnapshot: Codable, Equatable {
         subscriptionConnectionSort: SubscriptionConnectionSort = .name,
         showsLatencyInMenuBarPicker: Bool = true,
         animatesMenuBarIcon: Bool = true,
+        showsInDock: Bool = true,
+        connectsOnLaunch: Bool = false,
         splitTunnelProfiles: [SplitTunnelProfile] = [SplitTunnelProfile(name: "Default")],
         selectedSplitTunnelProfileID: UUID? = nil,
         isSplitTunnelEnabled: Bool = false,
@@ -880,6 +884,8 @@ struct AppSnapshot: Codable, Equatable {
         self.subscriptionConnectionSort = subscriptionConnectionSort
         self.showsLatencyInMenuBarPicker = showsLatencyInMenuBarPicker
         self.animatesMenuBarIcon = animatesMenuBarIcon
+        self.showsInDock = showsInDock
+        self.connectsOnLaunch = connectsOnLaunch
         self.splitTunnelProfiles = splitTunnelProfiles
         self.selectedSplitTunnelProfileID = selectedSplitTunnelProfileID ?? splitTunnelProfiles.first?.id
         self.isSplitTunnelEnabled = isSplitTunnelEnabled
@@ -896,6 +902,8 @@ struct AppSnapshot: Codable, Equatable {
         case subscriptionConnectionSort
         case showsLatencyInMenuBarPicker
         case animatesMenuBarIcon
+        case showsInDock
+        case connectsOnLaunch
         case splitTunnelProfiles
         case selectedSplitTunnelProfileID
         case isSplitTunnelEnabled
@@ -913,6 +921,8 @@ struct AppSnapshot: Codable, Equatable {
         subscriptionConnectionSort = try container.decodeIfPresent(SubscriptionConnectionSort.self, forKey: .subscriptionConnectionSort) ?? .name
         showsLatencyInMenuBarPicker = try container.decodeIfPresent(Bool.self, forKey: .showsLatencyInMenuBarPicker) ?? true
         animatesMenuBarIcon = try container.decodeIfPresent(Bool.self, forKey: .animatesMenuBarIcon) ?? true
+        showsInDock = try container.decodeIfPresent(Bool.self, forKey: .showsInDock) ?? true
+        connectsOnLaunch = try container.decodeIfPresent(Bool.self, forKey: .connectsOnLaunch) ?? false
 
         if let profiles = try container.decodeIfPresent([SplitTunnelProfile].self, forKey: .splitTunnelProfiles), !profiles.isEmpty {
             splitTunnelProfiles = profiles

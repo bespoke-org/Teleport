@@ -29,6 +29,113 @@ final class ConnectionProviderTests: XCTestCase {
         return root
     }
 
+    @MainActor
+    func testConnectOnLaunchWaitsForRecoveryAndConnectsOnlyOnce() async throws {
+        for mode in [ConnectionMode.systemProxy, .tun] {
+            let root = try makeIsolatedRoot("auto-connect")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let backend = RecordingConnectionBackend()
+            backend.hasRestorableStateValue = true
+            await backend.restoreGate.enableBlocking()
+            let (model, store) = try makeLaunchFixture(root: root, mode: mode, enabled: true, backend: backend)
+            defer { store.deleteStoredDataForTesting() }
+
+            await backend.restoreGate.waitUntilEntered()
+            XCTAssertTrue(backend.requestedConnectionIDs().isEmpty, "Must wait for startup recovery")
+            await backend.restoreGate.open()
+            await waitUntil("launch connects") {
+                await MainActor.run { model.isConnected && !model.isOperationPending }
+            }
+            XCTAssertEqual(model.connectionMode, mode)
+            XCTAssertEqual(backend.requestedConnectionIDs(), [try XCTUnwrap(model.selectedConnectionID)])
+            XCTAssertEqual(backend.recordedCalls(), ["restore", "start"])
+
+            model.disconnect()
+            await waitUntil("manual disconnect finishes") {
+                await MainActor.run { model.connectionState == .idle && !model.isOperationPending }
+            }
+            try await Task.sleep(for: .milliseconds(100))
+            XCTAssertEqual(backend.requestedConnectionIDs().count, 1, "Disconnect must not trigger another launch connection")
+        }
+    }
+
+    @MainActor
+    func testEnablingConnectOnLaunchDoesNotConnectImmediately() async throws {
+        let root = try makeIsolatedRoot("auto-connect-disabled")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let backend = RecordingConnectionBackend()
+        let (model, store) = try makeLaunchFixture(root: root, mode: .systemProxy, enabled: false, backend: backend)
+        defer { store.deleteStoredDataForTesting() }
+        await waitUntil("startup is ready") { await MainActor.run { model.canConnect } }
+        XCTAssertTrue(backend.requestedConnectionIDs().isEmpty)
+        model.setConnectsOnLaunch(true)
+        await waitUntil("launch preference is saved") { store.load().connectsOnLaunch }
+        XCTAssertTrue(backend.requestedConnectionIDs().isEmpty)
+    }
+
+    @MainActor
+    func testConnectOnLaunchKeepsExistingSession() async throws {
+        let root = try makeIsolatedRoot("auto-connect-existing")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let backend = RecordingConnectionBackend()
+        backend.setRuntimeActive(true)
+        let (model, store) = try makeLaunchFixture(root: root, mode: .tun, enabled: true, backend: backend)
+        defer { store.deleteStoredDataForTesting() }
+        await waitUntil("existing session is recognized") { await MainActor.run { model.isConnected } }
+        XCTAssertTrue(backend.requestedConnectionIDs().isEmpty)
+        model.disconnect()
+        await waitUntil("existing session disconnects") {
+            await MainActor.run { model.connectionState == .idle && !model.isOperationPending }
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(backend.requestedConnectionIDs().isEmpty)
+    }
+
+    @MainActor
+    func testConnectOnLaunchWithoutSavedConnectionDoesNothing() async throws {
+        let root = try makeIsolatedRoot("auto-connect-empty")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let backend = RecordingConnectionBackend()
+        let (model, store) = try makeLaunchFixture(root: root, mode: .systemProxy, enabled: true, backend: backend, hasConnections: false)
+        defer { store.deleteStoredDataForTesting() }
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(model.connectionState, .idle)
+        XCTAssertNil(model.lastError)
+        XCTAssertTrue(backend.requestedConnectionIDs().isEmpty)
+    }
+
+    @MainActor
+    private func makeLaunchFixture(
+        root: URL, mode: ConnectionMode, enabled: Bool,
+        backend: RecordingConnectionBackend, hasConnections: Bool = true
+    ) throws -> (AppViewModel, ConfigurationStore) {
+        let fileManager = TempFileManager(root: root)
+        let log = TeleportLog(directoryURL: root, fileName: "verify.log")
+        let store = ConfigurationStore(
+            fileManager: fileManager, keychainService: "dev.x.teleport.verify-launch-\(UUID().uuidString)",
+            keychainAccount: "app-snapshot", log: log
+        )
+        let connections: [SavedConnection] = try (hasConnections ? [9, 10] : []).map { port in
+            let configuration = try ConnectionLinkParser().parse(
+                "vless://123e4567-e89b-12d3-a456-426614174000@127.0.0.1:\(port)?security=none&type=tcp#Launch"
+            )
+            return SavedConnection(id: UUID(), configuration: configuration, savedAt: Date())
+        }
+        try store.save(AppSnapshot(
+            savedConnections: connections, selectedConnectionID: connections.last?.id,
+            proxyEndpoint: .default, connectionMode: mode, connectsOnLaunch: enabled
+        ))
+        let provider = BackendConnectionProvider(mode: mode, backend: backend, supervisionInterval: 60)
+        let model = AppViewModel(
+            parser: ConnectionLinkParser(), store: store,
+            connectionProviderFactory: ConnectionProviderFactory(systemProxyProvider: { provider }, tunProvider: { provider }),
+            leakGuard: LeakGuardService(isEnabled: false, log: log),
+            subscriptionClient: SubscriptionClient(), healthProbeService: ConnectionHealthProbeService(),
+            systemProxyService: SystemProxyService(fileManager: fileManager, log: log), log: log
+        )
+        return (model, store)
+    }
+
     func testStoredNameSurvivesLoading() async throws {
         let root = try makeIsolatedRoot("name")
         defer { try? FileManager.default.removeItem(at: root) }
