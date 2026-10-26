@@ -58,16 +58,9 @@ final class MenuBarContextMenuController: NSObject {
         defer { activeMenu = nil }
 
         if let statusItem = Self.statusItem(for: button) {
-            if #available(macOS 27.0, *) {
-                // Suspend SwiftUI's window presentation while AppKit tracks the menu.
-                let delegate = statusItem.expandedInterfaceDelegate
-                statusItem.expandedInterfaceSession?.cancel()
-                statusItem.expandedInterfaceDelegate = nil
-                defer { statusItem.expandedInterfaceDelegate = delegate }
-                showNativeMenu(menu, for: statusItem)
-            } else {
-                showNativeMenu(menu, for: statusItem)
-            }
+            let restorePresentation = suspendWindowPresentation(for: statusItem)
+            defer { restorePresentation?() }
+            showNativeMenu(menu, for: statusItem)
             return
         }
 
@@ -77,6 +70,26 @@ final class MenuBarContextMenuController: NSObject {
         button.highlight(true)
         defer { button.highlight(false) }
         menu.popUp(positioning: nil, at: anchor, in: button)
+    }
+
+    private func suspendWindowPresentation(for statusItem: NSStatusItem) -> (() -> Void)? {
+        // macOS 27 drives SwiftUI's popup through an expanded-interface delegate.
+        // Resolve these APIs dynamically so the app also builds with older SDKs.
+        guard #available(macOS 27.0, *) else { return nil }
+        let getDelegate = NSSelectorFromString("expandedInterfaceDelegate")
+        let setDelegate = NSSelectorFromString("setExpandedInterfaceDelegate:")
+        let getSession = NSSelectorFromString("expandedInterfaceSession")
+        guard statusItem.responds(to: getDelegate),
+              statusItem.responds(to: setDelegate),
+              statusItem.responds(to: getSession) else { return nil }
+
+        let delegate = statusItem.perform(getDelegate)?.takeUnretainedValue()
+        if let session = statusItem.perform(getSession)?.takeUnretainedValue() as? NSObject {
+            let cancel = NSSelectorFromString("cancel")
+            if session.responds(to: cancel) { session.perform(cancel) }
+        }
+        statusItem.perform(setDelegate, with: nil)
+        return { statusItem.perform(setDelegate, with: delegate) }
     }
 
     private func showNativeMenu(_ menu: NSMenu, for statusItem: NSStatusItem) {
