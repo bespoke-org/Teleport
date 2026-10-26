@@ -45,7 +45,7 @@ struct LogActionsMenu: NSViewRepresentable {
             for item in items {
                 let menuItem = NSMenuItem(title: item.title, action: #selector(runItem(_:)), keyEquivalent: "")
                 menuItem.image = NSImage(systemSymbolName: item.symbol, accessibilityDescription: nil)
-                if #available(macOS 27.0, *) { menuItem.preferredImageVisibility = .visible }
+                MenuIconVisibility.showImageIfSupported(on: menuItem)
                 menuItem.isEnabled = item.isEnabled
                 menuItem.target = self
                 // Capture the action for this menu opening. A live refresh may

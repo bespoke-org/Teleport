@@ -16,7 +16,10 @@ final class LogActionsMenuTests: XCTestCase {
         XCTAssertEqual(menu.items.map(\.title), ["Copy", "Save to file…", "Show in Finder"])
         XCTAssertTrue(menu.items.allSatisfy { $0.image != nil && !$0.isSeparatorItem })
         if #available(macOS 27.0, *) {
-            XCTAssertTrue(menu.items.allSatisfy { $0.preferredImageVisibility == .visible })
+            for item in menu.items {
+                // Query the public property dynamically so the test also builds with older SDKs.
+                XCTAssertEqual(item.value(forKey: "preferredImageVisibility") as? Int, 1)
+            }
         }
         let copy = try XCTUnwrap(menu.items.first)
         _ = button.perform(try XCTUnwrap(copy.action), with: copy)
