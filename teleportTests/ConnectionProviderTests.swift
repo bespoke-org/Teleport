@@ -2,6 +2,102 @@ import Foundation
 import XCTest
 
 final class ConnectionProviderTests: XCTestCase {
+    @MainActor
+    func testConnectionPopoverShowsStartupAndApprovalFailuresWithDetails() async throws {
+        let errors: [Error] = [
+            PrivilegedHelperInstallerError.helperDidNotStart("Xray exited with status 1"),
+            PrivilegedShellError.commandFailed("User canceled."),
+        ]
+        for error in errors {
+            let root = try makeIsolatedRoot("connection-popover")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let backend = RecordingConnectionBackend()
+            backend.startError = error
+            let (model, store) = try makeLaunchFixture(root: root, mode: .tun, enabled: false, backend: backend)
+            defer { store.deleteStoredDataForTesting() }
+            await waitUntil("ready") { await MainActor.run { model.canConnect } }
+            model.connect()
+            await waitUntil("failure displayed") {
+                await MainActor.run { model.connectionError != nil && !model.isOperationPending }
+            }
+            XCTAssertEqual(model.connectionError, ConnectionFailure(error: error))
+            XCTAssertEqual(model.lastError, model.connectionError?.summary)
+            XCTAssertEqual(model.lastErrorDetails, model.connectionError?.details)
+
+            // Importing and dismissing an unrelated error must not hide the failure.
+            model.reportImportFailure("Invalid portal URL")
+            model.clearError()
+            XCTAssertEqual(model.connectionError, ConnectionFailure(error: error))
+            let failedState = model.connectionState
+            model.dismissConnectionError()
+            XCTAssertNil(model.connectionError)
+            XCTAssertEqual(model.connectionState, failedState)
+            XCTAssertTrue(model.canConnect)
+
+            // The same failure on a later attempt must be visible again.
+            model.connect()
+            await waitUntil("repeated failure displayed") {
+                await MainActor.run { model.connectionError != nil && !model.isOperationPending }
+            }
+            backend.startError = nil
+            model.connect()
+            XCTAssertNil(model.connectionError, "Starting a retry clears the previous popover immediately")
+            await waitUntil("retry connects") { await MainActor.run { model.isConnected && !model.isOperationPending } }
+            XCTAssertNil(model.connectionError)
+            model.disconnect()
+            await waitUntil("cleanup") { await MainActor.run { model.connectionState == .idle && !model.isOperationPending } }
+        }
+    }
+
+    @MainActor
+    func testDisconnectFailurePopoverDoesNotDisableDisconnectRetry() async throws {
+        let root = try makeIsolatedRoot("disconnect-popover")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let backend = RecordingConnectionBackend()
+        let (model, store) = try makeLaunchFixture(root: root, mode: .tun, enabled: false, backend: backend)
+        defer { store.deleteStoredDataForTesting() }
+        await waitUntil("ready") { await MainActor.run { model.canConnect } }
+        model.connect()
+        await waitUntil("connected") { await MainActor.run { model.isConnected && !model.isOperationPending } }
+        backend.stopError = TestError.stopFailed
+        model.disconnect()
+        await waitUntil("disconnect failure displayed") {
+            await MainActor.run { model.connectionError != nil && !model.isOperationPending }
+        }
+        XCTAssertEqual(model.connectionError?.summary, TestError.stopFailed.localizedDescription)
+        XCTAssertTrue(model.canDisconnect)
+        let failedState = model.connectionState
+        model.dismissConnectionError()
+        XCTAssertEqual(model.connectionState, failedState)
+        XCTAssertNil(model.lastError)
+        XCTAssertTrue(model.canDisconnect)
+        backend.stopError = nil
+        model.disconnect()
+        XCTAssertNil(model.connectionError)
+        await waitUntil("disconnect retry finishes") {
+            await MainActor.run { model.connectionState == .idle && !model.isOperationPending }
+        }
+        XCTAssertNil(model.connectionError)
+    }
+
+    @MainActor
+    func testImportErrorsAndCancelledConnectionsDoNotShowConnectionPopover() async throws {
+        let root = try makeIsolatedRoot("cancelled-popover")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let backend = RecordingConnectionBackend()
+        backend.startError = CancellationError()
+        let (model, store) = try makeLaunchFixture(root: root, mode: .tun, enabled: false, backend: backend)
+        defer { store.deleteStoredDataForTesting() }
+        await waitUntil("ready") { await MainActor.run { model.canConnect } }
+        model.reportImportFailure("Invalid portal URL")
+        XCTAssertNil(model.connectionError)
+        XCTAssertNotNil(model.lastError)
+        model.connect()
+        await waitUntil("cancelled connect finishes") { await MainActor.run { !model.isOperationPending } }
+        XCTAssertNil(model.connectionError)
+        XCTAssertEqual(model.connectionState, .idle)
+    }
+
     /// Loading re-parses each stored link to pick up parser fixes, but everything
     /// else the connection carries belongs to the stored connection. A rebuild that
     /// forgets a field drops it on every launch — which is what happened to names.
@@ -181,7 +277,7 @@ final class ConnectionProviderTests: XCTestCase {
             subscriptionClient: SubscriptionClient(),
             healthProbeService: ConnectionHealthProbeService(),
             // Isolated, like the store: a check must not read or write the real
-            // proxy snapshot, nor leave a launch banner in the real log.
+            // proxy snapshot, nor leave a launch popover in the real log.
             systemProxyService: SystemProxyService(
                 fileManager: TempFileManager(root: root),
                 log: TeleportLog(directoryURL: root, fileName: "verify.log")
@@ -693,7 +789,7 @@ final class ConnectionProviderTests: XCTestCase {
             subscriptionClient: SubscriptionClient(),
             healthProbeService: ConnectionHealthProbeService(),
             // Isolated, like the store: a check must not read or write the real
-            // proxy snapshot, nor leave a launch banner in the real log.
+            // proxy snapshot, nor leave a launch popover in the real log.
             systemProxyService: SystemProxyService(
                 fileManager: TempFileManager(root: root),
                 log: TeleportLog(directoryURL: root, fileName: "verify.log")
