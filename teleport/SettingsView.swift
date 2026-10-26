@@ -88,7 +88,22 @@ struct SettingsSectionIcon: View {
             ))
             .renderingMode(.template)
         }
+        // Sidebar labels override a SwiftUI symbol's font weight. Configure the
+        // native image first so the glasses keep their thicker frames.
+        if section == .advanced,
+           let symbol = NSImage(systemSymbolName: section.systemImage, accessibilityDescription: nil)?
+               .withSymbolConfiguration(.init(pointSize: 13, weight: .heavy)) {
+            return Image(nsImage: symbol).renderingMode(.template)
+        }
         return Image(systemName: section.systemImage)
+    }
+
+    private var iconSize: CGFloat {
+        switch section {
+        case .advanced: return 20
+        case .portals: return 15
+        default: return 13
+        }
     }
 
     var body: some View {
@@ -99,7 +114,7 @@ struct SettingsSectionIcon: View {
             .symbolRenderingMode(.monochrome)
             .font(.system(size: 13, weight: .regular))
             .foregroundStyle(.white)
-            .frame(width: section == .portals ? 15 : 13, height: section == .portals ? 15 : 13)
+            .frame(width: iconSize, height: iconSize)
             .offset(x: section == .portals ? -1 : 0)
             .frame(width: 20, height: 20)
             .background(section.iconColor.gradient, in: RoundedRectangle(cornerRadius: 5))
@@ -303,7 +318,7 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         case .geodata:
             return "globe"
         case .advanced:
-            return "slider.horizontal.3"
+            return "eyeglasses"
         case .logs:
             return "terminal"
         case .about:
