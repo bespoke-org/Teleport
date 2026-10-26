@@ -85,6 +85,56 @@ final class SettingsNavigationTests: XCTestCase {
         XCTAssertFalse(navigation.canGoBack)
     }
 
+    func testNextSidebarSectionFollowsVisibleOrderAndWraps() {
+        var navigation = SettingsNavigation()
+        for expected: SettingsSection in [.portals, .splitTunneling, .advanced, .about, .general] {
+            navigation.selectNextSidebarSection()
+            XCTAssertEqual(navigation.section, expected)
+        }
+    }
+
+    func testPreviousSidebarSectionFollowsVisibleOrderAndWraps() {
+        var navigation = SettingsNavigation()
+        for expected: SettingsSection in [.about, .advanced, .splitTunneling, .portals, .general] {
+            navigation.selectPreviousSidebarSection()
+            XCTAssertEqual(navigation.section, expected)
+        }
+    }
+
+    func testSidebarCyclingFromNestedPagesUsesTheirParentSection() {
+        var navigation = SettingsNavigation()
+        navigation.select(.geodata)
+        navigation.selectNextSidebarSection()
+        XCTAssertEqual(navigation.section, .advanced)
+        navigation.select(.geodata)
+        navigation.selectPreviousSidebarSection()
+        XCTAssertEqual(navigation.section, .portals)
+
+        navigation.select(.logs)
+        navigation.selectNextSidebarSection()
+        XCTAssertEqual(navigation.section, .about)
+        navigation.select(.logs)
+        navigation.selectPreviousSidebarSection()
+        XCTAssertEqual(navigation.section, .splitTunneling)
+    }
+
+    func testSidebarCyclingRecordsHistoryAndClearsForwardHistory() {
+        var navigation = SettingsNavigation()
+        navigation.select(.logs)
+        navigation.selectNextSidebarSection()
+        navigation.goBack()
+        XCTAssertEqual(navigation.section, .logs)
+        navigation.goForward()
+        XCTAssertEqual(navigation.section, .about)
+
+        navigation.goBack()
+        navigation.selectPreviousSidebarSection()
+        XCTAssertEqual(navigation.section, .splitTunneling)
+        XCTAssertFalse(navigation.canGoForward)
+        navigation.goBack()
+        XCTAssertEqual(navigation.section, .logs)
+    }
+
     func testNavigatingBeyondHistoryDoesNothing() {
         var navigation = SettingsNavigation()
         navigation.goBack()

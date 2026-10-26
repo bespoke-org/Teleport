@@ -43,6 +43,11 @@ struct PortalsSettingsView: View {
     @State private var qrPayload: QRPayload?
     @State private var removal: PortalRemoval?
 
+    private var connectionActionTitle: String { viewModel.canDisconnect ? "Disconnect" : "Connect" }
+    private var isChangingConnection: Bool {
+        viewModel.isInstallingHelper || viewModel.connectionPhase == .starting || viewModel.connectionPhase == .stopping
+    }
+
     private var isSearching: Bool { !state.searchTerm.isEmpty }
     private var isEmpty: Bool { viewModel.savedConnections.isEmpty && viewModel.subscriptionSources.isEmpty }
 
@@ -121,10 +126,40 @@ struct PortalsSettingsView: View {
             if #available(macOS 26.0, *) {
                 ToolbarSpacer(.fixed, placement: .primaryAction)
             }
-            ToolbarItem(placement: .primaryAction) {
+            ToolbarItem(id: "portals.add", placement: .primaryAction) {
                 Button("Add portal", systemImage: "plus") { isShowingAddSheet = true }
                     .labelStyle(.iconOnly)
+                    .keyboardShortcut("n", modifiers: .command)
                     .help("Add portal")
+                    .font(.system(size: 17))
+            }
+            if #available(macOS 26.0, *) {
+                ToolbarSpacer(.fixed, placement: .primaryAction)
+            }
+            ToolbarItem(id: "portals.connection", placement: .primaryAction) {
+                Button {
+                    if viewModel.canDisconnect {
+                        viewModel.disconnect()
+                    } else {
+                        viewModel.connect()
+                    }
+                } label: {
+                    Label(connectionActionTitle, systemImage: "power")
+                        .labelStyle(.iconOnly)
+                        .font(.system(size: 17))
+                        .foregroundStyle(viewModel.isConnected ? Color.green : Color.primary)
+                        .opacity(isChangingConnection ? 0 : 1)
+                        .overlay {
+                            if isChangingConnection {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .allowsHitTesting(false)
+                            }
+                        }
+                }
+                .help(connectionActionTitle)
+                .accessibilityLabel(connectionActionTitle)
+                .disabled(!viewModel.canConnect && !viewModel.canDisconnect)
             }
         }
         .onAppear {

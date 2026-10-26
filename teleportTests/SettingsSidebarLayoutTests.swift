@@ -13,8 +13,9 @@ final class SettingsSidebarLayoutTests: XCTestCase {
         // Match the Settings window's minimum-size guard, including while collapsed.
         let observation = window.observe(\.contentMinSize, options: [.initial, .new]) { window, _ in
             let size = window.contentMinSize
-            if size.width < 760 || size.height < 500 {
-                window.contentMinSize = NSSize(width: max(760, size.width), height: max(500, size.height))
+            let minimum = SettingsSidebarLayout.minimumContentSize
+            if size.width < minimum.width || size.height < minimum.height {
+                window.contentMinSize = NSSize(width: max(minimum.width, size.width), height: max(minimum.height, size.height))
             }
         }
         defer { observation.invalidate(); window.close() }
@@ -25,21 +26,23 @@ final class SettingsSidebarLayoutTests: XCTestCase {
         let sidebar = try XCTUnwrap(split.splitViewItems.first { $0.behavior == .sidebar })
         XCTAssertEqual(sidebar.collapseBehavior, .useConstraints)
 
-        for width in [760.0, 900.0, 1100.0] {
+        for width in [SettingsSidebarLayout.minimumContentSize.width, 900, 1100] {
             window.setContentSize(NSSize(width: width, height: 600))
             try await Task.sleep(for: .milliseconds(100))
             let expectedFrame = window.frame
             for collapsed in [true, false, true, false] {
                 split.toggleSidebar(nil)
-                var movedDuringAnimation = false
+                var firstChangedFrame: NSRect?
                 for _ in 0..<25 {
                     try await Task.sleep(for: .milliseconds(20))
-                    movedDuringAnimation = movedDuringAnimation || window.frame != expectedFrame
+                    if firstChangedFrame == nil, window.frame != expectedFrame {
+                        firstChangedFrame = window.frame
+                    }
                 }
-                XCTAssertFalse(movedDuringAnimation, "Window moved or resized while toggling at width \(width)")
+                XCTAssertNil(firstChangedFrame, "Window moved or resized while toggling at width \(width), collapsed=\(collapsed): expected \(expectedFrame), first change \(String(describing: firstChangedFrame)), final \(window.frame), minimum \(window.contentMinSize), divider \(split.splitView.dividerThickness)")
                 XCTAssertEqual(sidebar.isCollapsed, collapsed)
                 if !collapsed {
-                    XCTAssertEqual(sidebar.viewController.view.frame.width, 200, accuracy: 1)
+                    XCTAssertEqual(sidebar.viewController.view.frame.width, SettingsSidebarLayout.sidebarWidth, accuracy: 1)
                 }
             }
         }
@@ -60,15 +63,15 @@ private struct SidebarFixture: View {
         NavigationSplitView(columnVisibility: $visibility) {
             List { Text("General"); Text("Portals") }
                 .listStyle(.sidebar)
-                .frame(minWidth: 200, maxHeight: .infinity)
-                .navigationSplitViewColumnWidth(200)
+                .frame(minWidth: SettingsSidebarLayout.sidebarWidth, maxHeight: .infinity)
+                .navigationSplitViewColumnWidth(SettingsSidebarLayout.sidebarWidth)
                 .background(SettingsSidebarLayout())
         } detail: {
             Form { Section("Connection") { Text("Mode"); Text("Protect traffic") } }
                 .formStyle(.grouped)
-                .frame(minWidth: 560)
+                .frame(minWidth: SettingsSidebarLayout.minimumDetailWidth)
         }
         .navigationSplitViewStyle(.balanced)
-        .frame(minHeight: 500)
+        .frame(minHeight: SettingsSidebarLayout.minimumContentSize.height)
     }
 }

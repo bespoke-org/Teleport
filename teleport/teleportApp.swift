@@ -93,9 +93,13 @@ struct TeleportApp: App {
 
         Window("Settings", id: "settings") {
             SettingsView(viewModel: viewModel)
+                .focusedSceneValue(\.toggleSettingsSidebar) {
+                    NSApplication.shared.sendAction(#selector(NSSplitViewController.toggleSidebar(_:)), to: nil, from: nil)
+                }
                 .background(SettingsWindowObserver(onWindowAvailable: appDelegate.observeSettingsWindow))
         }
         .windowResizability(.contentSize)
+        .commands { SettingsCommands() }
     }
 }
 
@@ -124,8 +128,9 @@ private struct SettingsWindowObserver: NSViewRepresentable {
                 // minimum independent of the split view's animated layout.
                 minimumSizeObservation = window.observe(\.contentMinSize, options: [.initial, .new]) { window, _ in
                     let size = window.contentMinSize
-                    if size.width < 760 || size.height < 500 {
-                        window.contentMinSize = NSSize(width: max(760, size.width), height: max(500, size.height))
+                    let minimum = SettingsSidebarLayout.minimumContentSize
+                    if size.width < minimum.width || size.height < minimum.height {
+                        window.contentMinSize = NSSize(width: max(minimum.width, size.width), height: max(minimum.height, size.height))
                     }
                 }
                 onWindowAvailable?(window)
