@@ -14,12 +14,19 @@ struct SettingsView: View {
                     if let section { navigation.select(section) }
                 }
             )) { section in
-                Label {
-                    Text(section.title)
-                } icon: {
-                    SettingsSectionIcon(section: section)
+                Button {
+                    navigation.select(section)
+                } label: {
+                    Label {
+                        Text(section.title)
+                    } icon: {
+                        SettingsSectionIcon(section: section)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
                 }
-                    .tag(section as SettingsSection?)
+                .buttonStyle(.plain)
+                .tag(section as SettingsSection?)
             }
             .listStyle(.sidebar)
             .frame(minWidth: SettingsSidebarLayout.sidebarWidth, maxHeight: .infinity)
