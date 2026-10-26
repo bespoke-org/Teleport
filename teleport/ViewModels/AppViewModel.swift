@@ -45,6 +45,8 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var connectionState: ConnectionState = .idle
     @Published private(set) var lastError: String?
     @Published private(set) var lastErrorDetails: String?
+    /// Connection diagnostics survive unrelated import, edit, and persistence actions.
+    @Published private(set) var connectionError: ConnectionFailure?
     @Published private(set) var proxyEndpoint: ProxyEndpoint
     @Published private(set) var connectionMode: ConnectionMode
     @Published private(set) var subscriptionConnectionSort: SubscriptionConnectionSort
@@ -743,6 +745,14 @@ final class AppViewModel: ObservableObject {
         setStoredError(nil)
     }
 
+    func dismissConnectionError() {
+        if let error = connectionError,
+           lastError == error.summary, lastErrorDetails == error.details {
+            setStoredError(nil)
+        }
+        connectionError = nil
+    }
+
     /// Surfaces a failure raised by the add-connection UI itself, such as an
     /// unreadable imported file, next to the parse failures shown in that sheet.
     func reportImportFailure(_ message: String) {
@@ -1285,6 +1295,7 @@ final class AppViewModel: ObservableObject {
         awaitsUplinkToReconnect = false
         let provider = connectionProvider
         let operationID = UUID()
+        dismissConnectionError()
         log.info(Self.subsystem, "disconnect requested: mode \(connectionMode)")
         SystemStateDump.capture("before disconnect", log: log)
         beginConnectionOperation()
@@ -1610,10 +1621,12 @@ final class AppViewModel: ObservableObject {
 
         switch state {
         case let .failed(failure):
+            connectionError = failure
             lastError = failure.summary
             lastErrorDetails = failure.details
             inFlightConnectionRequest = nil
         case .connected:
+            dismissConnectionError()
             // A dark wake brings the uplink back for a maintenance window, and the
             // path observer rebuilds the session on it. That session is not newer
             // than the sleep — the sleep has not ended — so it is recorded as having
@@ -1703,6 +1716,7 @@ final class AppViewModel: ObservableObject {
         connectingSelection = (operationID, request.defaultConnection.id)
         beginConnectionOperation()
         inFlightConnectionRequest = (operationID, request)
+        dismissConnectionError()
         setStoredError(nil)
 
         let task = Task { @MainActor [weak self] in
@@ -1790,6 +1804,11 @@ final class AppViewModel: ObservableObject {
     }
 
     private func applyConnectionError(_ error: Error) {
+        connectionError = ConnectionFailure(error: error)
+        applyStoredError(error)
+    }
+
+    private func applyStoredError(_ error: Error) {
         setStoredError(error.localizedDescription)
         if let localizedError = error as? LocalizedError,
            let details = localizedError.failureReason?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -1900,7 +1919,7 @@ final class AppViewModel: ObservableObject {
                 self?.updateSubscriptionSource(source.id) {
                     $0.lastError = error.localizedDescription
                 }
-                self?.applyConnectionError(error)
+                self?.applyStoredError(error)
                 self?.persistSettingError()
             }
         }
@@ -2194,7 +2213,7 @@ final class AppViewModel: ObservableObject {
                 try store.save(snapshot)
             } catch {
                 Task { @MainActor in
-                    self?.applyConnectionError(error)
+                    self?.applyStoredError(error)
                 }
             }
         }

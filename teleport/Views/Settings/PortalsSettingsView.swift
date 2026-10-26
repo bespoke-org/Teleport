@@ -160,6 +160,14 @@ struct PortalsSettingsView: View {
                 .help(connectionActionTitle)
                 .accessibilityLabel(connectionActionTitle)
                 .disabled(!viewModel.canConnect && !viewModel.canDisconnect)
+                .popover(isPresented: Binding(
+                    get: { viewModel.connectionError != nil },
+                    set: { if !$0 { viewModel.dismissConnectionError() } }
+                ), arrowEdge: .bottom) {
+                    if let error = viewModel.connectionError {
+                        ConnectionErrorPopover(error: error, onDismiss: viewModel.dismissConnectionError)
+                    }
+                }
             }
         }
         .onAppear {
