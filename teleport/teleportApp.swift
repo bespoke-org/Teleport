@@ -93,9 +93,13 @@ struct TeleportApp: App {
 
         Window("Settings", id: "settings") {
             SettingsView(viewModel: viewModel)
+                .focusedSceneValue(\.toggleSettingsSidebar) {
+                    NSApplication.shared.sendAction(#selector(NSSplitViewController.toggleSidebar(_:)), to: nil, from: nil)
+                }
                 .background(SettingsWindowObserver(onWindowAvailable: appDelegate.observeSettingsWindow))
         }
         .windowResizability(.contentSize)
+        .commands { SettingsCommands() }
     }
 }
 

@@ -32,27 +32,31 @@ struct SettingsView: View {
                 .navigationTitle(navigation.section.title)
         }
         .toolbar {
-            ToolbarItemGroup(placement: .navigation) {
-                Button("Back", systemImage: "chevron.left") {
-                    navigation.goBack()
-                }
-                .labelStyle(.iconOnly)
-                .help("Back")
-                .keyboardShortcut("[", modifiers: .command)
-                .disabled(!navigation.canGoBack)
+            ToolbarItem(placement: .navigation) {
+                ControlGroup {
+                    Button("Back", systemImage: "chevron.left") {
+                        navigation.goBack()
+                    }
+                    .labelStyle(.iconOnly)
+                    .help("Back")
+                    .keyboardShortcut("[", modifiers: .command)
+                    .disabled(!navigation.canGoBack)
 
-                Button("Forward", systemImage: "chevron.right") {
-                    navigation.goForward()
+                    Button("Forward", systemImage: "chevron.right") {
+                        navigation.goForward()
+                    }
+                    .labelStyle(.iconOnly)
+                    .help("Forward")
+                    .keyboardShortcut("]", modifiers: .command)
+                    .disabled(!navigation.canGoForward)
                 }
-                .labelStyle(.iconOnly)
-                .help("Forward")
-                .keyboardShortcut("]", modifiers: .command)
-                .disabled(!navigation.canGoForward)
+                .controlGroupStyle(.navigation)
             }
             ToolbarItem(placement: .principal) {
                 Color.clear.frame(width: 0, height: 0)
             }
         }
+        .focusedSceneValue(\.settingsNavigation, $navigation)
         .navigationSplitViewStyle(.balanced)
         .frame(minHeight: SettingsSidebarLayout.minimumContentSize.height)
     }

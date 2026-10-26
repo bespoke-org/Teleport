@@ -13,6 +13,20 @@ struct SettingsNavigation {
         self.section = section
     }
 
+    mutating func selectNextSidebarSection() {
+        selectSidebarSection(offset: 1)
+    }
+
+    mutating func selectPreviousSidebarSection() {
+        selectSidebarSection(offset: -1)
+    }
+
+    private mutating func selectSidebarSection(offset: Int) {
+        let sections = SettingsSection.sidebarSections
+        guard let index = sections.firstIndex(of: section.sidebarSection) else { return }
+        select(sections[(index + offset + sections.count) % sections.count])
+    }
+
     mutating func goBack() {
         guard let previous = backHistory.popLast() else { return }
         forwardHistory.append(section)
