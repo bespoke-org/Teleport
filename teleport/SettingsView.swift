@@ -3,7 +3,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var viewModel: AppViewModel
-    @State private var navigation = SettingsNavigation()
+    @Binding var navigation: SettingsNavigation
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var portalsState = PortalsState()
     var body: some View {
@@ -356,5 +356,5 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
 }
 
 #Preview {
-    SettingsView(viewModel: AppViewModel())
+    SettingsView(viewModel: AppViewModel(), navigation: .constant(SettingsNavigation()))
 }
