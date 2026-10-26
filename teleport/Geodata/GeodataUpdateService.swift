@@ -1,7 +1,7 @@
 import CryptoKit
 import Foundation
 
-nonisolated enum GeodataKind: String, CaseIterable {
+nonisolated enum GeodataKind: String, CaseIterable, Sendable {
     case geosite
     case geoip
 
@@ -52,7 +52,8 @@ enum GeodataUpdateError: LocalizedError {
 /// "resolved" directory always contains exactly one usable file per kind
 /// (custom override if present, otherwise the bundled default) and is what
 /// gets delivered to the privileged helper for TUN mode.
-nonisolated struct GeodataUpdateService {
+// FileManager file operations are thread-safe; the service keeps no mutable state.
+nonisolated struct GeodataUpdateService: GeodataUpdateServicing, @unchecked Sendable {
     struct CachedDownload: Sendable {
         let data: Data
         let updatedAt: Date
@@ -134,6 +135,10 @@ nonisolated struct GeodataUpdateService {
 
     func cacheDownload(_ download: CachedDownload, for kind: GeodataKind, source: URL) throws {
         try GeodataFormat.validate(download.data, kind: kind)
+        try writeValidatedCache(download, for: kind, source: source)
+    }
+
+    private func writeValidatedCache(_ download: CachedDownload, for kind: GeodataKind, source: URL) throws {
         let file = cacheURL(for: kind, source: source)
         try fileManager.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true,
                                         attributes: [.posixPermissions: 0o700])
@@ -143,19 +148,34 @@ nonisolated struct GeodataUpdateService {
         try JSONEncoder().encode(receipt).write(to: file.appendingPathExtension("json"), options: .atomic)
     }
 
-    /// Preserve downloads made before the per-source cache was introduced.
+    /// Import the pre-cache active download once per kind. This is a migration,
+    /// not a cache integrity check: preparation validates every cache read itself.
     func cacheCurrentDownload(for kind: GeodataKind, source: URL?, updatedAt: Date?) throws {
-        guard let source, let updatedAt, cachedDownload(for: kind, source: source) == nil,
-              let data = try? Data(contentsOf: customFileURL(for: kind)),
-              (try? GeodataFormat.validate(data, kind: kind)) != nil else { return }
-        try cacheDownload(CachedDownload(data: data, updatedAt: updatedAt), for: kind, source: source)
+        let marker = customDirectoryURL.appendingPathComponent(".\(kind.rawValue)-cache-migrated")
+        guard !fileManager.fileExists(atPath: marker.path), let source, let updatedAt else { return }
+        let cachedFile = cacheURL(for: kind, source: source)
+        // Existing cache artifacts belong to the new format, including interrupted
+        // or corrupt writes. Let preparation reject those and download fresh bytes.
+        if !fileManager.fileExists(atPath: cachedFile.path),
+           !fileManager.fileExists(atPath: cachedFile.appendingPathExtension("json").path),
+           let data = try? Data(contentsOf: customFileURL(for: kind)),
+           (try? GeodataFormat.validate(data, kind: kind)) != nil {
+            try writeValidatedCache(CachedDownload(data: data, updatedAt: updatedAt), for: kind, source: source)
+        }
+        try fileManager.createDirectory(at: customDirectoryURL, withIntermediateDirectories: true,
+                                        attributes: [.posixPermissions: 0o700])
+        try Data().write(to: marker, options: .atomic)
+    }
+
+    func prepareUpdate(kind: GeodataKind, from source: URL, useCache: Bool) async throws -> PreparedUpdate {
+        try await prepareUpdate(kind: kind, from: source, useCache: useCache, download: nil)
     }
 
     /// Prepare off the main actor; publishing the file is a separate, atomic step
     /// so a cancelled or superseded request cannot replace the active dataset.
     func prepareUpdate(
         kind: GeodataKind, from source: URL, useCache: Bool,
-        download: (@Sendable (GeodataKind, URL) async throws -> Data)? = nil
+        download: (@Sendable (GeodataKind, URL) async throws -> Data)?
     ) async throws -> PreparedUpdate {
         let cached = useCache ? await BlockingWork.run { cachedDownload(for: kind, source: source) } : nil
         let result: CachedDownload

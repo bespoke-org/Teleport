@@ -67,18 +67,13 @@ struct AdvancedSettingsView: View {
                     // Allowed while connected: the uninstall disconnects first.
                     .disabled(!viewModel.isHelperInstalled || viewModel.isUninstallingHelper || viewModel.isOperationPending)
                 }
-                .confirmationDialog(
-                    "Uninstall Teleport's privileged helper?",
+                .background(SettingsRemovalConfirmation(
                     isPresented: $isConfirmingHelperUninstall,
-                    titleVisibility: .visible
-                ) {
-                    Button("Uninstall", role: .destructive) {
-                        viewModel.uninstallHelper()
-                    }
-                    Button("Cancel", role: .cancel) {}
-                } message: {
-                    Text("Any running session is disconnected first. The helper's LaunchDaemon, its Xray copy, its state and log under /Library and /var, and its packet filter rules are removed. Your portals and settings stay. TUN mode asks for administrator approval to install the helper again on the next connect; System Proxy mode is not affected.")
-                }
+                    title: "Uninstall Teleport's privileged helper?",
+                    message: "Any running session is disconnected first. The helper's LaunchDaemon, its Xray copy, its state and log under /Library and /var, and its packet filter rules are removed. Your portals and settings stay. TUN mode asks for administrator approval to install the helper again on the next connect; System Proxy mode is not affected.",
+                    actionTitle: "Uninstall",
+                    onRemove: viewModel.uninstallHelper
+                ))
 
             } header: {
                 Text("Maintenance")

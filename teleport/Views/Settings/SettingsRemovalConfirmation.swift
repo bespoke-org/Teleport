@@ -6,6 +6,7 @@ struct SettingsRemovalConfirmation: NSViewRepresentable {
     @Binding var isPresented: Bool
     let title: String
     let message: String
+    var actionTitle: String = "Remove"
     let onRemove: () -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -58,7 +59,7 @@ struct SettingsRemovalConfirmation: NSViewRepresentable {
                 let alert = NSAlert()
                 alert.messageText = self.parent.title
                 alert.informativeText = self.parent.message
-                alert.addButton(withTitle: "Remove").hasDestructiveAction = true
+                alert.addButton(withTitle: self.parent.actionTitle).hasDestructiveAction = true
                 alert.addButton(withTitle: "Cancel")
                 alert.window.preventsApplicationTerminationWhenModal = false
                 self.alert = alert

@@ -226,6 +226,47 @@ final class GeodataTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: service.customFileURL(for: .geosite)), fresh)
     }
 
+    func testLegacyMigrationRunsOnlyOnceEvenAfterCacheRemoval() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let manager = TempFileManager(root: root)
+        let service = GeodataUpdateService(fileManager: manager)
+        let source = URL(string: "https://example.com/geosite.dat")!
+        try service.store(geositeFixture(), for: .geosite)
+        try service.cacheCurrentDownload(for: .geosite, source: source, updatedAt: .distantPast)
+        XCTAssertNotNil(service.cachedDownload(for: .geosite, source: source))
+        let cacheDirectory = service.customFileURL(for: .geosite).deletingLastPathComponent()
+            .appendingPathComponent("sources")
+        try FileManager.default.removeItem(at: cacheDirectory)
+
+        // Reopening the service must not migrate the active file again.
+        let reopened = GeodataUpdateService(fileManager: manager)
+        try reopened.cacheCurrentDownload(for: .geosite, source: source, updatedAt: .distantPast)
+        XCTAssertNil(reopened.cachedDownload(for: .geosite, source: source))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cacheDirectory.path))
+    }
+
+    func testMigrationDoesNotMaskCorruptCacheAndPreparationChecksIntegrity() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = GeodataUpdateService(fileManager: TempFileManager(root: root))
+        let source = URL(string: "https://example.com/geosite.dat")!
+        let original = geositeFixture(domain: "old.example")
+        try service.store(original, for: .geosite)
+        try service.cacheDownload(.init(data: original, updatedAt: .distantPast), for: .geosite, source: source)
+        let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)!.allObjects as! [URL]
+        let cache = try XCTUnwrap(files.first { $0.path.contains("/sources/") && $0.lastPathComponent == "geosite.dat" })
+        // Still valid protobuf: only the stored digest exposes the corruption.
+        try geositeFixture(domain: "bad.example").write(to: cache)
+        try service.cacheCurrentDownload(for: .geosite, source: source, updatedAt: .distantPast)
+        XCTAssertNil(service.cachedDownload(for: .geosite, source: source))
+        let fresh = geositeFixture(domain: "fresh.example")
+        let prepared = try await service.prepareUpdate(kind: .geosite, from: source, useCache: true) { _, _ in fresh }
+        defer { service.discard(prepared) }
+        try service.activate(prepared, for: .geosite)
+        XCTAssertEqual(try Data(contentsOf: service.customFileURL(for: .geosite)), fresh)
+    }
+
     // MARK: - Protobuf fixtures
 
     private func varint(_ value: Int) -> [UInt8] {
