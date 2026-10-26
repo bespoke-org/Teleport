@@ -3,7 +3,8 @@ import SwiftUI
 
 struct PortalsSearchControl: View {
     @Binding var query: String
-    private let searchFieldWidth: CGFloat = 190
+    // Leave room for Add and Connect at the minimum Settings window width.
+    private let searchFieldWidth: CGFloat = 170
     @State private var isSearchExpanded = false
     @State private var focusRequest = 0
     @State private var searchControlWidth: CGFloat = 36
