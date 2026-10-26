@@ -267,7 +267,7 @@ struct PortalsSettingsView: View {
             .disabled(!viewModel.canChangeSelection && !selected)
             .accessibilityValue(selected ? "Selected" : "Not selected")
 
-            healthLabel(connection, health: health)
+            healthLabel(health)
                 .frame(width: 100, alignment: .trailing)
                 .padding(.trailing, 4)
             rowButton("Test latency", icon: "waveform.path.ecg") {
@@ -305,24 +305,21 @@ struct PortalsSettingsView: View {
         .padding(.vertical, 7)
     }
 
-    private func healthLabel(_ connection: SavedConnection, health: ConnectionHealthCheck) -> some View {
-        let summary = viewModel.healthSummary(for: connection)
-        let status = health.state == .unreachable ? "Unavailable" : health.state == .unknown
-            ? (health.checkedAt != nil || health.failureSummary != nil ? "Unknown" : "Not checked")
-            : summary
+    private func healthLabel(_ health: ConnectionHealthCheck) -> some View {
+        let summary = viewModel.healthSummary(for: health)
         return VStack(alignment: .trailing, spacing: 3) {
-            if health.state == .reachable, let latency = health.latencyMilliseconds {
-                Text(ConnectionLatencyFormatter.string(milliseconds: latency))
+            if health.state == .reachable, health.latencyMilliseconds != nil {
+                Text(summary)
                     .monospacedDigit()
                     .foregroundStyle(.green)
             } else {
-                Text(status)
+                Text(summary)
                     .font(.caption)
                     .foregroundStyle(health.state == .unreachable ? Color.red : .secondary)
             }
         }
         .lineLimit(1)
-        .additionalHelp(health.state != .reachable && summary != status ? summary : nil)
+        .additionalHelp(health.state != .reachable && health.failureSummary != summary ? health.failureSummary : nil)
         .accessibilityLabel(summary)
     }
 
