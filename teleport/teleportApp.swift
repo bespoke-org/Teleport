@@ -101,7 +101,7 @@ struct TeleportApp: App {
                 .background(SettingsWindowObserver(onWindowAvailable: appDelegate.observeSettingsWindow))
         }
         .windowResizability(.contentSize)
-        .commands { SettingsCommands() }
+        .commands { SettingsCommands(settingsNavigation: $settingsNavigation) }
     }
 }
 

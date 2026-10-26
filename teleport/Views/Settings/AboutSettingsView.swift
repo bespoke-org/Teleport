@@ -38,9 +38,7 @@ struct AboutSettingsView: View {
             }
 
             Section {
-                Link(destination: sourceCodeURL) {
-                    Label("Source code", systemImage: "chevron.left.forwardslash.chevron.right")
-                }
+                SourceCodeLink(destination: sourceCodeURL)
                 Link(destination: issuesURL) {
                     Label("Report a bug", systemImage: "ladybug")
                 }

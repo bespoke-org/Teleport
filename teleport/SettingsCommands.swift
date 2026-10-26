@@ -2,11 +2,19 @@ import AppKit
 import SwiftUI
 
 struct SettingsCommands: Commands {
+    @Binding var settingsNavigation: SettingsNavigation
     @Environment(\.openWindow) private var openWindow
     @FocusedValue(\.toggleSettingsSidebar) private var toggleSidebar
     @FocusedBinding(\.settingsNavigation) private var navigation
 
     var body: some Commands {
+        CommandGroup(replacing: .appInfo) {
+            Button("About Teleport") {
+                settingsNavigation.select(.about)
+                NSApplication.shared.activate(ignoringOtherApps: true)
+                openWindow(id: "settings")
+            }
+        }
         CommandGroup(replacing: .appSettings) {
             Button("Settings…") {
                 NSApplication.shared.activate(ignoringOtherApps: true)
