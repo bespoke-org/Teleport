@@ -22,12 +22,12 @@ struct SettingsView: View {
                     .tag(section as SettingsSection?)
             }
             .listStyle(.sidebar)
-            .frame(minWidth: 200, maxHeight: .infinity)
-            .navigationSplitViewColumnWidth(200)
+            .frame(minWidth: SettingsSidebarLayout.sidebarWidth, maxHeight: .infinity)
+            .navigationSplitViewColumnWidth(SettingsSidebarLayout.sidebarWidth)
             .background(SettingsSidebarLayout())
         } detail: {
             selectedSectionView
-                .frame(minWidth: 560)
+                .frame(minWidth: SettingsSidebarLayout.minimumDetailWidth)
                 .padding(.top, navigation.section == .portals || navigation.section == .splitTunneling ? 0 : 16)
                 .navigationTitle(navigation.section.title)
         }
@@ -54,7 +54,7 @@ struct SettingsView: View {
             }
         }
         .navigationSplitViewStyle(.balanced)
-        .frame(minHeight: 500)
+        .frame(minHeight: SettingsSidebarLayout.minimumContentSize.height)
     }
 
     @ViewBuilder

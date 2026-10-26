@@ -3,6 +3,12 @@ import SwiftUI
 
 /// Keeps sidebar animation inside the window instead of letting AppKit grow it.
 struct SettingsSidebarLayout: NSViewRepresentable {
+    static let sidebarWidth: CGFloat = 200
+    static let minimumDetailWidth: CGFloat = 560
+    // macOS 15 reserves one point for the split divider. Without it, AppKit
+    // grows a minimum-width window by one point when the sidebar is toggled.
+    static let minimumContentSize = NSSize(width: sidebarWidth + minimumDetailWidth + 1, height: 500)
+
     func makeNSView(context: Context) -> SidebarLayoutView { SidebarLayoutView() }
 
     func updateNSView(_ view: SidebarLayoutView, context: Context) { view.configureSidebar() }
