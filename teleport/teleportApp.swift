@@ -68,6 +68,7 @@ final class TeleportAppDelegate: NSObject, NSApplicationDelegate {
 struct TeleportApp: App {
     @NSApplicationDelegateAdaptor(TeleportAppDelegate.self) private var appDelegate
     @StateObject private var viewModel: AppViewModel
+    @State private var settingsNavigation = SettingsNavigation()
 
     init() {
         let viewModel = AppViewModel()
@@ -88,11 +89,12 @@ struct TeleportApp: App {
                 animates: viewModel.animatesMenuBarIcon
             )
             .frame(width: 18, height: 18)
+            .modifier(MenuBarContextMenu(navigation: $settingsNavigation))
         }
         .menuBarExtraStyle(.window)
 
         Window("Settings", id: "settings") {
-            SettingsView(viewModel: viewModel)
+            SettingsView(viewModel: viewModel, navigation: $settingsNavigation)
                 .focusedSceneValue(\.toggleSettingsSidebar) {
                     NSApplication.shared.sendAction(#selector(NSSplitViewController.toggleSidebar(_:)), to: nil, from: nil)
                 }
