@@ -11,7 +11,7 @@ struct MenuBarView: View {
             configurationSection
             actionSection
 
-            if let error = viewModel.lastError {
+            if let error = viewModel.connectionError?.summary ?? viewModel.lastError {
                 Divider()
                 Label(error, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
