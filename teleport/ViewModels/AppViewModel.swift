@@ -481,38 +481,7 @@ final class AppViewModel: ObservableObject {
     }
 
     func healthSummary(for connection: SavedConnection) -> String {
-        let healthCheck = healthCheck(for: connection)
-        switch healthCheck.state {
-        case .reachable:
-            if let latency = healthCheck.latencyMilliseconds {
-                let duration = ConnectionLatencyFormatter.string(milliseconds: latency)
-                switch healthCheck.latencyKind {
-                case .proxyRequest:
-                    return "Ping \(duration)"
-                case .wireGuardHandshake:
-                    return "Handshake \(duration)"
-                case .tcpConnect, nil:
-                    return "TCP \(duration)"
-                }
-            }
-            return "Available"
-        case .unreachable:
-            return healthCheck.failureSummary ?? "Unavailable"
-        case .queued:
-            return "Queued…"
-        case .checking:
-            return "Checking…"
-        case .unknown:
-            // A probe that could not run says why; it must not read as a verdict
-            // about the server.
-            if let failureSummary = healthCheck.failureSummary, !failureSummary.isEmpty {
-                return failureSummary
-            }
-            if let checkedAt = healthCheck.checkedAt {
-                return "Unknown • checked \(Self.relativeFormatter.localizedString(for: checkedAt, relativeTo: Date()))"
-            }
-            return "Not checked"
-        }
+        healthSummary(for: healthCheck(for: connection))
     }
 
     func healthSnapshotForPicker() -> [UUID: ConnectionHealthCheck] {
@@ -520,37 +489,7 @@ final class AppViewModel: ObservableObject {
     }
 
     func healthSummary(for healthCheck: ConnectionHealthCheck) -> String {
-        switch healthCheck.state {
-        case .reachable:
-            if let latency = healthCheck.latencyMilliseconds {
-                let duration = ConnectionLatencyFormatter.string(milliseconds: latency)
-                switch healthCheck.latencyKind {
-                case .proxyRequest:
-                    return "Ping \(duration)"
-                case .wireGuardHandshake:
-                    return "Handshake \(duration)"
-                case .tcpConnect, nil:
-                    return "TCP \(duration)"
-                }
-            }
-            return "Available"
-        case .unreachable:
-            return healthCheck.failureSummary ?? "Unavailable"
-        case .queued:
-            return "Queued…"
-        case .checking:
-            return "Checking…"
-        case .unknown:
-            // A probe that could not run says why; it must not read as a verdict
-            // about the server.
-            if let failureSummary = healthCheck.failureSummary, !failureSummary.isEmpty {
-                return failureSummary
-            }
-            if let checkedAt = healthCheck.checkedAt {
-                return "Unknown • checked \(Self.relativeFormatter.localizedString(for: checkedAt, relativeTo: Date()))"
-            }
-            return "Not checked"
-        }
+        ConnectionHealthFormatter.label(for: healthCheck)
     }
 
     func refreshConnectionHealth(id: UUID, force: Bool = true) {
