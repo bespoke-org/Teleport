@@ -1,7 +1,30 @@
 import Foundation
+import Combine
 import XCTest
 
 final class ConnectionProviderTests: XCTestCase {
+    @MainActor
+    func testSettingsStatusRefreshDoesNotPublishUnchangedValues() throws {
+        let root = try makeIsolatedRoot("settings-status")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (model, store) = try makeLaunchFixture(
+            root: root, mode: .systemProxy, enabled: false,
+            backend: RecordingConnectionBackend(), hasConnections: false
+        )
+        defer { store.deleteStoredDataForTesting() }
+        model.refreshStartsAtLoginStatus()
+        model.refreshHelperInstallationStatus()
+
+        var updates = 0
+        let observation = model.objectWillChange.sink { updates += 1 }
+        defer { observation.cancel() }
+        // General and Advanced refresh these on every appearance. Reopening
+        // either page must not invalidate every observer of the app model.
+        model.refreshStartsAtLoginStatus()
+        model.refreshHelperInstallationStatus()
+        XCTAssertEqual(updates, 0)
+    }
+
     @MainActor
     func testConnectionPopoverShowsStartupAndApprovalFailuresWithDetails() async throws {
         let errors: [Error] = [

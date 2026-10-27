@@ -1205,11 +1205,13 @@ final class AppViewModel: ObservableObject {
     }
 
     func refreshStartsAtLoginStatus() {
-        startsAtLogin = loginItemService.isEnabled
+        let enabled = loginItemService.isEnabled
+        if startsAtLogin != enabled { startsAtLogin = enabled }
     }
 
     func refreshHelperInstallationStatus() {
-        isHelperInstalled = PrivilegedHelperUninstaller.isInstalled()
+        let installed = PrivilegedHelperUninstaller.isInstalled()
+        if isHelperInstalled != installed { isHelperInstalled = installed }
     }
 
     /// Removes the privileged helper after an administrator prompt. A running
