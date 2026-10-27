@@ -3,21 +3,31 @@ import SwiftUI
 
 struct PortalsSearchControl: View {
     @Binding var query: String
-    // Leave room for Add and Connect at the minimum Settings window width.
-    private let searchFieldWidth: CGFloat = 170
+    var isAvailable: Bool
+    // Leave room for Add at the minimum Settings window width.
+    private static let searchFieldWidth: CGFloat = 170
     @State private var isSearchExpanded = false
     @State private var focusRequest = 0
     @State private var searchControlWidth: CGFloat = 36
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    init(query: Binding<String>, isAvailable: Bool = true) {
+        _query = query
+        self.isAvailable = isAvailable
+        let expanded = !query.wrappedValue.isEmpty
+        _isSearchExpanded = State(initialValue: expanded)
+        // Returning to an existing search should not animate the whole toolbar.
+        _searchControlWidth = State(initialValue: expanded ? Self.searchFieldWidth : 36)
+    }
+
     var body: some View {
         ZStack(alignment: .leading) {
             if isSearchExpanded || searchControlWidth > 36 {
                 PortalsToolbarSearchField(text: $query,
-                    isActive: isSearchExpanded && searchControlWidth == searchFieldWidth,
+                    isActive: isAvailable && isSearchExpanded && searchControlWidth == Self.searchFieldWidth,
                     focusRequest: focusRequest,
                     onDismiss: closeSearch)
-                    .frame(width: searchFieldWidth, height: 28)
+                    .frame(width: Self.searchFieldWidth, height: 28)
                     .opacity(min(1, (Double(searchControlWidth) - 36) / 60))
                     .allowsHitTesting(isSearchExpanded)
             }
@@ -41,14 +51,13 @@ struct PortalsSearchControl: View {
         }
         .frame(width: searchControlWidth, height: 36, alignment: .leading)
         .clipped()
-        .onAppear { isSearchExpanded = !query.isEmpty }
-        .task(id: isSearchExpanded ? searchFieldWidth : 36) {
+        .task(id: isSearchExpanded ? Self.searchFieldWidth : 36) {
             await resizeSearchControl()
         }
     }
 
     private func resizeSearchControl() async {
-        let target: CGFloat = isSearchExpanded ? searchFieldWidth : 36
+        let target: CGFloat = isSearchExpanded ? Self.searchFieldWidth : 36
         let initial = searchControlWidth
         guard initial != target else { return }
         guard !reduceMotion else {
@@ -105,6 +114,10 @@ private struct PortalsToolbarSearchField: NSViewRepresentable {
         if field.stringValue != text { field.stringValue = text }
         field.wantsSearchFocus = isActive
         field.focusRequest = focusRequest
+        if !isActive, let editor = field.currentEditor(),
+           field.window?.firstResponder === editor {
+            field.window?.makeFirstResponder(nil)
+        }
         field.focusIfReady()
     }
 

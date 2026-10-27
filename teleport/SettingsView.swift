@@ -2,7 +2,9 @@ import AppKit
 import SwiftUI
 
 struct SettingsView: View {
-    @ObservedObject var viewModel: AppViewModel
+    // Each page observes the model itself. Connection updates should
+    // not invalidate the navigation shell and all of its sidebar icons.
+    let viewModel: AppViewModel
     @Binding var navigation: SettingsNavigation
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var portalsState = PortalsState()
@@ -59,9 +61,19 @@ struct SettingsView: View {
                 }
                 .controlGroupStyle(.navigation)
             }
-            ToolbarItem(placement: .principal) {
-                Color.clear.frame(width: 0, height: 0)
+            // A principal item keeps page actions trailing in a SwiftUI Window.
+            // Give it a real size so AppKit can measure it without warnings.
+            if #available(macOS 26.0, *) {
+                ToolbarItem(id: "settings.titleSpacer", placement: .principal) {
+                    Color.clear.frame(width: 1, height: 1)
+                }
+                .sharedBackgroundVisibility(.hidden)
+            } else {
+                ToolbarItem(id: "settings.titleSpacer", placement: .principal) {
+                    Color.clear.frame(width: 1, height: 1)
+                }
             }
+            PortalsToolbar(state: $portalsState, isActive: navigation.section == .portals)
         }
         .focusedSceneValue(\.settingsNavigation, $navigation)
         .navigationSplitViewStyle(.balanced)

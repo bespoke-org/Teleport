@@ -37,7 +37,9 @@ struct SettingsSidebarLayout: NSViewRepresentable {
                     // AppKit's default expansion can add the sidebar width to the window
                     // when its minimum is kept constant while the sidebar is collapsed.
                     // Let the existing pane constraints redistribute the available width.
-                    sidebar.collapseBehavior = .useConstraints
+                    if sidebar.collapseBehavior != .useConstraints {
+                        sidebar.collapseBehavior = .useConstraints
+                    }
                     return
                 }
                 ancestor = view.superview

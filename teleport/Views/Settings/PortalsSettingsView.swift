@@ -4,6 +4,7 @@ import SwiftUI
 /// Owned by Settings so navigation between pages preserves browsing state.
 struct PortalsState {
     var query = ""
+    var isShowingAddSheet = false
     var expandedSubscriptions: Set<UUID> = []
     var hasOpened = false
 
@@ -36,7 +37,6 @@ struct PortalsState {
 struct PortalsSettingsView: View {
     @ObservedObject var viewModel: AppViewModel
     @Binding var state: PortalsState
-    @State private var isShowingAddSheet = false
     @State private var editingConnection: SavedConnection?
     @State private var renamingConnection: SavedConnection?
     @State private var editingSubscription: SubscriptionSource?
@@ -114,21 +114,6 @@ struct PortalsSettingsView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .toolbar {
-            ToolbarItem(id: "portals.search", placement: .primaryAction) {
-                PortalsSearchControl(query: $state.query)
-            }
-            if #available(macOS 26.0, *) {
-                ToolbarSpacer(.fixed, placement: .primaryAction)
-            }
-            ToolbarItem(id: "portals.add", placement: .primaryAction) {
-                Button("Add portal", systemImage: "plus") { isShowingAddSheet = true }
-                    .labelStyle(.iconOnly)
-                    .keyboardShortcut("n", modifiers: .command)
-                    .help("Add portal")
-                    .font(.system(size: 17))
-            }
-        }
         .onAppear {
             guard !state.hasOpened else { return }
             state.hasOpened = true
@@ -136,7 +121,7 @@ struct PortalsSettingsView: View {
                 state.expandedSubscriptions.insert(sourceID)
             }
         }
-        .sheet(isPresented: $isShowingAddSheet) {
+        .sheet(isPresented: $state.isShowingAddSheet) {
             AddConnectionSheet(viewModel: viewModel)
                 .background(SettingsDialogWindow())
         }
@@ -185,7 +170,7 @@ struct PortalsSettingsView: View {
         } description: {
             Text("Add a portal link, subscription URL, or configuration file.")
         } actions: {
-            Button("Add portal…") { isShowingAddSheet = true }
+            Button("Add portal…") { state.isShowingAddSheet = true }
                 .buttonStyle(.borderedProminent)
             if !viewModel.bundledSubscriptionTitles.isEmpty {
                 Button("Add community subscriptions") { viewModel.addBundledSubscriptions() }
