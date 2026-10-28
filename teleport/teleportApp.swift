@@ -10,6 +10,7 @@ import Combine
 import SwiftUI
 
 final class TeleportAppDelegate: NSObject, NSApplicationDelegate {
+    let xrayVersion = XrayVersionModel()
     var cleanupHandler: ((@escaping () -> Void) -> Void)?
     private var isTerminationPending = false
     private var dockVisibilitySubscription: AnyCancellable?
@@ -27,6 +28,7 @@ final class TeleportAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         applyDockVisibility()
+        Task { await xrayVersion.load() }
     }
 
     func observeSettingsWindow(_ window: NSWindow) {
@@ -95,6 +97,7 @@ struct TeleportApp: App {
 
         Window("Settings", id: "settings") {
             SettingsView(viewModel: viewModel, navigation: $settingsNavigation)
+                .environmentObject(appDelegate.xrayVersion)
                 .focusedSceneValue(\.toggleSettingsSidebar) {
                     NSApplication.shared.sendAction(#selector(NSSplitViewController.toggleSidebar(_:)), to: nil, from: nil)
                 }
