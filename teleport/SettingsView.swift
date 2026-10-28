@@ -8,6 +8,7 @@ struct SettingsView: View {
     @Binding var navigation: SettingsNavigation
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var portalsState = PortalsState()
+    @State private var hasOpenedAbout = false
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             List(SettingsSection.sidebarSections, selection: Binding<SettingsSection?>(
@@ -35,7 +36,7 @@ struct SettingsView: View {
             .navigationSplitViewColumnWidth(SettingsSidebarLayout.sidebarWidth)
             .background(SettingsSidebarLayout())
         } detail: {
-            selectedSectionView
+            detailContent
                 .frame(minWidth: SettingsSidebarLayout.minimumDetailWidth)
                 .padding(.top, navigation.section == .portals || navigation.section == .splitTunneling ? 0 : 16)
                 .navigationTitle(navigation.section.title)
@@ -80,6 +81,25 @@ struct SettingsView: View {
         .frame(minHeight: SettingsSidebarLayout.minimumContentSize.height)
     }
 
+    // About has no page-scoped tasks. Retain its form after the first visit so
+    // returning does not reconstruct its controls and text-selection machinery.
+    @ViewBuilder
+    private var detailContent: some View {
+        ZStack {
+            if navigation.section != .about {
+                selectedSectionView
+            }
+            if navigation.section == .about || hasOpenedAbout {
+                AboutSettingsView()
+                    .opacity(navigation.section == .about ? 1 : 0)
+                    .allowsHitTesting(navigation.section == .about)
+                    .accessibilityHidden(navigation.section != .about)
+                    .disabled(navigation.section != .about)
+                    .onAppear { hasOpenedAbout = true }
+            }
+        }
+    }
+
     @ViewBuilder
     private var selectedSectionView: some View {
         switch navigation.section {
@@ -96,7 +116,7 @@ struct SettingsView: View {
         case .logs:
             LogsSettingsView()
         case .about:
-            AboutSettingsView()
+            EmptyView()
         }
     }
 }
