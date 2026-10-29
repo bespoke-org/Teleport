@@ -41,6 +41,7 @@ nonisolated struct XraySubscriptionProfileParser {
         switch proto {
         case "vless", "trojan", "hysteria": break
         case "shadowsocks": throw unsupported("Shadowsocks is not supported")
+        case "wireguard": throw unsupported("WireGuard Xray JSON subscriptions are not supported; use wireguard:// links")
         default: throw unsupported("Unsupported Xray outbound protocol")
         }
         try validateRouting(routing, outbounds: outbounds)

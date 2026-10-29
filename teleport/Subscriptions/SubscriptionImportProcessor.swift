@@ -66,6 +66,8 @@ nonisolated struct SubscriptionImportProcessor {
         case .unsupportedFlow: return "Unsupported VLESS flow"
         case .missingParameter: return "Missing required connection parameters"
         case .invalidUUID: return "Invalid VLESS user ID"
+        case .invalidWireGuardKey: return "Invalid WireGuard key"
+        case .multipleWireGuardPeers: return "WireGuard configurations with more than one peer are not supported"
         case .missingPassword: return "Missing Trojan password"
         case .invalidXrayJSON: return "Invalid Xray JSON configuration"
         case .invalidHysteria(let reason): return reason
