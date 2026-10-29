@@ -342,7 +342,16 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
             grpcServiceName ?? "",
             transportMode?.lowercased() ?? "",
             wireguard?.peerPublicKey ?? "",
-            wireguard?.addresses.joined(separator: ",") ?? ""
+            wireguard?.addresses.joined(separator: ",") ?? "",
+            // Peers at the same endpoint can have different credentials and
+            // routing behavior. Subscription deduplication must keep them all.
+            wireguard?.secretKey ?? "",
+            wireguard?.presharedKey ?? "",
+            wireguard?.allowedIPs.joined(separator: ",") ?? "",
+            wireguard.map { String($0.mtu ?? WireGuardParameters.defaultMTU) } ?? "",
+            wireguard?.reserved?.map(String.init).joined(separator: ",") ?? "",
+            wireguard?.persistentKeepalive.map(String.init) ?? "",
+            wireguard?.dnsServers.joined(separator: ",") ?? ""
         ]
         return components.joined(separator: "|")
     }
@@ -1021,7 +1030,7 @@ enum SubscriptionError: LocalizedError, Equatable {
         case .emptyPayload:
             return "Subscription did not contain any entries"
         case .unsupportedFormat:
-            return "Unsupported subscription format. Expected VLESS/Trojan links, Base64 links, or Xray JSON profiles."
+            return "Unsupported subscription format. Expected VLESS, Trojan, Hysteria 2 or WireGuard links, a Base64-encoded link list, or supported Xray JSON profiles."
         case .invalidJSON:
             return "Subscription contains malformed JSON"
         case let .noImportableEntries(summary):

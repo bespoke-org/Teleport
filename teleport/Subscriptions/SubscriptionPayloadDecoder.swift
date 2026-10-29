@@ -31,7 +31,10 @@ nonisolated struct SubscriptionPayloadDecoder {
     }
 
     private func decodeText(_ text: String) throws -> [SubscriptionCandidate]? {
-        if text.hasPrefix("{") || text.hasPrefix("[") {
+        // A wg-quick file starts with a section header, not a JSON array.
+        // Recognize it before JSON dispatch so it gets an actionable skip reason.
+        let containsWireGuardFile = WireGuardConfigurationParser.looksLikeConfigurationFile(text)
+        if !containsWireGuardFile && (text.hasPrefix("{") || text.hasPrefix("[")) {
             let json: Any
             do {
                 json = try JSONSerialization.jsonObject(with: Data(text.utf8))
@@ -58,18 +61,21 @@ nonisolated struct SubscriptionPayloadDecoder {
             }
         }
 
-        let links = text.split(whereSeparator: { $0.isNewline })
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { $0.range(of: "^[A-Za-z][A-Za-z0-9+.-]*://", options: .regularExpression) != nil }
-        guard !links.isEmpty else { return nil }
-        return links.map { link in
+        let candidates = text.split(whereSeparator: { $0.isNewline }).compactMap { line -> SubscriptionCandidate? in
+            let link = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if WireGuardConfigurationParser.looksLikeConfigurationFile(link) {
+                return .skipped("WireGuard configuration files are not supported in subscriptions; use wireguard:// links")
+            }
+            guard link.range(of: "^[A-Za-z][A-Za-z0-9+.-]*://", options: .regularExpression) != nil else { return nil }
             let scheme = link.components(separatedBy: "://")[0].lowercased()
             switch scheme {
-            case "vless", "trojan", "hysteria2", "hy2": return .link(link)
+            case "vless", "trojan", "hysteria2", "hy2", WireGuardConfigurationParser.scheme: return .link(link)
+            case "wg": return .skipped("Unsupported WireGuard link format; use wireguard:// links")
             case "hysteria": return .skipped("Hysteria 1 is not supported")
             case "ss": return .skipped("Shadowsocks is not supported")
             default: return .skipped("Unsupported subscription link protocol")
             }
         }
+        return candidates.isEmpty ? nil : candidates
     }
 }

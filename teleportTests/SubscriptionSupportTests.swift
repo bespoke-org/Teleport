@@ -57,6 +57,143 @@ final class SubscriptionSupportTests: XCTestCase {
         )
     }
 
+    // All keys here are synthetic byte patterns, unrelated to any server.
+    private func wireGuardLink(overrides: [String: String] = [:], privateKeyByte: UInt8 = 1, name: String = "Subscription WG") -> String {
+        var components = URLComponents()
+        components.scheme = "wireguard"
+        components.user = Data(repeating: privateKeyByte, count: 32).base64EncodedString()
+        components.host = "wg.example.com"
+        components.port = 51820
+        var query = [
+            "publickey": Data(repeating: 2, count: 32).base64EncodedString(),
+            "presharedkey": Data(repeating: 3, count: 32).base64EncodedString(),
+            "address": "172.16.0.2/32,fd00::2/128",
+            "allowedips": "0.0.0.0/0,::/0",
+            "dns": "10.0.0.1,fd00::1",
+            "mtu": "1380", "reserved": "1,2,3", "keepalive": "25",
+        ]
+        query.merge(overrides) { _, replacement in replacement }
+        components.queryItems = query.sorted { $0.key < $1.key }.map { URLQueryItem(name: $0.key, value: $0.value) }
+        components.fragment = name
+        return components.string!
+    }
+
+    func testMixedWireGuardPlainAndBase64Subscriptions() throws {
+        let link = wireGuardLink().replacingOccurrences(of: "wireguard://", with: "WIREGUARD://")
+        let payload = ([link] + sampleLinks() + ["hy2://synthetic-password@hy.example.com:443#HY"]).joined(separator: "\r\n")
+        let plain = try importPayload(Data(("\u{FEFF}\n" + payload).utf8))
+        let encoded = try importPayload(Data(Data(payload.utf8).base64EncodedString(options: .lineLength64Characters).utf8))
+        XCTAssertEqual(plain.importedEntries.map(\.configuration.protocolType), [.wireguard, .vless, .trojan, .hysteria])
+        XCTAssertEqual(encoded.importedEntries.map(\.configuration), plain.importedEntries.map(\.configuration))
+        XCTAssertEqual(plain.skippedCount, 0)
+        XCTAssertNil(plain.statusMessage)
+        let entry = try XCTUnwrap(plain.importedEntries.first)
+        XCTAssertEqual(entry.sourceEntryID, link)
+        XCTAssertEqual(entry.configuration.remarks, "Subscription WG")
+        XCTAssertEqual(entry.configuration.host, "wg.example.com")
+        XCTAssertEqual(entry.configuration.port, 51820)
+        XCTAssertEqual(entry.configuration.wireguard, WireGuardParameters(
+            secretKey: Data(repeating: 1, count: 32).base64EncodedString(),
+            peerPublicKey: Data(repeating: 2, count: 32).base64EncodedString(),
+            presharedKey: Data(repeating: 3, count: 32).base64EncodedString(),
+            addresses: ["172.16.0.2/32", "fd00::2/128"], allowedIPs: ["0.0.0.0/0", "::/0"],
+            mtu: 1380, reserved: [1, 2, 3], persistentKeepalive: 25, dnsServers: ["10.0.0.1", "fd00::1"]
+        ))
+    }
+
+    func testWireGuardInvalidAndUnsupportedSubscriptionEntries() throws {
+        let file = """
+        [Interface]
+        PrivateKey = synthetic-private-key
+        Address = 172.16.0.2/32
+        [Peer]
+        PublicKey = synthetic-peer-key
+        Endpoint = wg.example.com:51820
+        """
+        let invalidPrivateKey = wireGuardLink().replacingOccurrences(
+            of: Data(repeating: 1, count: 32).base64EncodedString(), with: "synthetic-private-key"
+        )
+        let payload = ([file, wireGuardLink(), invalidPrivateKey,
+            wireGuardLink(overrides: ["publickey": "synthetic-peer-key"]),
+            wireGuardLink(overrides: ["presharedkey": "synthetic-preshared-key"]),
+            wireGuardLink(overrides: ["address": ""]),
+            "wg://synthetic-private-key@wg.example.com:51820"] + sampleLinks()).joined(separator: "\n")
+        for data in [Data(payload.utf8), Data(Data(payload.utf8).base64EncodedString().utf8)] {
+            let result = try importPayload(data)
+            XCTAssertEqual(result.importedEntries.count, 3)
+            XCTAssertEqual(result.skippedCount, 6)
+            XCTAssertEqual(result.skippedReasons["Invalid WireGuard key"], 3)
+            XCTAssertEqual(result.skippedReasons["Missing required connection parameters"], 1)
+            let status = try XCTUnwrap(result.statusMessage)
+            XCTAssertTrue(status.contains("WireGuard configuration files"))
+            XCTAssertTrue(status.contains("Unsupported WireGuard link format"))
+            for secret in ["synthetic-private-key", "synthetic-peer-key", "synthetic-preshared-key", "wg.example.com",
+                Data(repeating: 3, count: 32).base64EncodedString()] {
+                XCTAssertFalse(status.contains(secret), "Skip messages must not include provider values")
+            }
+        }
+
+        var json = try changingProxy { $0["protocol"] = "wireguard" }
+        json["remarks"] = "synthetic-private-key"
+        let mixedJSON = try importJSON([try xrayProfile(), json])
+        XCTAssertEqual(mixedJSON.skippedReasons["WireGuard Xray JSON subscriptions are not supported; use wireguard:// links"], 1)
+        XCTAssertFalse(mixedJSON.statusMessage!.contains("synthetic-private-key"))
+        for unsupported in [file, "wg://synthetic-private-key@wg.example.com:51820", invalidPrivateKey] {
+            for data in [Data(unsupported.utf8), Data(Data(unsupported.utf8).base64EncodedString().utf8)] {
+                XCTAssertThrowsError(try importPayload(data)) { error in
+                    guard case SubscriptionError.noImportableEntries(let message) = error else {
+                        return XCTFail("Expected a skip summary for unsupported WireGuard input")
+                    }
+                    XCTAssertTrue(message.contains("WireGuard"))
+                    XCTAssertFalse(message.contains("synthetic-private-key"))
+                }
+            }
+        }
+    }
+
+    func testWireGuardSubscriptionDeduplicationPreservesPeerSettings() throws {
+        let variants = [
+            wireGuardLink(), wireGuardLink(privateKeyByte: 4),
+            wireGuardLink(overrides: ["publickey": Data(repeating: 5, count: 32).base64EncodedString()]),
+            wireGuardLink(overrides: ["presharedkey": Data(repeating: 6, count: 32).base64EncodedString()]),
+            wireGuardLink(overrides: ["address": "172.16.0.3/32"]),
+            wireGuardLink(overrides: ["allowedips": "10.0.0.0/8"]), wireGuardLink(overrides: ["dns": "10.0.0.2"]),
+            wireGuardLink(overrides: ["mtu": "1420"]), wireGuardLink(overrides: ["reserved": "4,5,6"]),
+            wireGuardLink(overrides: ["keepalive": "30"]),
+        ]
+        let payload = Data((variants + [wireGuardLink(), wireGuardLink(name: "Renamed WG")]).joined(separator: "\n").utf8)
+        let filtered = try importPayload(payload)
+        XCTAssertEqual(filtered.importedEntries.count, variants.count)
+        XCTAssertEqual(filtered.skippedCount, 0)
+        let unfiltered = try importPayload(payload, filterDuplicates: false)
+        XCTAssertEqual(unfiltered.importedEntries.count, variants.count + 1, "Exact repeats still share one source identity")
+    }
+
+    func testWireGuardSubscriptionPersistenceAndRefresh() throws {
+        let link = wireGuardLink()
+        let initial = try importPayload(Data(link.utf8))
+        let entry = try XCTUnwrap(initial.importedEntries.first)
+        let sourceID = UUID()
+        let saved = SavedConnection(
+            id: UUID(), configuration: entry.configuration, savedAt: Date(timeIntervalSince1970: 100),
+            source: ConnectionSourceMetadata(subscriptionSourceID: sourceID, subscriptionEntryID: entry.sourceEntryID),
+            healthCheck: ConnectionHealthCheck(state: .reachable, checkedAt: Date(timeIntervalSince1970: 200),
+                latencyMilliseconds: 42, latencyKind: .tcpConnect, failureSummary: nil), customName: "My WG"
+        )
+        let snapshot = AppSnapshot(savedConnections: [saved], subscriptionSources: [], selectedConnectionID: saved.id, proxyEndpoint: .default)
+        let restored = try JSONDecoder().decode(AppSnapshot.self, from: JSONEncoder().encode(snapshot))
+        XCTAssertEqual(restored.savedConnections, [saved])
+        let reparsed = try ConnectionLinkParser().parse(restored.savedConnections[0].configuration.rawLink)
+        XCTAssertEqual(reparsed, entry.configuration)
+        let refreshed = try importPayload(Data(Data(("  " + link + "\n").utf8).base64EncodedString().utf8))
+        let replacement = SubscriptionConnectionReconciler().reconcile(
+            existingConnections: restored.savedConnections, sourceID: sourceID, selectedConnectionID: restored.selectedConnectionID,
+            importedEntries: refreshed.importedEntries, fetchedAt: Date(timeIntervalSince1970: 300), autoSelectFirstImported: false
+        )
+        XCTAssertEqual(replacement.selectedConnectionID, saved.id)
+        XCTAssertEqual(replacement.savedConnections, [saved], "Refresh must retain keys, peer/resolver settings, source, name and health")
+    }
+
     private func changingProxy(_ update: (inout [String: Any]) -> Void) throws -> [String: Any] {
         var profile = try xrayProfile()
         var outbounds = profile["outbounds"] as! [[String: Any]]
