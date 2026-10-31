@@ -5,6 +5,7 @@ import Foundation
 nonisolated final class ConnectionStateStore: @unchecked Sendable {
     private let lock = NSLock()
     private var state: ConnectionState
+    private var reconnectFailure: ConnectionFailure?
     private var continuations: [UUID: AsyncStream<ConnectionState>.Continuation] = [:]
 
     init(initialState: ConnectionState) {
@@ -20,12 +21,20 @@ nonisolated final class ConnectionStateStore: @unchecked Sendable {
     func update(_ state: ConnectionState) {
         lock.lock()
         self.state = state
+        if case .failed(let failure) = state, failure.requiresExplicitReconnect { reconnectFailure = failure }
         let currentContinuations = Array(continuations.values)
         lock.unlock()
 
         for continuation in currentContinuations {
             continuation.yield(state)
         }
+    }
+
+    func validateReconnect(isAutomatic: Bool) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        if isAutomatic, let reconnectFailure { throw reconnectFailure }
+        if !isAutomatic { reconnectFailure = nil }
     }
 
     func stream() -> AsyncStream<ConnectionState> {

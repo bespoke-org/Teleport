@@ -8,12 +8,12 @@ struct SystemProxyConnectionProvider: ConnectionProvider, Sendable {
         self.coordinator = coordinator
     }
 
-    init() {
+    init(proxyService: SystemProxyService = .shared) {
         coordinator = BackendConnectionProvider(
             mode: .systemProxy,
             backend: SystemProxyConnectionBackend(
                 runtimeManager: XrayRuntimeManager(),
-                proxyService: SystemProxyService()
+                proxyService: proxyService
             )
         )
     }

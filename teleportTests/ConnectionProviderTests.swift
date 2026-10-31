@@ -1,5 +1,5 @@
-import Foundation
 import Combine
+import Foundation
 import XCTest
 
 final class ConnectionProviderTests: XCTestCase {
@@ -588,10 +588,10 @@ final class ConnectionProviderTests: XCTestCase {
 
         // One missed check is not a lost runtime: the check runs over XPC and the
         // first one after a wake can miss its deadline with Xray alive.
-        backend.setRuntimeActive(false)
-        await waitUntil("the supervisor checks the runtime") { backend.inactiveRuntimeChecks() >= 1 }
-        backend.setRuntimeActive(true)
-        XCTAssert(backend.inactiveRuntimeChecks() == 1, "the runtime was checked \(backend.inactiveRuntimeChecks()) times while inactive")
+        let previousInactiveChecks = backend.inactiveRuntimeChecks()
+        backend.missNextRuntimeCheck()
+        await waitUntil("the supervisor checks the runtime") { backend.inactiveRuntimeChecks() > previousInactiveChecks }
+        XCTAssertEqual(backend.inactiveRuntimeChecks(), previousInactiveChecks + 1)
         try await Task.sleep(nanoseconds: 200_000_000)
         let afterOneMissState = await provider.currentState()
         XCTAssert(stateLabels([afterOneMissState]) == ["connected"], "one missed check failed the session")
@@ -626,7 +626,7 @@ final class ConnectionProviderTests: XCTestCase {
 
         let startStates = await startReader.value
         XCTAssert(stateLabels(startStates) == ["idle", "preparing", "connecting", "failed"])
-        guard case let .failed(failure) = startStates.last else {
+        guard case .failed(let failure) = startStates.last else {
             XCTFail("expected failed terminal state")
             return
         }
@@ -648,11 +648,92 @@ final class ConnectionProviderTests: XCTestCase {
 
         let stopStates = await stopReader.value
         XCTAssert(stateLabels(stopStates) == ["connected", "disconnecting", "failed"])
-        guard case let .failed(failure) = stopStates.last else {
+        guard case .failed(let failure) = stopStates.last else {
             XCTFail("expected failed terminal state")
             return
         }
         XCTAssert(failure.summary == TestError.stopFailed.localizedDescription)
+    }
+
+    func testProxyConflictNotificationStopsSessionAndBlocksAutomaticReconnect() async throws {
+        let backend = RecordingConnectionBackend()
+        let provider = BackendConnectionProvider(mode: .systemProxy, backend: backend, supervisionInterval: 60)
+        await awaitInitialState(provider)
+        backend.setRuntimeActive(true)
+        try await provider.connect(try makeRequest())
+        let failure = ConnectionFailure(summary: "Proxy changed", details: "External settings preserved", requiresExplicitReconnect: true)
+        backend.setSessionFailure(failure)
+        await waitUntil("conflict is reported") { await provider.currentState() == .failed(failure) }
+        await waitUntil("conflict tears down") { backend.recordedCalls().contains("stop") }
+        // A late queued disconnect cannot erase the provider's reconnect fence.
+        try await provider.disconnect()
+        backend.setSessionFailure(nil)
+        var automatic = try makeRequest()
+        automatic.isAutomaticReconnect = true
+        do {
+            try await provider.connect(automatic)
+            XCTFail("automatic reconnect must not reclaim settings")
+        } catch { XCTAssertEqual(error as? ConnectionFailure, failure) }
+        XCTAssertEqual(backend.recordedCalls().filter { $0 == "start" }.count, 1)
+        try await provider.connect(try makeRequest())
+        XCTAssertEqual(backend.recordedCalls().filter { $0 == "start" }.count, 2)
+        try await provider.disconnect()
+    }
+
+    func testProxyConflictPollingFallbackAndCleanupFailure() async throws {
+        let backend = RecordingConnectionBackend()
+        let provider = BackendConnectionProvider(mode: .tun, backend: backend, supervisionInterval: 0.02)
+        await awaitInitialState(provider)
+        backend.setRuntimeActive(true)
+        try await provider.connect(try makeRequest())
+        backend.stopError = TestError.stopFailed
+        backend.setSessionFailure(
+            ConnectionFailure(summary: "Network location changed", details: "Reconnect explicitly", requiresExplicitReconnect: true), notify: false)
+        await waitUntil("cleanup failure reported") {
+            guard case .failed(let failure) = await provider.currentState() else { return false }
+            return failure.requiresExplicitReconnect && (failure.details?.contains("Injected stop failure") == true)
+        }
+        backend.stopError = nil
+        try await provider.disconnect()
+    }
+
+    func testConflictDuringStartNeverPublishesConnected() async throws {
+        let backend = RecordingConnectionBackend()
+        let provider = BackendConnectionProvider(mode: .systemProxy, backend: backend, supervisionInterval: 60)
+        await awaitInitialState(provider)
+        let failure = ConnectionFailure(summary: "Proxy changed during start", details: nil, requiresExplicitReconnect: true)
+        backend.setSessionFailure(failure)
+        do {
+            try await provider.connect(try makeRequest())
+            XCTFail("must reject a start with conflicting proxy settings")
+        } catch { XCTAssertEqual(error as? ConnectionFailure, failure) }
+        let state = await provider.currentState()
+        XCTAssertEqual(state, .failed(failure))
+        XCTAssertEqual(backend.recordedCalls(), ["start", "stop"])
+    }
+
+    @MainActor
+    func testConflictRemainsVisibleAndExplicitConnectCanRetry() async throws {
+        let root = try makeIsolatedRoot("proxy-conflict")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let backend = RecordingConnectionBackend()
+        let (model, store) = try makeLaunchFixture(root: root, mode: .tun, enabled: false, backend: backend)
+        defer { store.deleteStoredDataForTesting() }
+        await waitUntil("ready") { await MainActor.run { model.canConnect } }
+        backend.setRuntimeActive(true)
+        model.connect()
+        await waitUntil("connected") { await MainActor.run { model.isConnected && !model.isOperationPending } }
+        let failure = ConnectionFailure(summary: "Proxy changed", details: "External change kept", requiresExplicitReconnect: true)
+        backend.setSessionFailure(failure)
+        await waitUntil("visible conflict") { await MainActor.run { model.connectionError == failure } }
+        XCTAssertFalse(model.isConnected)
+        XCTAssertTrue(model.canConnect)
+        backend.setSessionFailure(nil)
+        model.connect()
+        await waitUntil("explicit retry connects") { await MainActor.run { model.isConnected && !model.isOperationPending } }
+        XCTAssertNil(model.connectionError)
+        model.disconnect()
+        await waitUntil("stopped") { await MainActor.run { model.connectionState == .idle } }
     }
 
     func testProviderSerializesConcurrentConnects() async throws {
@@ -1013,6 +1094,9 @@ final class ConnectionProviderTests: XCTestCase {
         var hasRestorableStateValue = false
         var hasActiveRuntimeSessionValue = false
         private var inactiveChecks = 0
+        private var missOneRuntimeCheck = false
+        private var failure: ConnectionFailure?
+        private var changeContinuation: AsyncStream<Void>.Continuation?
         /// Stands in for a pre-flight that polls for cancellation.
         var startObservesCancellation = false
         let startGate = Gate()
@@ -1021,11 +1105,41 @@ final class ConnectionProviderTests: XCTestCase {
         let stopGate = Gate()
 
         func hasRestorableState() -> Bool { hasRestorableStateValue }
+        func sessionFailure() async -> ConnectionFailure? { readFailure() }
+        private func readFailure() -> ConnectionFailure? {
+            lock.lock()
+            defer { lock.unlock() }
+            return failure
+        }
+        func sessionChanges() -> AsyncStream<Void> {
+            lock.lock()
+            defer { lock.unlock() }
+            let (stream, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+            changeContinuation = continuation
+            return stream
+        }
+        func setSessionFailure(_ failure: ConnectionFailure?, notify: Bool = true) {
+            lock.lock()
+            self.failure = failure
+            if notify { changeContinuation?.yield(()) }
+            lock.unlock()
+        }
         func hasActiveRuntimeSession() -> Bool {
             lock.lock()
             defer { lock.unlock() }
+            if missOneRuntimeCheck {
+                missOneRuntimeCheck = false
+                inactiveChecks += 1
+                return false
+            }
             if !hasActiveRuntimeSessionValue { inactiveChecks += 1 }
             return hasActiveRuntimeSessionValue
+        }
+
+        func missNextRuntimeCheck() {
+            lock.lock()
+            missOneRuntimeCheck = true
+            lock.unlock()
         }
 
         /// How many checks have found the runtime inactive.

@@ -4,7 +4,7 @@ import Foundation
 /// Geodata is delivered separately through the authenticated session request, so
 /// updating routing data does not require another administrator approval. This path
 /// runs only when installed executable content differs or the helper is
-/// unavailable; ordinary TUN lifecycle commands use `PrivilegedHelperClient`.
+/// unavailable; ordinary proxy and TUN lifecycle commands use `PrivilegedHelperClient`.
 nonisolated struct PrivilegedHelperInstaller: Sendable {
     /// Where the LaunchDaemon sends the helper's stdout and stderr. Removed by
     /// `PrivilegedHelperUninstaller` along with the rest of the installation.
@@ -133,9 +133,9 @@ nonisolated struct PrivilegedHelperInstaller: Sendable {
 
     private var administratorPrompt: String {
         """
-        Teleport needs administrator access to install or update its privileged helper for TUN mode.
+        Teleport needs administrator access to install or update its privileged helper.
 
-        The helper lets Teleport start and stop Xray TUN and configure system routing. Your password is only used by macOS to approve this build and its privileged helper. A changed build needs approval again.
+        The helper lets Teleport update and restore system proxy settings, start and stop Xray TUN, and configure system routing. Your password is only used by macOS to approve this build and its privileged helper. A changed build needs approval again.
         """
     }
 
