@@ -69,11 +69,16 @@ jobs:
           This build is signed ad hoc, not with a Developer ID, so macOS blocks it after download. Move Teleport.app to /Applications and run `xattr -d com.apple.quarantine /Applications/Teleport.app`, or open it once and allow it in System Settings > Privacy & Security. TUN mode asks for the administrator password on the first connect and again after every update, because the helper approves this exact build.
           EOF
 
-      - name: Publish the release
+      - name: Publish or update the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           flags=()
           [[ "$TAG" == *-* ]] && flags+=(--prerelease)
-          gh release create "$TAG" "build/dist/Teleport-$VERSION.dmg" "build/dist/Teleport-$VERSION.zip" \
-            --title "Teleport ${TAG#v}" --notes-file notes.md --verify-tag "${flags[@]}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "Teleport ${TAG#v}" --notes-file notes.md "${flags[@]}"
+            gh release upload "$TAG" "build/dist/Teleport-$VERSION.dmg" "build/dist/Teleport-$VERSION.zip" --clobber
+          else
+            gh release create "$TAG" "build/dist/Teleport-$VERSION.dmg" "build/dist/Teleport-$VERSION.zip" \
+              --title "Teleport ${TAG#v}" --notes-file notes.md --verify-tag "${flags[@]}"
+          fi

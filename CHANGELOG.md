@@ -3,6 +3,33 @@
 Format is based on [_Keep a changelog_](https://keepachangelog.com) and uses
 [_Semantic versioning_](https://semver.org).
 
+## [0.5.0] - 2026-10-31
+### Features
+- Reorganize settings navigation and preferences
+- Redesign connection management as Portals
+- Redesign Logs under Nerd Shit settings
+- Simplify Geodata settings and cache source downloads
+- Refine Split Routing rules and route preview
+- Refine settings navigation and toolbar shortcuts
+- Add native menu bar context menu
+- Refine About links and Diagnostics settings
+- Import WireGuard profiles from subscriptions
+
+### Bug fixes
+- Keep portal health labels concise and consistent
+- Coordinate geodata updates and allow quit during uninstall
+- Show connection failures beside the Portals power button
+- Remove connect button from Portals page
+- Keep settings navigation and glass toolbar controls stable
+- Preload About metadata and retain its form
+
+### Documentation
+- Rely on CI checks instead of a local just test before a release
+- Remove WireGuard subscription guide
+
+### Build
+- Set the app version to 0.5.0
+
 ## [0.4.0] - 2026-10-25
 ### Added
 - Split tunneling: destination rules, geosite category rules, custom geosite/geoip sources, named profiles with a per-profile default action, and a rule tester that matches against geodata. A rule can name the connection its traffic leaves through, and a session dials every connection the active rules route through.
