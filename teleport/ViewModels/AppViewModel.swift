@@ -1873,23 +1873,25 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private func refreshSubscription(id: UUID, autoSelectFirstImported: Bool) {
+    // Automatic refreshes keep diagnostics on the source and leave the menu's
+    // error alone, whether they start, succeed, or fail.
+    private func refreshSubscription(id: UUID, autoSelectFirstImported: Bool, reportsErrors: Bool = true) {
         guard let source = subscriptionSources.first(where: { $0.id == id }) else { return }
         if isSubscriptionInUse(id: id) {
-            setStoredError("Disconnect before refreshing the active subscription")
+            if reportsErrors { setStoredError("Disconnect before refreshing the active subscription") }
             return
         }
 
-        startSubscriptionRefresh(for: source, autoSelectFirstImported: autoSelectFirstImported)
+        startSubscriptionRefresh(for: source, autoSelectFirstImported: autoSelectFirstImported, reportsErrors: reportsErrors)
     }
 
-    private func startSubscriptionRefresh(for source: SubscriptionSource, autoSelectFirstImported: Bool) {
+    private func startSubscriptionRefresh(for source: SubscriptionSource, autoSelectFirstImported: Bool, reportsErrors: Bool) {
         refreshingSubscriptionIDs.insert(source.id)
         updateSubscriptionSource(source.id) {
             $0.lastError = nil
         }
-        setStoredError(nil)
-        persistSettingError()
+        if reportsErrors { setStoredError(nil) }
+        persistSettingError(reportsErrors: reportsErrors)
 
         let parser = parser
         let subscriptionClient = subscriptionClient
@@ -1914,15 +1916,16 @@ final class AppViewModel: ObservableObject {
                     importStatus: importResult.statusMessage,
                     to: source.id,
                     fetchedAt: Date(),
-                    autoSelectFirstImported: autoSelectFirstImported
+                    autoSelectFirstImported: autoSelectFirstImported,
+                    reportsErrors: reportsErrors
                 )
             } catch {
                 self?.refreshingSubscriptionIDs.remove(source.id)
                 self?.updateSubscriptionSource(source.id) {
                     $0.lastError = error.localizedDescription
                 }
-                self?.applyStoredError(error)
-                self?.persistSettingError()
+                if reportsErrors { self?.applyStoredError(error) }
+                self?.persistSettingError(reportsErrors: reportsErrors)
             }
         }
     }
@@ -1947,15 +1950,16 @@ final class AppViewModel: ObservableObject {
         importStatus: String?,
         to sourceID: UUID,
         fetchedAt: Date,
-        autoSelectFirstImported: Bool
+        autoSelectFirstImported: Bool,
+        reportsErrors: Bool
     ) {
         if isSubscriptionInUse(id: sourceID) {
             refreshingSubscriptionIDs.remove(sourceID)
             updateSubscriptionSource(sourceID) {
                 $0.lastError = "Disconnect before refreshing the active subscription"
             }
-            setStoredError("Disconnect before refreshing the active subscription")
-            persistSettingError()
+            if reportsErrors { setStoredError("Disconnect before refreshing the active subscription") }
+            persistSettingError(reportsErrors: reportsErrors)
             return
         }
 
@@ -1986,9 +1990,9 @@ final class AppViewModel: ObservableObject {
         }
 
         refreshingSubscriptionIDs.remove(sourceID)
-        setStoredError(nil)
+        if reportsErrors { setStoredError(nil) }
         updateMenuBarAnimation()
-        persistSettingError()
+        persistSettingError(reportsErrors: reportsErrors)
         refreshSubscriptionHealth(id: sourceID, force: true)
     }
 
@@ -2031,7 +2035,7 @@ final class AppViewModel: ObservableObject {
     private func refreshUnfetchedSubscriptionsIfNeeded() {
         let shouldAutoSelectFirstImported = savedConnections.isEmpty
         for source in subscriptionSources where source.lastRefreshedAt == nil && !refreshingSubscriptionIDs.contains(source.id) {
-            refreshSubscription(id: source.id, autoSelectFirstImported: shouldAutoSelectFirstImported)
+            refreshSubscription(id: source.id, autoSelectFirstImported: shouldAutoSelectFirstImported, reportsErrors: false)
         }
     }
 
@@ -2050,7 +2054,7 @@ final class AppViewModel: ObservableObject {
                 continue
             }
 
-            refreshSubscription(id: source.id, autoSelectFirstImported: false)
+            refreshSubscription(id: source.id, autoSelectFirstImported: false, reportsErrors: false)
         }
     }
 
@@ -2198,11 +2202,12 @@ final class AppViewModel: ObservableObject {
         // publications that re-render the entire menu/settings UI while connected.
     }
 
-    private func persistSettingError() {
+    private func persistSettingError(reportsErrors: Bool = true) {
         do {
             try persist()
         } catch {
-            setStoredError(error.localizedDescription)
+            if reportsErrors { setStoredError(error.localizedDescription) }
+            else { log.error(Self.subsystem, "background save failed: \(LogFormat.error(error))") }
         }
     }
 

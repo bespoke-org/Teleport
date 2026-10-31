@@ -4,6 +4,34 @@ import XCTest
 
 final class ConnectionProviderTests: XCTestCase {
     @MainActor
+    func testBackgroundSubscriptionFailureStaysOnSourceWhileManualRefreshReportsIt() async throws {
+        let root = try makeIsolatedRoot("background-subscription-error")
+        defer { try? FileManager.default.removeItem(at: root) }
+        // Invalid URL fails before any network request, including at launch.
+        let source = SubscriptionSource(id: UUID(), urlString: "http://[", title: "Test", savedAt: Date())
+        let (model, store) = try makeLaunchFixture(
+            root: root, mode: .systemProxy, enabled: false,
+            backend: RecordingConnectionBackend(), hasConnections: false, subscriptionSources: [source]
+        )
+        defer { store.deleteStoredDataForTesting() }
+        model.reportImportFailure("An unrelated manual error")
+        await waitUntil("background refresh finishes") {
+            await MainActor.run { !model.refreshingSubscriptionIDs.contains(source.id) }
+        }
+        XCTAssertNotNil(model.subscriptionSources.first?.lastError)
+        XCTAssertEqual(model.lastError, "An unrelated manual error")
+        XCTAssertNil(model.connectionError)
+
+        model.clearError()
+        model.refreshSubscription(id: source.id)
+        await waitUntil("manual refresh finishes") {
+            await MainActor.run { !model.refreshingSubscriptionIDs.contains(source.id) }
+        }
+        XCTAssertEqual(model.lastError, SubscriptionError.invalidURL.localizedDescription)
+        XCTAssertEqual(model.subscriptionSources.first?.lastError, model.lastError)
+    }
+
+    @MainActor
     func testSettingsStatusRefreshDoesNotPublishUnchangedValues() throws {
         let root = try makeIsolatedRoot("settings-status")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -226,7 +254,7 @@ final class ConnectionProviderTests: XCTestCase {
     @MainActor
     private func makeLaunchFixture(
         root: URL, mode: ConnectionMode, enabled: Bool,
-        backend: RecordingConnectionBackend, hasConnections: Bool = true
+        backend: RecordingConnectionBackend, hasConnections: Bool = true, subscriptionSources: [SubscriptionSource] = []
     ) throws -> (AppViewModel, ConfigurationStore) {
         let fileManager = TempFileManager(root: root)
         let log = TeleportLog(directoryURL: root, fileName: "verify.log")
@@ -241,7 +269,7 @@ final class ConnectionProviderTests: XCTestCase {
             return SavedConnection(id: UUID(), configuration: configuration, savedAt: Date())
         }
         try store.save(AppSnapshot(
-            savedConnections: connections, selectedConnectionID: connections.last?.id,
+            savedConnections: connections, subscriptionSources: subscriptionSources, selectedConnectionID: connections.last?.id,
             proxyEndpoint: .default, connectionMode: mode, connectsOnLaunch: enabled
         ))
         let provider = BackendConnectionProvider(mode: mode, backend: backend, supervisionInterval: 60)

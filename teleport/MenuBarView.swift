@@ -21,6 +21,10 @@ struct MenuBarView: View {
         }
         .padding(14)
         .frame(width: 280)
+        .onDisappear {
+            viewModel.dismissConnectionError()
+            viewModel.clearError()
+        }
     }
 
     private var header: some View {
