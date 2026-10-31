@@ -21,6 +21,38 @@ nonisolated struct PrivilegedHelperClient: Sendable {
         self.transport = transport
     }
 
+    func readProxyPreferences() async throws -> ProxyPreferencesSnapshot {
+        do {
+            let response: TUNHelperResponseEnvelope<ProxyPreferencesSnapshot> = try await exchange(
+                command: .readProxyPreferences, requestID: UUID(), sessionID: nil,
+                payload: ReadProxyPreferencesRequest(), timeout: 15, responseSessionRule: .absent)
+            guard let inventory = response.payload else {
+                throw PrivilegedHelperClientError.invalidResponse("The helper returned no proxy inventory")
+            }
+            return inventory
+        } catch { throw mapClientError(error) }
+    }
+
+    func applyProxyPreferences(_ request: ApplyProxyPreferencesRequest) async throws {
+        do {
+            let response: TUNHelperResponseEnvelope<ApplyProxyPreferencesResponse> = try await exchange(
+                command: .applyProxyPreferences, requestID: UUID(), sessionID: nil,
+                payload: request, timeout: 15, responseSessionRule: .absent)
+            guard let payload = response.payload else {
+                throw PrivilegedHelperClientError.invalidResponse("The helper returned no proxy update result")
+            }
+            guard payload.applied else {
+                throw ConnectionFailure(summary: "System proxy settings changed outside Teleport",
+                                        details: SystemProxyError.preferencesChanged.localizedDescription,
+                                        requiresExplicitReconnect: true)
+            }
+        } catch {
+            // Do not replay an uncertain write. The journal remains on disk and
+            // recovery starts with a serialized helper read, behind that write.
+            throw mapClientError(error)
+        }
+    }
+
     func status() async throws -> PrivilegedHelperStatus {
         let requestID = UUID()
         do {

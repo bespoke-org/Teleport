@@ -43,6 +43,14 @@
 		C2A500282FB1000000CCB832 /* TUNHelperMessages.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2F100152F98000000CCB832 /* TUNHelperMessages.swift */; };
 		C2A500292FB1000000CCB832 /* TUNHelperProtocolError.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2F100182F98000000CCB832 /* TUNHelperProtocolError.swift */; };
 		C2A5002A2FB1000000CCB832 /* TUNHelperXPCProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2F100122F98000000CCB832 /* TUNHelperXPCProtocol.swift */; };
+		A04300000000000000000001 /* ProxyConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = A04300000000000000000000 /* ProxyConfiguration.swift */; };
+		A04300000000000000000002 /* ProxyConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = A04300000000000000000000 /* ProxyConfiguration.swift */; };
+		A04300000000000000000003 /* ProxyConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = A04300000000000000000000 /* ProxyConfiguration.swift */; };
+		A04300000000000000000004 /* ProxyConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = A04300000000000000000000 /* ProxyConfiguration.swift */; };
+		A04300010000000000000001 /* SystemProxyPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = A04300010000000000000000 /* SystemProxyPreferences.swift */; };
+		A04300010000000000000002 /* SystemProxyPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = A04300010000000000000000 /* SystemProxyPreferences.swift */; };
+		A04300010000000000000003 /* SystemProxyPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = A04300010000000000000000 /* SystemProxyPreferences.swift */; };
+		A04300010000000000000004 /* SystemProxyPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = A04300010000000000000000 /* SystemProxyPreferences.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -78,6 +86,8 @@
 		C2C0F1022FAB000000CCB832 /* Local.xcconfig.example */ = {isa = PBXFileReference; lastKnownFileType = text; path = Local.xcconfig.example; sourceTree = "<group>"; };
 		C2A500012FB1000000CCB832 /* teleportTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = teleportTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C2A500022FB1000000CCB832 /* TeleportPrivilegedHelperTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TeleportPrivilegedHelperTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A04300000000000000000000 /* ProxyConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProxyConfiguration.swift; sourceTree = "<group>"; };
+		A04300010000000000000000 /* SystemProxyPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemProxyPreferences.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -211,6 +221,8 @@
 				C2F100302F98000000CCB832 /* LeakGuardRuleset.swift */,
 				C2F100332F98000000CCB832 /* HelperInstallationManifest.swift */,
 				C2F1001B2F98000000CCB832 /* NetworkInterfaceInventory.swift */,
+				A04300000000000000000000 /* ProxyConfiguration.swift */,
+				A04300010000000000000000 /* SystemProxyPreferences.swift */,
 				C2F100152F98000000CCB832 /* TUNHelperMessages.swift */,
 				C2F100182F98000000CCB832 /* TUNHelperProtocolError.swift */,
 				C2F100122F98000000CCB832 /* TUNHelperXPCProtocol.swift */,
@@ -461,6 +473,8 @@
 				C2F100312F98000000CCB832 /* LeakGuardRuleset.swift in Sources */,
 				C2F100342F98000000CCB832 /* HelperInstallationManifest.swift in Sources */,
 				C2F1001D2F98000000CCB832 /* NetworkInterfaceInventory.swift in Sources */,
+				A04300000000000000000001 /* ProxyConfiguration.swift in Sources */,
+				A04300010000000000000001 /* SystemProxyPreferences.swift in Sources */,
 				C2F100172F98000000CCB832 /* TUNHelperMessages.swift in Sources */,
 				C2F1001A2F98000000CCB832 /* TUNHelperProtocolError.swift in Sources */,
 				C2F100142F98000000CCB832 /* TUNHelperXPCProtocol.swift in Sources */,
@@ -477,6 +491,8 @@
 				C2F100322F98000000CCB832 /* LeakGuardRuleset.swift in Sources */,
 				C2F100352F98000000CCB832 /* HelperInstallationManifest.swift in Sources */,
 				C2F1001C2F98000000CCB832 /* NetworkInterfaceInventory.swift in Sources */,
+				A04300000000000000000002 /* ProxyConfiguration.swift in Sources */,
+				A04300010000000000000002 /* SystemProxyPreferences.swift in Sources */,
 				C2F100162F98000000CCB832 /* TUNHelperMessages.swift in Sources */,
 				C2F100192F98000000CCB832 /* TUNHelperProtocolError.swift in Sources */,
 				C2F100132F98000000CCB832 /* TUNHelperXPCProtocol.swift in Sources */,
@@ -493,6 +509,8 @@
 				C2A5001C2FB1000000CCB832 /* LeakGuardRuleset.swift in Sources */,
 				C2A5001D2FB1000000CCB832 /* HelperInstallationManifest.swift in Sources */,
 				C2A5001E2FB1000000CCB832 /* NetworkInterfaceInventory.swift in Sources */,
+				A04300000000000000000003 /* ProxyConfiguration.swift in Sources */,
+				A04300010000000000000003 /* SystemProxyPreferences.swift in Sources */,
 				C2A5001F2FB1000000CCB832 /* TUNHelperMessages.swift in Sources */,
 				C2A500202FB1000000CCB832 /* TUNHelperProtocolError.swift in Sources */,
 				C2A500212FB1000000CCB832 /* TUNHelperXPCProtocol.swift in Sources */,
@@ -509,6 +527,8 @@
 				C2A500252FB1000000CCB832 /* LeakGuardRuleset.swift in Sources */,
 				C2A500262FB1000000CCB832 /* HelperInstallationManifest.swift in Sources */,
 				C2A500272FB1000000CCB832 /* NetworkInterfaceInventory.swift in Sources */,
+				A04300000000000000000004 /* ProxyConfiguration.swift in Sources */,
+				A04300010000000000000004 /* SystemProxyPreferences.swift in Sources */,
 				C2A500282FB1000000CCB832 /* TUNHelperMessages.swift in Sources */,
 				C2A500292FB1000000CCB832 /* TUNHelperProtocolError.swift in Sources */,
 				C2A5002A2FB1000000CCB832 /* TUNHelperXPCProtocol.swift in Sources */,

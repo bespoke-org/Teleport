@@ -23,6 +23,16 @@ Builds Xray JSON for System Proxy and TUN sessions. It does not launch processes
 
 Owns the unprivileged System Proxy provider, its transitional backend, the user-level Xray process, and macOS proxy settings.
 
+`SystemProxyService` is the shared, serialized owner of proxy takeover and recovery
+for both modes and deferred recovery. `HelperProxyPreferences` sends typed requests
+to the approved helper. Shared `SystemProxyPreferences` provides read-only inventory
+and observation in the app, and locked preference writes in the helper.
+`ProxyJournalStore` retains durable recovery records keyed by service ID and holds
+an interprocess lock while a session owns settings. Proxy changes are observed
+through preference notifications with periodic provider checks as a fallback.
+Conflicts reach the provider as typed failures requiring an explicit reconnect.
+See [proxy recovery](proxy-recovery.md) for the conflict and upgrade policy.
+
 ### `teleport/TUN`
 
 Owns app-side root-Xray orchestration:

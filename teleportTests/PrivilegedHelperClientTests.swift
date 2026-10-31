@@ -93,6 +93,14 @@ private final class LostStopReplyProxy: NSObject, TUNHelperXPCProtocol, @uncheck
         reply(nil, NSError(domain: "test", code: 1))
     }
 
+    func readProxyPreferences(_ request: Data, withReply reply: @escaping (Data?, NSError?) -> Void) {
+        reply(nil, NSError(domain: "test", code: 1))
+    }
+
+    func applyProxyPreferences(_ request: Data, withReply reply: @escaping (Data?, NSError?) -> Void) {
+        reply(nil, NSError(domain: "test", code: 1))
+    }
+
     func getStatus(_ request: Data, withReply reply: @escaping (Data?, NSError?) -> Void) {
         lock.withLock { statusCalls += 1 }
         do {
@@ -176,6 +184,8 @@ final class PrivilegedHelperClientTests: XCTestCase {
         let sessionID = UUID()
         let transport = ScriptedTransport { command, data, _, _ in
             switch command {
+            case .readProxyPreferences, .applyProxyPreferences:
+                throw UnexpectedCommand(command: command)
             case .status:
                 let request: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(data)
                 return try response(
@@ -251,6 +261,8 @@ final class PrivilegedHelperClientTests: XCTestCase {
         XCTAssert(transport.calls.map(\.2) == [3, 5, 5, 20, 15, 10, 10])
         let requestIDs = try transport.calls.map { command, data, _ -> UUID in
             switch command {
+            case .readProxyPreferences, .applyProxyPreferences:
+                throw UnexpectedCommand(command: command)
             case .status:
                 let request: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(data)
                 return request.requestID

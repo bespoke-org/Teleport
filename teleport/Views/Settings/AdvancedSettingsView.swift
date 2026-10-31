@@ -70,7 +70,7 @@ struct AdvancedSettingsView: View {
                 .background(SettingsRemovalConfirmation(
                     isPresented: $isConfirmingHelperUninstall,
                     title: "Uninstall Teleport's privileged helper?",
-                    message: "Any running session is disconnected first. The helper's LaunchDaemon, its Xray copy, its state and log under /Library and /var, and its packet filter rules are removed. Your portals and settings stay. TUN mode asks for administrator approval to install the helper again on the next connect; System Proxy mode is not affected.",
+                    message: "Any running session is disconnected first. The helper's LaunchDaemon, its Xray copy, its state and log under /Library and /var, and its packet filter rules are removed. Your portals and settings stay. Teleport asks for administrator approval to install the helper again on the next connect in either mode.",
                     actionTitle: "Uninstall",
                     onRemove: viewModel.uninstallHelper
                 ))
@@ -116,9 +116,9 @@ struct AdvancedSettingsView: View {
 
     private var helperDescription: String {
         if !viewModel.isHelperInstalled {
-            return "Required for TUN mode. Teleport asks for administrator approval to install it when you connect in TUN mode."
+            return "Required for system proxy settings and TUN routing. Teleport asks for administrator approval to install it on the first connection."
         }
-        return "Required for TUN mode. Removing it requires administrator approval; Teleport reinstalls it when you next connect in TUN mode."
+        return "Used by both connection modes. Removing it requires administrator approval; Teleport reinstalls it when you next connect."
     }
 
     private var proxyPortsFooter: String {

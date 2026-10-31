@@ -2,6 +2,8 @@ import Foundation
 
 nonisolated enum TUNHelperCommand: String, Codable, Sendable {
     case status
+    case readProxyPreferences
+    case applyProxyPreferences
     case startSession
     case stopSession
     case readDiagnostics
@@ -149,4 +151,23 @@ nonisolated struct DiagnosticsResponse: Codable, Sendable, Equatable {
     let text: String
     let metadata: String
     let wasTruncated: Bool
+}
+
+/// These operations share the helper's mutation queue. A read is also a barrier
+/// after an interrupted write, so recovery never races a write still in flight.
+nonisolated struct ReadProxyPreferencesRequest: Codable, Sendable, Equatable {}
+
+nonisolated struct ProxyPreferencesSnapshot: Codable, Sendable, Equatable {
+    let transactionID: UUID
+    let inventory: ProxyInventory
+}
+
+nonisolated struct ApplyProxyPreferencesRequest: Codable, Sendable, Equatable {
+    let transactionID: UUID
+    let expected: ProxyInventory
+    let mutations: [ProxyMutation]
+}
+
+nonisolated struct ApplyProxyPreferencesResponse: Codable, Sendable, Equatable {
+    let applied: Bool
 }

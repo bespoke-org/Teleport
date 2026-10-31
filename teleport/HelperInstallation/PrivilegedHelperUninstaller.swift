@@ -49,7 +49,7 @@ nonisolated struct PrivilegedHelperUninstaller: Sendable {
         """
         Teleport needs administrator access to remove its privileged helper.
 
-        The helper and its LaunchDaemon are removed, and TUN mode asks to install them again the next time it connects.
+        The helper and its LaunchDaemon are removed, and Teleport asks to install them again the next time either mode connects.
         """
     }
 

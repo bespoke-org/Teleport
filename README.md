@@ -16,8 +16,8 @@ Teleport is a macOS menu bar client for the [Xray](https://github.com/XTLS/Xray-
 
 - Connections from `vless://`, `trojan://`, `hysteria2://` (`hy2://`) and `wireguard://` links and from WireGuard `[Interface]` configuration files. Hysteria 2 details are in [docs/hysteria2.md](docs/hysteria2.md).
 - Subscriptions from `http://` and `https://` URLs, with periodic refresh and duplicate filtering.
-- Two connection modes: **System Proxy** (no administrator rights) and **TUN** (the whole machine is routed through a tunnel interface; needs a root helper).
-- Split routing: rules by domain, IP range, geosite category or geoip country, grouped in named profiles. A rule can send its traffic through a different saved connection, so one session can dial several servers.
+- Two connection modes: **System Proxy** (Xray runs as your user) and **TUN** (the whole machine is routed through a tunnel interface; needs a root helper). Both modes use the privileged helper for macOS proxy settings. Administrator approval is needed for helper installation or a changed build, not ordinary reconnects.
+- Split routing in TUN mode: rules by domain, IP range, geosite category or geoip country, grouped in named profiles. A rule can send its traffic through a different saved connection, so one session can dial several servers.
 - Geodata (`geoip.dat`, `geosite.dat`) bundled, with optional downloads from a source of your choice.
 - An optional pf-based leak guard (off by default) that keeps traffic off the physical network while a TUN session is being rebuilt.
 - TCP latency checks for every connection, shown in the menu bar picker.
@@ -27,7 +27,8 @@ Teleport is a macOS menu bar client for the [Xray](https://github.com/XTLS/Xray-
 - macOS 15 or later. Tested on macOS 27.
 - Apple Silicon or Intel.
 - To build: Xcode 26 or later, and optionally [just](https://github.com/casey/just) for the command-line recipes.
-- TUN mode asks for an administrator password to install the helper and approve a changed build.
+- Both modes ask for administrator approval to install the helper and approve a changed build.
+- The helper updates and restores proxy settings under a macOS preferences lock. Ordinary connections, reconnects, and recovery use the approved helper without repeated password prompts.
 
 ## Install
 
@@ -39,7 +40,7 @@ just install              # builds Release, installs Teleport.app into /Applicat
 
 Or open `teleport.xcodeproj` in Xcode and run the `teleport` scheme.
 
-Without a `DEVELOPMENT_TEAM` the build is signed ad hoc. Both System Proxy and TUN modes work. TUN mode asks an administrator to approve the app and helper build; updating either can require approval again.
+Without a `DEVELOPMENT_TEAM` the build is signed ad hoc. Both System Proxy and TUN modes work. Both modes ask an administrator to approve the app and helper build; updating either can require approval again.
 
 On first launch the app has no connections. Add a link or a subscription URL in Settings > Connections. The same page can add two community subscription lists that ship with the app (`packaging/bundled-connections.json`, from [igareck/vpn-configs-for-russia](https://github.com/igareck/vpn-configs-for-russia)). They are not added on their own: the servers in those lists are run by people nobody here knows, and everything sent through them can be read or altered by whoever operates them.
 
@@ -47,11 +48,19 @@ On first launch the app has no connections. Add a link or a subscription URL in 
 
 ### System Proxy
 
-Starts the bundled Xray as the current user, listens on local HTTP and SOCKS5 ports (8080 and 1080 by default) and enables the macOS system proxy for the active network service. Applications that ignore the system proxy are not routed. No root access is involved, and the proxy settings are restored on disconnect, on quit, and on the next launch if the app did not get to it.
+Starts the bundled Xray as the current user, listens on local HTTP and SOCKS5 ports (8080 and 1080 by default) and enables the macOS system proxy for enabled services in the current network location. Applications that ignore the system proxy are not routed. The privileged helper locks, updates, and restores proxy preferences. System Proxy's Xray process remains unprivileged.
+
+During the connection, Teleport disables PAC and WPAD, keeps only loopback bypass exceptions, and disables exclusion of simple hostnames. All traffic received by the local proxies uses the selected connection; saved split-routing rules currently apply only to TUN traffic.
+
+On disconnect, quit, or crash recovery, Teleport restores only settings that still match its recorded changes. Changes made by another app are preserved. A conflicting proxy change, newly eligible network service, or change of network location disconnects Teleport with an explanation and requires an explicit reconnect. Services are tracked by stable IDs, so renaming a service does not prevent recovery. Missing services retain recovery records until they become accessible.
+
+Enabled authenticated proxies block takeover in both modes. System Proxy mode also refuses to replace a disabled authenticated proxy configuration. Teleport does not read or restore proxy passwords. See [proxy recovery and verification](docs/proxy-recovery.md) for interrupted recovery and older snapshot formats.
 
 ### TUN
 
 Starts Xray as root through Teleport's privileged helper with a TUN inbound, and routes the machine through it:
+
+Before starting the tunnel, Teleport suspends HTTP, HTTPS, SOCKS, PAC, and WPAD. It preserves their endpoints and PAC configuration, and leaves bypass exceptions untouched. Recovery and conflict handling follow the same policy as System Proxy mode.
 
 ```text
 0.0.0.0/1, 128.0.0.0/1   -> Teleport's utun          (IPv4)
@@ -87,7 +96,7 @@ Connection links, which contain credentials, are stored encrypted under `~/Libra
 
 ## Uninstall
 
-1. If you used TUN mode, remove the helper in Settings > General > TUN mode helper > Uninstall... It asks for an administrator password and also drops the leak guard rules.
+1. Remove the helper in Settings > Nerd Shit > Privileged helper > Uninstall. It asks for an administrator password and also drops the leak guard rules.
 2. Quit Teleport and delete `/Applications/Teleport.app`.
 
 If the app is already gone, run `scripts/uninstall.sh` from a checkout (or `just uninstall-helper`). It removes the same files and lists what Teleport keeps in your home folder: `~/Library/Application Support/teleport/` and the `dev.x.teleport.configuration` item in Keychain.
@@ -106,7 +115,7 @@ Bug reports: https://github.com/bespoke-org/Teleport/issues
 
 ### Signing
 
-No Apple account or Team ID is required for local TUN mode. The installer verifies the app and helper code signatures and the pinned Xray digest, then repeats verification during administrator-authorized installation. The helper accepts only the approved app build running as the active console user. Approval does not notarize the app for distribution.
+No Apple account or Team ID is required for either local connection mode. The installer verifies the app and helper code signatures and the pinned Xray digest, then repeats verification during administrator-authorized installation. The helper accepts only the approved app build running as the active console user. Approval does not notarize the app for distribution.
 
 To use an Apple signing certificate, copy `Config/Local.xcconfig.example` to `Config/Local.xcconfig` and set `DEVELOPMENT_TEAM`. The optional file is ignored by git and applies to both targets. Ad hoc and Apple-signed builds use the same approval mechanism.
 
