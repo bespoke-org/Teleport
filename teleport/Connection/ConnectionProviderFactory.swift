@@ -10,11 +10,12 @@ struct ConnectionProviderFactory: Sendable {
     /// created per provider.
     init(
         leakGuard: LeakGuardService = LeakGuardService(),
-        systemProxyProvider: @escaping @Sendable () -> any ConnectionProvider = { SystemProxyConnectionProvider() },
+        proxyService: SystemProxyService = .shared,
+        systemProxyProvider: (@Sendable () -> any ConnectionProvider)? = nil,
         tunProvider: (@Sendable () -> any ConnectionProvider)? = nil
     ) {
-        let tunProvider = tunProvider ?? { RootXrayConnectionProvider(leakGuard: leakGuard) }
-        self.systemProxyProvider = systemProxyProvider
+        let tunProvider = tunProvider ?? { RootXrayConnectionProvider(leakGuard: leakGuard, proxyService: proxyService) }
+        self.systemProxyProvider = systemProxyProvider ?? { SystemProxyConnectionProvider(proxyService: proxyService) }
         self.tunProvider = tunProvider
     }
 

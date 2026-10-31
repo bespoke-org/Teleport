@@ -118,6 +118,8 @@ final class AppViewModel: ObservableObject {
     /// Set when a session was torn down because the uplink vanished, so the next
     /// uplink to appear reconnects instead of leaving the user disconnected.
     private var awaitsUplinkToReconnect = false
+    private var automaticReconnectBlocked = false
+    private var reconnectGeneration = UUID()
 
     nonisolated static let subsystem = "app"
     private lazy var healthProbeQueue = ConnectionHealthProbeQueue(
@@ -193,7 +195,7 @@ final class AppViewModel: ObservableObject {
         leakGuard: LeakGuardService = LeakGuardService(),
         subscriptionClient: SubscriptionClient,
         healthProbeService: ConnectionHealthProbeService,
-        systemProxyService: SystemProxyService = SystemProxyService(),
+        systemProxyService: SystemProxyService = .shared,
         geodataUpdateCoordinator: GeodataUpdateCoordinator? = nil,
         log: TeleportLog = .shared
     ) {
@@ -420,14 +422,14 @@ final class AppViewModel: ObservableObject {
         return profile.defaultAction
     }
 
-    /// The connect is waiting on the administrator prompt for the helper install.
-    var isInstallingHelper: Bool {
+    /// A helper install or proxy preference transaction is requesting approval.
+    var isAwaitingApproval: Bool {
         connectionState == .awaitingUserApproval
     }
 
     var statusSummary: String {
-        if isInstallingHelper {
-            return "Installing Teleport's helper. Enter your administrator password in the dialog."
+        if isAwaitingApproval {
+            return "Waiting for administrator approval. Complete the macOS authorization dialog."
         }
         switch connectionPhase {
         case .unconfigured:
@@ -1352,7 +1354,7 @@ final class AppViewModel: ObservableObject {
             await leakGuard.disarm()
             do {
                 try await uninstaller.uninstall()
-                self?.helperUninstallMessage = "Teleport's helper was removed. TUN mode will ask to install it again on the next connect."
+                self?.helperUninstallMessage = "Teleport's helper was removed. The next connection in either mode will ask to install it again."
                 self?.log.info(AppViewModel.subsystem, "helper uninstalled")
             } catch {
                 self?.helperUninstallMessage = error.localizedDescription
@@ -1384,6 +1386,8 @@ final class AppViewModel: ObservableObject {
     func connect() {
         isLaunchConnectionPending = false
         discardRemovedSessionConnections()
+        automaticReconnectBlocked = false
+        reconnectGeneration = UUID()
         guard let selectedConfiguration else {
             setStoredError("Add and select a portal first")
             return
@@ -1506,7 +1510,7 @@ final class AppViewModel: ObservableObject {
             log.info(Self.subsystem, "\(prefix): connected (mode \(connectionMode)) over uplink \(sessionUplink?.summary ?? "<unknown>")")
             SystemStateDump.capture("after connect", log: log)
         case .awaitingUserApproval:
-            log.info(Self.subsystem, "\(prefix): awaiting administrator approval for the helper install")
+            log.info(Self.subsystem, "\(prefix): awaiting administrator approval")
         default:
             log.info(Self.subsystem, "\(prefix): \(state)")
         }
@@ -1559,7 +1563,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private func rebuildSessionAfterWake() {
-        guard !isTerminating, connectionMode == .tun, hasEstablishedConnection, !isOperationPending else { return }
+        guard !automaticReconnectBlocked, !isTerminating, connectionMode == .tun, hasEstablishedConnection, !isOperationPending else { return }
         // A session built after the machine went to sleep did not live through the
         // sleep and does not need rebuilding. The path observer routinely gets
         // there first — a wake onto a different network is a path change, and its
@@ -1603,7 +1607,7 @@ final class AppViewModel: ObservableObject {
     /// that has come up without one cannot carry a tunnel yet, and the settled
     /// callback will come back to it.
     private func reconnectAsSoonAsAnUplinkAppears() {
-        guard !isTerminating, awaitsUplinkToReconnect, !isOperationPending else { return }
+        guard !automaticReconnectBlocked, !isTerminating, awaitsUplinkToReconnect, !isOperationPending else { return }
         guard let currentUplink = SystemUplinkInventory.current(), currentUplink.routerAddress != nil else { return }
         awaitsUplinkToReconnect = false
         log.info(Self.subsystem, "uplink is back (\(currentUplink.summary)); reconnecting without waiting for the path to settle")
@@ -1611,7 +1615,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private func reconcileSessionWithUplink() {
-        guard !isTerminating else { return }
+        guard !automaticReconnectBlocked, !isTerminating else { return }
 
         let currentUplink = SystemUplinkInventory.current()
 
@@ -1661,7 +1665,8 @@ final class AppViewModel: ObservableObject {
     /// before new ones are pinned to the new gateway. Reconnecting without waiting
     /// would install the second set on top of the first.
     private func rebuildSessionForNewUplink() {
-        guard !isTerminating else { return }
+        guard !automaticReconnectBlocked, !isTerminating else { return }
+        let generation = reconnectGeneration
         // Armed before the teardown so no packet leaves between the tunnel's routes
         // being removed and the next tunnel's being installed.
         armLeakGuardStandby()
@@ -1669,9 +1674,13 @@ final class AppViewModel: ObservableObject {
         let operationID = UUID()
         beginConnectionOperation()
         Task { @MainActor [weak self] in
-            try? await provider.disconnect()
+            do { try await provider.disconnect() } catch {
+                if let failure = error as? ConnectionFailure, failure.requiresExplicitReconnect {
+                    self?.applyConnectionState(.failed(failure))
+                }
+            }
             self?.finishConnectionOperation(operationID)
-            guard let self, !self.isTerminating else { return }
+            guard let self, !self.isTerminating, !self.automaticReconnectBlocked, self.reconnectGeneration == generation else { return }
             guard SystemUplinkInventory.current() != nil else {
                 self.awaitsUplinkToReconnect = true
                 return
@@ -1698,16 +1707,17 @@ final class AppViewModel: ObservableObject {
         let service = systemProxyService
         let log = log
         deferredProxyRestoreTask = Task { @MainActor [weak self] in
-            let failed = await Task.detached(priority: .utility) { () -> Bool in
+            let failure = await BlockingWork.run { () -> ConnectionFailure? in
                 do {
                     try service.restoreDeferredProxyStateIfNeeded()
-                    return false
+                    return nil
                 } catch {
                     log.error(AppViewModel.subsystem, "could not restore deferred proxy state: \(LogFormat.error(error))")
-                    return true
+                    return ConnectionFailure(error: error)
                 }
-            }.value
-            self?.deferredProxyRestoreFailedAt = failed ? SuspendingClock().now : nil
+            }
+            self?.deferredProxyRestoreFailedAt = failure != nil ? SuspendingClock().now : nil
+            if let failure { self?.applyConnectionError(failure) }
             self?.deferredProxyRestoreTask = nil
             self?.connectOnLaunchIfNeeded()
         }
@@ -1740,6 +1750,15 @@ final class AppViewModel: ObservableObject {
 
         switch state {
         case let .failed(failure):
+            if failure.requiresExplicitReconnect {
+                automaticReconnectBlocked = true
+                reconnectGeneration = UUID()
+                awaitsUplinkToReconnect = false
+                isLaunchConnectionPending = false
+                pendingConnectionSelectionID = nil
+                pendingSplitTunnelLiveApply = false
+                releaseLeakGuard()
+            }
             connectionError = failure
             lastError = failure.summary
             lastErrorDetails = failure.details
@@ -1842,11 +1861,14 @@ final class AppViewModel: ObservableObject {
     /// would start another attempt, and the leak guard armed for the reconnect
     /// would keep the machine off the network until the user stepped in.
     private func retryReconnectAfterUplinkChange() {
+        guard !automaticReconnectBlocked else { return }
+        let generation = reconnectGeneration
         awaitsUplinkToReconnect = true
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 5_000_000_000)
             // A connect or disconnect the user asked for in the meantime cleared
             // the flag, and this does nothing.
+            guard self?.reconnectGeneration == generation else { return }
             self?.reconnectAsSoonAsAnUplinkAppears()
         }
     }
@@ -1855,12 +1877,15 @@ final class AppViewModel: ObservableObject {
         guard !isTerminating else { return }
         // A new connection captures all current settings, including imports.
         hasDeferredSubscriptionRoutingChanges = false
+        guard !afterUplinkChange || !automaticReconnectBlocked else { return }
+        if !afterUplinkChange { automaticReconnectBlocked = false }
 
         // The helper pins routes to the gateway that is current when its script
         // runs, which is moments from now; the connected state can arrive seconds
         // later, by which time a roaming machine may already be on another one.
         sessionUplink = SystemUplinkInventory.current()
-        let request = makeConnectionRequest(configuration: configuration)
+        var request = makeConnectionRequest(configuration: configuration)
+        request.isAutomaticReconnect = afterUplinkChange
         let profile = tunnelProfile(for: savedConnections.first { $0.id == request.defaultConnection.id })
         let sources = profile?.geodataSources ?? GeodataSources()
         let profileName = profile?.name ?? "Default"

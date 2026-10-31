@@ -26,6 +26,16 @@ final class SystemProxyConnectionBackend: ConnectionBackend, @unchecked Sendable
         runtimeManager.isRunning
     }
 
+    func adoptRuntimeSession() async throws {
+        try await BlockingWork.run { [proxyService] in try proxyService.resumeMonitoringIfNeeded() }
+    }
+
+    func sessionFailure() async -> ConnectionFailure? {
+        await BlockingWork.run { [proxyService] in proxyService.checkForConflict() }
+    }
+
+    func sessionChanges() -> AsyncStream<Void> { proxyService.changes() }
+
     func restorePreviousState() async throws {
         try await BlockingWork.run { [self] in
             try proxyService.restoreSavedProxyState()
@@ -34,13 +44,17 @@ final class SystemProxyConnectionBackend: ConnectionBackend, @unchecked Sendable
 
     func start(_ request: ConnectionRequest, reportPhase: @escaping @Sendable (ConnectionState) -> Void) async throws {
         try Task.checkCancellation()
+        try await BlockingWork.run { [proxyService] in try proxyService.prepareForTakeover() }
         do {
+            try await tunRuntimeManager?.prepareHelper { reportPhase(.awaitingUserApproval) }
+            reportPhase(.connecting)
             try await tunRuntimeManager?.cleanupIfHelperAvailable(protectedHosts: [request.configuration.host])
             try await startRuntime(request)
             try Task.checkCancellation()
             try await BlockingWork.run { [self] in
                 try proxyService.enableProxy(endpoint: request.localProxy)
             }
+            reportPhase(.connecting)
         } catch {
             await rollBack()
             throw error
@@ -52,14 +66,18 @@ final class SystemProxyConnectionBackend: ConnectionBackend, @unchecked Sendable
             try await BlockingWork.run { [self] in
                 try proxyService.disableProxy()
                 runtimeManager.stop()
+                try proxyService.prepareForTakeover()
             }
             try Task.checkCancellation()
+            try await tunRuntimeManager?.prepareHelper { reportPhase(.awaitingUserApproval) }
+            reportPhase(.connecting)
             try await tunRuntimeManager?.cleanupIfHelperAvailable(protectedHosts: [request.configuration.host])
             try await startRuntime(request)
             try Task.checkCancellation()
             try await BlockingWork.run { [self] in
                 try proxyService.enableProxy(endpoint: request.localProxy)
             }
+            reportPhase(.connecting)
         } catch {
             await rollBack()
             throw error
@@ -68,6 +86,7 @@ final class SystemProxyConnectionBackend: ConnectionBackend, @unchecked Sendable
 
     func stop() async throws {
         try await BlockingWork.run { [self] in
+            try proxyService.reserveForStop()
             var disableError: Error?
             do {
                 try proxyService.disableProxy()
@@ -86,7 +105,7 @@ final class SystemProxyConnectionBackend: ConnectionBackend, @unchecked Sendable
     private func rollBack() async {
         await BlockingWork.run { [self] in
             runtimeManager.stop()
-            try? proxyService.restoreSavedProxyState()
+            try? proxyService.rollbackIfActive()
         }
     }
 

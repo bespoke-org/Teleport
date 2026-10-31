@@ -31,9 +31,10 @@ nonisolated struct ConnectionSession: Sendable, Equatable {
 }
 
 /// Stable, transport-independent diagnostics that can safely reach presentation code.
-nonisolated struct ConnectionFailure: Sendable, Equatable {
+nonisolated struct ConnectionFailure: LocalizedError, Sendable, Equatable {
     let summary: String
     let details: String?
+    let requiresExplicitReconnect: Bool
 
     /// Keep the compact notice to the cause. Recovery steps remain available in
     /// the notice itself; copying the error still includes the complete message.
@@ -48,12 +49,21 @@ nonisolated struct ConnectionFailure: Sendable, Equatable {
         return instructions.isEmpty ? nil : instructions
     }
 
-    init(summary: String, details: String?) {
+    var errorDescription: String? { summary }
+    var failureReason: String? { details }
+
+    init(summary: String, details: String?, requiresExplicitReconnect: Bool = false) {
         self.summary = summary
         self.details = details
+        self.requiresExplicitReconnect = requiresExplicitReconnect
     }
 
     init(error: Error) {
+        if let failure = error as? ConnectionFailure {
+            self = failure
+            return
+        }
+        requiresExplicitReconnect = false
         summary = error.localizedDescription
         if let localizedError = error as? LocalizedError,
            let reason = localizedError.failureReason?.trimmingCharacters(in: .whitespacesAndNewlines),

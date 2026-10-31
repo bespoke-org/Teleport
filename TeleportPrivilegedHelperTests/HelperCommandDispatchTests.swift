@@ -130,6 +130,18 @@ private final class RecordingExecutor: HelperCommandExecuting, @unchecked Sendab
         return LeakGuardResponse(isEngaged: false)
     }
 
+    func readProxyPreferences(request: ReadProxyPreferencesRequest) throws -> ProxyPreferencesSnapshot {
+        record(.readProxyPreferences)
+        return ProxyPreferencesSnapshot(transactionID: UUID(), inventory: ProxyInventory(locationID: "home", eligibleServiceIDs: [], services: [:]))
+    }
+
+    func applyProxyPreferences(request: ApplyProxyPreferencesRequest) throws -> ApplyProxyPreferencesResponse {
+        record(.applyProxyPreferences)
+        startEntered.signal()
+        if blockStart { XCTAssert(releaseStart.wait(timeout: .now() + 5) == .success) }
+        return ApplyProxyPreferencesResponse(applied: true)
+    }
+
     private func record(_ command: TUNHelperCommand) {
         lock.lock()
         recordedCommands.append(command)
@@ -215,6 +227,36 @@ final class HelperCommandDispatchTests: XCTestCase {
             XCTAssertTrue(error.localizedDescription.contains("Settings"))
             XCTAssertFalse(error.localizedDescription.contains("secret-token"))
         }
+    }
+
+    func testProxyRecoveryReadWaitsForPendingWrite() async throws {
+        let executor = RecordingExecutor(blockStart: true)
+        let readAdmitted = DispatchSemaphore(value: 0)
+        let dispatcher = HelperCommandDispatcher(executor: executor) { command in
+            if command == .readProxyPreferences { readAdmitted.signal() }
+        }
+        let write = try TUNHelperCodec.encodeRequest(TUNHelperRequestEnvelope(
+            revision: TUNHelperProtocol.revision, requestID: UUID(), sessionID: nil,
+            payload: ApplyProxyPreferencesRequest(transactionID: UUID(),
+                expected: ProxyInventory(locationID: "home", eligibleServiceIDs: [], services: [:]), mutations: [])))
+        let read = try TUNHelperCodec.encodeRequest(TUNHelperRequestEnvelope(
+            revision: TUNHelperProtocol.revision, requestID: UUID(), sessionID: nil,
+            payload: ReadProxyPreferencesRequest()))
+        async let writeResponse = dispatcher.dispatch(command: .applyProxyPreferences, requestData: write)
+        XCTAssert(executor.startEntered.wait(timeout: .now() + 5) == .success)
+        async let readResponse = dispatcher.dispatch(command: .readProxyPreferences, requestData: read)
+        XCTAssert(readAdmitted.wait(timeout: .now() + 5) == .success)
+        XCTAssertEqual(executor.commands, [.applyProxyPreferences])
+        executor.releaseStart.signal()
+        let written: TUNHelperResponseEnvelope<ApplyProxyPreferencesResponse> = try await TUNHelperCodec.decodeResponse(writeResponse)
+        let snapshot: TUNHelperResponseEnvelope<ProxyPreferencesSnapshot> = try await TUNHelperCodec.decodeResponse(readResponse)
+        XCTAssertEqual(written.payload?.applied, true)
+        XCTAssertNotNil(snapshot.payload)
+        XCTAssertEqual(executor.commands, [.applyProxyPreferences, .readProxyPreferences])
+        // Ledger replay returns the previous reply without executing again.
+        let repeated = await dispatcher.dispatch(command: .applyProxyPreferences, requestData: write)
+        XCTAssertEqual(repeated, try TUNHelperCodec.encodeResponse(written))
+        XCTAssertEqual(executor.commands, [.applyProxyPreferences, .readProxyPreferences])
     }
 
     func testMatchingCommandsDispatchOnlyTheirExecutorMethod() async throws {
@@ -588,6 +630,10 @@ final class HelperCommandDispatchTests: XCTestCase {
 
     private func assertMalformedFailure(_ data: Data, command: TUNHelperCommand) throws {
         switch command {
+        case .readProxyPreferences:
+            try assertFailure(data, as: ProxyPreferencesSnapshot.self, code: .malformedPayload)
+        case .applyProxyPreferences:
+            try assertFailure(data, as: ApplyProxyPreferencesResponse.self, code: .malformedPayload)
         case .status:
             try assertFailure(data, as: StatusResponse.self, code: .malformedPayload)
         case .startSession:
@@ -609,5 +655,14 @@ final class HelperCommandDispatchTests: XCTestCase {
         let response: TUNHelperResponseEnvelope<Payload> = try TUNHelperCodec.decodeResponse(data)
         XCTAssert(response.payload == nil)
         XCTAssert(response.failure?.code == code, "Expected \(code), got \(String(describing: response.failure?.code))")
+    }
+}
+
+private extension HelperCommandExecuting {
+    func readProxyPreferences(request: ReadProxyPreferencesRequest) throws -> ProxyPreferencesSnapshot {
+        throw DispatchTestError.failedStart
+    }
+    func applyProxyPreferences(request: ApplyProxyPreferencesRequest) throws -> ApplyProxyPreferencesResponse {
+        throw DispatchTestError.failedStart
     }
 }
