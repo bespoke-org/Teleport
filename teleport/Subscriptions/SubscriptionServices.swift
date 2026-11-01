@@ -107,7 +107,11 @@ struct SubscriptionConnectionReconciler {
     }
 }
 
-struct SubscriptionClient {
+protocol SubscriptionFetching {
+    func fetchCandidates(from url: URL) async throws -> [SubscriptionCandidate]
+}
+
+struct SubscriptionClient: SubscriptionFetching {
     func fetchCandidates(from url: URL) async throws -> [SubscriptionCandidate] {
         let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
         let session = URLSession(configuration: .ephemeral)
