@@ -87,7 +87,7 @@ final class AppViewModel: ObservableObject {
     let bundledSubscriptionTitles: [String]
     private let connectionProviderFactory: ConnectionProviderFactory
     private var connectionProvider: any ConnectionProvider
-    private let subscriptionClient: SubscriptionClient
+    private let subscriptionClient: any SubscriptionFetching
     private let healthProbeService: ConnectionHealthProbeService
     private let splitTunnelGeodataMatcher: SplitTunnelGeodataMatcher
     private let loginItemService = LoginItemService()
@@ -193,7 +193,7 @@ final class AppViewModel: ObservableObject {
         store: ConfigurationStore,
         connectionProviderFactory: ConnectionProviderFactory,
         leakGuard: LeakGuardService = LeakGuardService(),
-        subscriptionClient: SubscriptionClient,
+        subscriptionClient: any SubscriptionFetching,
         healthProbeService: ConnectionHealthProbeService,
         systemProxyService: SystemProxyService = .shared,
         geodataUpdateCoordinator: GeodataUpdateCoordinator? = nil,
