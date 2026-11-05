@@ -17,7 +17,7 @@ struct SettingsSearchField: NSViewRepresentable {
         let font = NSFont.systemFont(ofSize: 14)
         field.placeholderAttributedString = NSAttributedString(
             string: "Search",
-            attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
+            attributes: [.font: font, .foregroundColor: NSColor.tertiaryLabelColor]
         )
         field.setAccessibilityLabel("Search Settings")
         field.setAccessibilityIdentifier("settingsSearch")
