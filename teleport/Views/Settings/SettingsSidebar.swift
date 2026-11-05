@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 /// Draws one neutral selection instead of combining SwiftUI and AppKit highlights.
@@ -42,7 +41,6 @@ struct SettingsSidebar: View {
         }
         .frame(minWidth: SettingsSidebarLayout.sidebarWidth, maxHeight: .infinity)
         .navigationSplitViewColumnWidth(SettingsSidebarLayout.sidebarWidth)
-        .background(SettingsSidebarBackdrop().ignoresSafeArea())
         .background(SettingsSidebarLayout())
         .onChange(of: query) { searchSelection = nil }
     }
@@ -152,17 +150,4 @@ private struct SettingsSearchGlass: ViewModifier {
             content.background(.regularMaterial, in: Capsule())
         }
     }
-}
-
-/// Sample and blur the windows behind the sidebar rather than painting a solid fill.
-private struct SettingsSidebarBackdrop: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = .sidebar
-        view.blendingMode = .behindWindow
-        view.state = .followsWindowActiveState
-        return view
-    }
-
-    func updateNSView(_ view: NSVisualEffectView, context: Context) {}
 }
