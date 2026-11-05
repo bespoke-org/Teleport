@@ -5,13 +5,14 @@ struct AppIconPicker: View {
 
     var body: some View {
         Section {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 82, maximum: 82), spacing: 8)], alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
                 ForEach(AppIcon.allCases) { icon in
                     AppIconOption(icon: icon, image: store.image(for: icon), isSelected: store.selectedIcon == icon) {
                         store.select(icon)
                     }
                 }
             }
+            .frame(maxWidth: .infinity)
         } header: {
             Text("App icon")
         } footer: {
