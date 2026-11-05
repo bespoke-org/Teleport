@@ -19,7 +19,7 @@ struct SettingsSidebar: View {
                             SettingsSectionIcon(section: section)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 9)
+                        .padding(.horizontal, 6)
                         .frame(height: 32)
                         .contentShape(Rectangle())
                         .background {
