@@ -17,7 +17,7 @@ struct SettingsSidebar: View {
     private var isSearching: Bool { !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 16) {
             searchField
                 .padding(.horizontal, 10)
                 .padding(.top, 8)

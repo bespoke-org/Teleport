@@ -18,7 +18,7 @@ final class SettingsSidebarLayoutTests: XCTestCase {
         let sidebar = try XCTUnwrap(split.splitViewItems.first { $0.behavior == .sidebar })
         let view = sidebar.viewController.view
         // Click Portals in the real sidebar, including its focus handling.
-        let y: CGFloat = 8 + 28 + 8 + 32 + 16
+        let y: CGFloat = 8 + 28 + 16 + 32 + 16
         let point = view.convert(NSPoint(x: 80, y: view.isFlipped ? y : view.bounds.height - y), to: nil)
         for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
             NSApp.sendEvent(
