@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="teleport/Assets.xcassets/AppIcon.appiconset/icon_256x256.png" width="128" height="128" alt="Teleport icon">
+  <img src="teleport/Resources/AppIconGraphite.png" width="128" height="128" alt="Teleport icon">
 </p>
 
 <h1 align="center">Teleport</h1>

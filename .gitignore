@@ -11,3 +11,6 @@ openspec/
 docs/superpowers/
 # Fetched by scripts/fetch-xray.sh (just build runs it when needed).
 teleport/Resources/xray
+# Local icon experiments and Blender's numbered save backups.
+/output/
+*.blend[0-9]*

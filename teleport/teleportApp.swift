@@ -27,6 +27,7 @@ final class TeleportAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        AppIconStore.shared.restoreSelection()
         applyDockVisibility()
         Task { await xrayVersion.load() }
     }
