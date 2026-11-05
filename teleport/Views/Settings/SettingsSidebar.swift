@@ -84,7 +84,8 @@ struct SettingsSidebar: View {
         return Button {
             open(result)
         } label: {
-            Label {
+            HStack(alignment: .center, spacing: 8) {
+                SettingsSectionIcon(section: result.section)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(result.title).foregroundStyle(.primary)
                     if isSearching, let subtitle = result.subtitle {
@@ -92,8 +93,6 @@ struct SettingsSidebar: View {
                     }
                 }
                 .fixedSize(horizontal: false, vertical: true)
-            } icon: {
-                SettingsSectionIcon(section: result.section)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 6)
