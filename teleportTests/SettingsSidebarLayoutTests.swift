@@ -4,9 +4,10 @@ import XCTest
 
 @MainActor
 final class SettingsSidebarLayoutTests: XCTestCase {
-    func testCustomHighlightPreservesKeyboardSelection() async throws {
+    func testSidebarClickAndArrowKeysSelectPages() async throws {
         _ = NSApplication.shared
-        let host = NSHostingController(rootView: SidebarFixture())
+        let model = SidebarModel()
+        let host = NSHostingController(rootView: SidebarFixture(model: model))
         let window = NSWindow(contentViewController: host)
         window.isReleasedWhenClosed = false
         defer { window.close() }
@@ -15,11 +16,21 @@ final class SettingsSidebarLayoutTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(400))
         let split = try XCTUnwrap(splitController(in: host.view))
         let sidebar = try XCTUnwrap(split.splitViewItems.first { $0.behavior == .sidebar })
-        let table = try XCTUnwrap(tableView(in: sidebar.viewController.view))
-        XCTAssertEqual(table.selectionHighlightStyle, .none)
-        XCTAssertEqual(table.selectedRow, 0)
-
-        window.makeFirstResponder(table)
+        let view = sidebar.viewController.view
+        // Click Portals in the real sidebar, including its focus handling.
+        let y: CGFloat = 8 + 32 + 16
+        let point = view.convert(NSPoint(x: 80, y: view.isFlipped ? y : view.bounds.height - y), to: nil)
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            NSApp.sendEvent(
+                try XCTUnwrap(
+                    NSEvent.mouseEvent(
+                        with: type, location: point, modifierFlags: [], timestamp: 0,
+                        windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                        clickCount: 1, pressure: 1
+                    )))
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(model.navigation.section, .portals)
         let arrowDown = try XCTUnwrap(
             NSEvent.keyEvent(
                 with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
@@ -27,10 +38,11 @@ final class SettingsSidebarLayoutTests: XCTestCase {
                 characters: "\u{F701}", charactersIgnoringModifiers: "\u{F701}",
                 isARepeat: false, keyCode: 125
             ))
-        table.keyDown(with: arrowDown)
+        window.sendEvent(arrowDown)
         try await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(table.selectedRow, 1)
-        XCTAssertEqual(table.selectionHighlightStyle, .none, "Selection updates must not restore the accent highlight")
+        XCTAssertEqual(model.navigation.section, .splitTunneling)
+        // There must be no native table selection layer behind our gray buttons.
+        XCTAssertNil(tableView(in: view))
     }
 
     func testSidebarTogglesKeepWindowFrameAtMinimumAndLargerWidths() async throws {
@@ -98,17 +110,11 @@ final class SettingsSidebarLayoutTests: XCTestCase {
 
 private struct SidebarFixture: View {
     @State private var visibility: NavigationSplitViewVisibility = .all
-    @State private var selection: SettingsSection? = .general
+    @State var model = SidebarModel()
 
     var body: some View {
         NavigationSplitView(columnVisibility: $visibility) {
-            List(SettingsSection.sidebarSections, selection: $selection) { section in
-                Text(section.title).tag(section as SettingsSection?)
-            }
-            .listStyle(.sidebar)
-            .frame(minWidth: SettingsSidebarLayout.sidebarWidth, maxHeight: .infinity)
-            .navigationSplitViewColumnWidth(SettingsSidebarLayout.sidebarWidth)
-            .background(SettingsSidebarLayout())
+            SettingsSidebar(navigation: $model.navigation)
         } detail: {
             Form {
                 Section("Connection") {
@@ -122,4 +128,10 @@ private struct SidebarFixture: View {
         .navigationSplitViewStyle(.balanced)
         .frame(minHeight: SettingsSidebarLayout.minimumContentSize.height)
     }
+}
+
+@MainActor
+@Observable
+private final class SidebarModel {
+    var navigation = SettingsNavigation()
 }

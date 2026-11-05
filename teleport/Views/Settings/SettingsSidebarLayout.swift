@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// Keeps sidebar sizing stable and leaves selection drawing to the SwiftUI rows.
+/// Keeps sidebar sizing stable when toggling its visibility.
 struct SettingsSidebarLayout: NSViewRepresentable {
     static let sidebarWidth: CGFloat = 200
     static let minimumDetailWidth: CGFloat = 560
@@ -41,23 +41,11 @@ struct SettingsSidebarLayout: NSViewRepresentable {
                     if sidebar.collapseBehavior != .useConstraints {
                         sidebar.collapseBehavior = .useConstraints
                     }
-                    useCustomSelection(in: sidebar.viewController.view)
                     return
                 }
                 ancestor = view.superview
             }
         }
 
-        private func useCustomSelection(in view: NSView) {
-            if let table = view as? NSTableView {
-                // Keep native selection and keyboard navigation, but let the
-                // SwiftUI row background draw the quiet gray selection.
-                table.selectionHighlightStyle = .none
-                return
-            }
-            for child in view.subviews {
-                useCustomSelection(in: child)
-            }
-        }
     }
 }

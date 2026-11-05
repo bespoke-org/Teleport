@@ -11,34 +11,7 @@ struct SettingsView: View {
     @State private var hasOpenedAbout = false
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            List(SettingsSection.sidebarSections, selection: Binding<SettingsSection?>(
-                get: { navigation.section.sidebarSection },
-                set: { section in
-                    if let section { navigation.select(section) }
-                }
-            )) { section in
-                Button {
-                    navigation.select(section)
-                } label: {
-                    Label {
-                        Text(section.title).foregroundStyle(.primary)
-                    } icon: {
-                        SettingsSectionIcon(section: section)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .tag(section as SettingsSection?)
-                .listRowBackground(
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(Color.primary.opacity(navigation.section.sidebarSection == section ? 0.08 : 0))
-                )
-            }
-            .listStyle(.sidebar)
-            .frame(minWidth: SettingsSidebarLayout.sidebarWidth, maxHeight: .infinity)
-            .navigationSplitViewColumnWidth(SettingsSidebarLayout.sidebarWidth)
-            .background(SettingsSidebarLayout())
+            SettingsSidebar(navigation: $navigation)
         } detail: {
             detailContent
                 .frame(minWidth: SettingsSidebarLayout.minimumDetailWidth)
