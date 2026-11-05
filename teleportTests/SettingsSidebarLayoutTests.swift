@@ -102,6 +102,24 @@ final class SettingsSidebarLayoutTests: XCTestCase {
         XCTAssertEqual(model.navigation.section, .splitTunneling, "Down enters results and advances to the second match")
     }
 
+    func testScrollViewportExtendsBehindSearchBar() async throws {
+        _ = NSApplication.shared
+        let host = NSHostingController(rootView: SidebarFixture())
+        let window = NSWindow(contentViewController: host)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.setContentSize(NSSize(width: 900, height: 600))
+        window.makeKeyAndOrderFront(nil)
+        try await Task.sleep(for: .milliseconds(400))
+        let split = try XCTUnwrap(splitController(in: host.view))
+        let sidebar = try XCTUnwrap(split.splitViewItems.first { $0.behavior == .sidebar })
+        let view = sidebar.viewController.view
+        let scroll = try XCTUnwrap(scrollView(in: view))
+        let clipFrame = view.convert(scroll.contentView.bounds, from: scroll.contentView)
+        let topInset = view.isFlipped ? clipFrame.minY : view.bounds.maxY - clipFrame.maxY
+        XCTAssertLessThanOrEqual(topInset, 1, "Rows must scroll behind the search bar, not clip below it")
+    }
+
     func testSidebarTogglesKeepWindowFrameAtMinimumAndLargerWidths() async throws {
         _ = NSApplication.shared
         let host = NSHostingController(rootView: SidebarFixture())
@@ -157,6 +175,11 @@ final class SettingsSidebarLayoutTests: XCTestCase {
             return controller
         }
         return view.subviews.compactMap { splitController(in: $0) }.first
+    }
+
+    private func scrollView(in view: NSView) -> NSScrollView? {
+        if let scroll = view as? NSScrollView { return scroll }
+        return view.subviews.compactMap { scrollView(in: $0) }.first
     }
 
     private func tableView(in view: NSView) -> NSTableView? {

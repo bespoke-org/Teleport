@@ -17,32 +17,49 @@ struct SettingsSidebar: View {
     private var isSearching: Bool { !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     var body: some View {
-        VStack(spacing: 16) {
-            searchField
-                .padding(.horizontal, 10)
-                .padding(.top, 8)
-            ScrollView {
-                VStack(spacing: 0) {
-                    ForEach(results) { result in
-                        resultButton(result)
-                    }
-                    if results.isEmpty {
-                        Text("No settings found")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 16)
-                    }
-                }
-                .padding(.horizontal, 10)
-                .padding(.bottom, 8)
-            }
-            .onMoveCommand(perform: moveSelection)
+        scrollWithSearch
+            .frame(minWidth: SettingsSidebarLayout.sidebarWidth, maxHeight: .infinity)
+            .navigationSplitViewColumnWidth(SettingsSidebarLayout.sidebarWidth)
+            .background(SettingsSidebarLayout())
+            .onChange(of: query) { searchSelection = nil }
+    }
+
+    @ViewBuilder
+    private var scrollWithSearch: some View {
+        if #available(macOS 26.0, *) {
+            sidebarScroll
+                .safeAreaBar(edge: .top, spacing: 16) { searchHeader }
+                .scrollEdgeEffectStyle(.soft, for: .top)
+        } else {
+            sidebarScroll
+                .safeAreaInset(edge: .top, spacing: 16) { searchHeader }
         }
-        .frame(minWidth: SettingsSidebarLayout.sidebarWidth, maxHeight: .infinity)
-        .navigationSplitViewColumnWidth(SettingsSidebarLayout.sidebarWidth)
-        .background(SettingsSidebarLayout())
-        .onChange(of: query) { searchSelection = nil }
+    }
+
+    private var searchHeader: some View {
+        searchField
+            .padding(.horizontal, 10)
+            .padding(.top, 8)
+    }
+
+    private var sidebarScroll: some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                ForEach(results) { result in
+                    resultButton(result)
+                }
+                if results.isEmpty {
+                    Text("No settings found")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.bottom, 8)
+        }
+        .onMoveCommand(perform: moveSelection)
     }
 
     private var searchField: some View {
