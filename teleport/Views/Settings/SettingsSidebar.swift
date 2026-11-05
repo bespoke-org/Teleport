@@ -75,6 +75,18 @@ struct SettingsSidebar: View {
                 }
             )
             .frame(height: 18)
+            .overlay(alignment: .leading) {
+                if query.isEmpty {
+                    // AppKit substitutes a different placeholder color when its
+                    // field editor gains or loses focus. Keep one drawing path.
+                    Text("Search")
+                        .font(.system(size: 14))
+                        .foregroundStyle(Color(white: 0.5))
+                        .padding(.leading, 2)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+            }
             if !query.isEmpty {
                 Button {
                     query = ""
