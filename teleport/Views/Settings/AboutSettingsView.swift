@@ -4,6 +4,7 @@ import SwiftUI
 
 struct AboutSettingsView: View {
     @EnvironmentObject private var xrayVersion: XrayVersionModel
+    @ObservedObject private var appIcons = AppIconStore.shared
 
     private let sourceCodeURL = URL(string: "https://github.com/bespoke-org/Teleport")!
     private let issuesURL = URL(string: "https://github.com/bespoke-org/Teleport/issues")!
@@ -15,7 +16,7 @@ struct AboutSettingsView: View {
         Form {
             Section {
                 HStack(spacing: 16) {
-                    Image(nsImage: NSApp.applicationIconImage)
+                    Image(nsImage: appIcons.image(for: appIcons.selectedIcon) ?? NSApp.applicationIconImage)
                         .resizable()
                         .frame(width: 56, height: 56)
                         .accessibilityHidden(true)

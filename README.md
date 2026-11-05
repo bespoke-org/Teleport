@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="teleport/Assets.xcassets/AppIcon.appiconset/icon_256x256.png" width="128" height="128" alt="Teleport icon">
+  <img src="teleport/Resources/AppIconGraphite.png" width="128" height="128" alt="Teleport icon">
 </p>
 
 <h1 align="center">Teleport</h1>
@@ -21,6 +21,7 @@ Teleport is a macOS menu bar client for the [Xray](https://github.com/XTLS/Xray-
 - Geodata (`geoip.dat`, `geosite.dat`) bundled, with optional downloads from a source of your choice.
 - An optional pf-based leak guard (off by default) that keeps traffic off the physical network while a TUN session is being rebuilt.
 - TCP latency checks for every connection, shown in the menu bar picker.
+- Four app icon palettes, selectable in Settings > General.
 
 ## Requirements
 
@@ -130,6 +131,8 @@ scripts/fetch-xray.sh v26.10.21
 The script downloads the arm64 and x86_64 release archives, checks each against the digest XTLS publishes, joins them with `lipo` into one universal executable and compares it with the pin in `BundledArtifactPolicy.swift`; when upgrading, update the pin to the digest it prints and run it again. `scripts/bump-xray.sh vX.Y.Z` does the whole update: it fetches the release, writes the new pin and puts the version into this README, `THIRD_PARTY_NOTICES.md` and `CHANGELOG.md`. The `.github/workflows/xray-update.yml` workflow runs it through Updatecli once a day and opens a pull request when XTLS publishes a new stable release. The executable is not kept in git: `just build` runs the script when `teleport/Resources/xray` is missing or does not match the pin, and a build from Xcode fails until the script has been run once. Release builds are universal (`just build-release`), Debug builds are host-only. Licenses of the bundled components are in `THIRD_PARTY_NOTICES.md`.
 
 Formatting follows `.swift-format` (four-space indent, 160 columns). Check with `swift format lint -r teleport Shared TeleportPrivilegedHelper teleportTests TeleportPrivilegedHelperTests`.
+
+Editable Blender scenes and rendering instructions for the app icon are in [design/app-icon](design/app-icon).
 
 ### Tests
 

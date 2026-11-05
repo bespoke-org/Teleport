@@ -1,0 +1,50 @@
+{
+  "fill": {
+    "solid": "srgb:0.035294,0.039216,0.047059,1.000000"
+  },
+  "groups": [
+    {
+      "name": "02 \u00b7 Blender artwork",
+      "layers": [
+        {
+          "name": "Portal, particles and trails",
+          "image-name": "02-Artwork.png",
+          "glass": false
+        }
+      ],
+      "shadow": {
+        "kind": "none",
+        "opacity": 0
+      },
+      "specular": false,
+      "translucency": {
+        "enabled": false,
+        "value": 0
+      }
+    },
+    {
+      "name": "01 \u00b7 Graphite with blue, mint, cyan and lavender particles background",
+      "layers": [
+        {
+          "name": "Gradient",
+          "image-name": "01-Gradient.png",
+          "glass": false
+        }
+      ],
+      "shadow": {
+        "kind": "none",
+        "opacity": 0
+      },
+      "specular": false,
+      "translucency": {
+        "enabled": false,
+        "value": 0
+      }
+    }
+  ],
+  "supported-platforms": {
+    "squares": [
+      "macOS"
+    ]
+  }
+}

@@ -274,6 +274,8 @@ private struct GeneralSettingsView: View {
                     Text("Uses the selected portal and mode.")
                 }
             }
+
+            AppIconPicker(store: .shared)
         }
         .formStyle(.grouped)
         .padding(.top, -20)
