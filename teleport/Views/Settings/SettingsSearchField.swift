@@ -14,7 +14,10 @@ struct SettingsSearchField: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSTextField {
         let field = NSTextField()
-        field.placeholderString = "Search Settings"
+        field.placeholderAttributedString = NSAttributedString(
+            string: "Search Settings",
+            attributes: [.foregroundColor: NSColor.tertiaryLabelColor]
+        )
         field.setAccessibilityLabel("Search Settings")
         field.setAccessibilityIdentifier("settingsSearch")
         field.isBordered = false
