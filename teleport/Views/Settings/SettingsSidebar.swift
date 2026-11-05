@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Draws one neutral selection instead of combining SwiftUI and AppKit highlights.
@@ -41,6 +42,7 @@ struct SettingsSidebar: View {
         }
         .frame(minWidth: SettingsSidebarLayout.sidebarWidth, maxHeight: .infinity)
         .navigationSplitViewColumnWidth(SettingsSidebarLayout.sidebarWidth)
+        .background(SettingsSidebarBackdrop().ignoresSafeArea())
         .background(SettingsSidebarLayout())
         .onChange(of: query) { searchSelection = nil }
     }
@@ -73,10 +75,7 @@ struct SettingsSidebar: View {
         .font(.system(size: 12))
         .padding(.horizontal, 10)
         .frame(height: 28)
-        .background(Color.primary.opacity(0.06), in: Capsule())
-        .overlay {
-            Capsule().strokeBorder(Color.primary.opacity(searchFocused ? 0.15 : 0), lineWidth: 1)
-        }
+        .modifier(SettingsSearchGlass())
     }
 
     private func resultButton(_ result: SettingsSearchResult) -> some View {
@@ -143,4 +142,27 @@ struct SettingsSidebar: View {
         }
         open(results[next])
     }
+}
+
+private struct SettingsSearchGlass: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content.glassEffect(.regular.interactive(), in: Capsule())
+        } else {
+            content.background(.regularMaterial, in: Capsule())
+        }
+    }
+}
+
+/// Sample and blur the windows behind the sidebar rather than painting a solid fill.
+private struct SettingsSidebarBackdrop: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = .sidebar
+        view.blendingMode = .behindWindow
+        view.state = .followsWindowActiveState
+        return view
+    }
+
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {}
 }
