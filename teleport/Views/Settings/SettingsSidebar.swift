@@ -57,7 +57,7 @@ struct SettingsSidebar: View {
                     if let result = results.first(where: { $0.id == searchSelection }) ?? results.first { open(result) }
                 }
             )
-            .frame(height: 16)
+            .frame(height: 18)
             if !query.isEmpty {
                 Button {
                     query = ""
@@ -70,7 +70,7 @@ struct SettingsSidebar: View {
                 .accessibilityLabel("Clear search")
             }
         }
-        .font(.system(size: 12))
+        .font(.system(size: 14))
         .padding(.horizontal, 10)
         .frame(height: 28)
         .modifier(SettingsSearchGlass())

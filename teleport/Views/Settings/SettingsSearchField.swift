@@ -14,16 +14,17 @@ struct SettingsSearchField: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSTextField {
         let field = NSTextField()
+        let font = NSFont.systemFont(ofSize: 14)
         field.placeholderAttributedString = NSAttributedString(
-            string: "Search Settings",
-            attributes: [.foregroundColor: NSColor.tertiaryLabelColor]
+            string: "Search",
+            attributes: [.font: font, .foregroundColor: NSColor.secondaryLabelColor]
         )
         field.setAccessibilityLabel("Search Settings")
         field.setAccessibilityIdentifier("settingsSearch")
         field.isBordered = false
         field.drawsBackground = false
         field.focusRingType = .none
-        field.font = .systemFont(ofSize: 12)
+        field.font = font
         field.textColor = .labelColor
         field.delegate = context.coordinator
         field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
