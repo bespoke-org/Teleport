@@ -21,7 +21,7 @@ struct SettingsView: View {
                     navigation.select(section)
                 } label: {
                     Label {
-                        Text(section.title)
+                        Text(section.title).foregroundStyle(.primary)
                     } icon: {
                         SettingsSectionIcon(section: section)
                     }
@@ -30,6 +30,10 @@ struct SettingsView: View {
                 }
                 .buttonStyle(.plain)
                 .tag(section as SettingsSection?)
+                .listRowBackground(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.primary.opacity(navigation.section.sidebarSection == section ? 0.08 : 0))
+                )
             }
             .listStyle(.sidebar)
             .frame(minWidth: SettingsSidebarLayout.sidebarWidth, maxHeight: .infinity)
@@ -160,7 +164,7 @@ struct SettingsSectionIcon: View {
             .frame(width: iconSize, height: iconSize)
             .offset(x: section == .portals ? -1 : 0)
             .frame(width: 20, height: 20)
-            .background(section.iconColor.gradient, in: RoundedRectangle(cornerRadius: 5))
+            .background(section.iconGradient, in: RoundedRectangle(cornerRadius: 5))
             .overlay {
                 RoundedRectangle(cornerRadius: 5)
                     .strokeBorder(.white.opacity(0.2), lineWidth: 0.5)
@@ -369,6 +373,43 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         case .about:
             return "info.circle"
         }
+    }
+
+    var iconGradient: LinearGradient {
+        let colors: [Color]
+        switch self {
+        case .general:
+            colors = [
+                Color(red: 180.0 / 255, green: 189.0 / 255, blue: 200.0 / 255),
+                iconColor,
+                Color(red: 98.0 / 255, green: 111.0 / 255, blue: 129.0 / 255),
+            ]
+        case .portals:
+            colors = [
+                Color(red: 217.0 / 255, green: 87.0 / 255, blue: 241.0 / 255),
+                Color(red: 178.0 / 255, green: 50.0 / 255, blue: 232.0 / 255),
+                Color(red: 116.0 / 255, green: 52.0 / 255, blue: 200.0 / 255),
+            ]
+        case .splitTunneling, .geodata:
+            colors = [
+                Color(red: 103.0 / 255, green: 223.0 / 255, blue: 148.0 / 255),
+                iconColor,
+                Color(red: 19.0 / 255, green: 161.0 / 255, blue: 125.0 / 255),
+            ]
+        case .advanced:
+            colors = [
+                Color(red: 255.0 / 255, green: 189.0 / 255, blue: 69.0 / 255),
+                iconColor,
+                Color(red: 240.0 / 255, green: 106.0 / 255, blue: 61.0 / 255),
+            ]
+        case .logs, .about:
+            colors = [
+                Color(red: 102.0 / 255, green: 197.0 / 255, blue: 255.0 / 255),
+                iconColor,
+                Color(red: 75.0 / 255, green: 84.0 / 255, blue: 210.0 / 255),
+            ]
+        }
+        return LinearGradient(colors: colors, startPoint: .top, endPoint: .bottom)
     }
 
     var iconColor: Color {
