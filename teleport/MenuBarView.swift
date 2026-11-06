@@ -5,7 +5,6 @@ struct MenuBarView: View {
     @Environment(\.openWindow) private var openWindow
     @ObservedObject private var appIcons = AppIconStore.shared
     @ObservedObject var viewModel: AppViewModel
-    @Binding var navigation: SettingsNavigation
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -29,42 +28,49 @@ struct MenuBarView: View {
     }
 
     private var header: some View {
-        Button {
-            navigation.select(.portals)
-            showSettings()
-        } label: {
-            HStack(spacing: 10) {
-                Image(nsImage: appIcons.image(for: appIcons.selectedIcon) ?? NSApp.applicationIconImage)
-                    .resizable()
-                    .frame(width: 32, height: 32)
-                    .accessibilityHidden(true)
+        HStack(spacing: 10) {
+            Image(nsImage: appIcons.image(for: appIcons.selectedIcon) ?? NSApp.applicationIconImage)
+                .resizable()
+                .frame(width: 32, height: 32)
+                .accessibilityHidden(true)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Teleport")
-                        .font(.system(size: 14, weight: .semibold))
-                    HStack(spacing: 5) {
-                        Circle()
-                            .fill(headerStatusColor)
-                            .frame(width: 7, height: 7)
-                            .accessibilityHidden(true)
-                        Text(headerStatusText)
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                    }
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Teleport")
+                    .font(.system(size: 14, weight: .semibold))
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(headerStatusColor)
+                        .frame(width: 7, height: 7)
+                        .accessibilityHidden(true)
+                    Text(headerStatusText)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
                 }
-
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .contentShape(Rectangle())
+
+            Spacer(minLength: 8)
+
+            Button {
+                if viewModel.canDisconnect {
+                    viewModel.disconnect()
+                } else {
+                    viewModel.connect()
+                }
+            } label: {
+                Image(systemName: "power")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(viewModel.isConnected || viewModel.proxyPhase == .enabled ? Color.green : .primary)
+                    .frame(width: 32, height: 32)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(MenuBarPowerButtonStyle())
+            .disabled(!viewModel.canConnect && !viewModel.canDisconnect)
+            .help(viewModel.canDisconnect ? "Disconnect" : "Connect")
+            .accessibilityLabel(viewModel.canDisconnect ? "Disconnect" : "Connect")
+            .accessibilityValue(headerStatusText)
         }
-        .buttonStyle(MenuBarRowStyle())
-        .accessibilityLabel("Teleport, \(headerStatusText)")
-        .accessibilityHint("Open portals")
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
     }
 
     private var sectionDivider: some View {
@@ -148,23 +154,10 @@ struct MenuBarView: View {
 
     private var actionSection: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Button {
-                if viewModel.canDisconnect {
-                    viewModel.disconnect()
-                } else {
-                    viewModel.connect()
-                }
-            } label: {
-                actionLabel(viewModel.canDisconnect ? "Disconnect" : "Connect")
-            }
-            .disabled(!viewModel.canConnect && !viewModel.canDisconnect)
-
             Button(action: showSettings) {
                 actionLabel("Settings…", shortcut: "⌘ ,")
             }
             .keyboardShortcut(",", modifiers: .command)
-
-            sectionDivider
 
             Button {
                 NSApplication.shared.terminate(nil)
@@ -197,6 +190,19 @@ struct MenuBarView: View {
         DispatchQueue.main.async {
             openWindow(id: "settings")
         }
+    }
+}
+
+private struct MenuBarPowerButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var isHovered = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        let isHighlighted = isEnabled && (isHovered || configuration.isPressed)
+        return configuration.label
+            .background(Circle().fill(.primary.opacity(isHighlighted ? 0.25 : 0)))
+            .opacity(isEnabled ? 1 : 0.4)
+            .onHover { isHovered = $0 }
     }
 }
 
@@ -345,5 +351,5 @@ private struct ConnectionPickerSection: View, Equatable {
 }
 
 #Preview {
-    MenuBarView(viewModel: AppViewModel(), navigation: .constant(SettingsNavigation()))
+    MenuBarView(viewModel: AppViewModel())
 }
