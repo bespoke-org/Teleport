@@ -113,7 +113,9 @@ struct SettingsSidebar: View {
             HStack(alignment: .center, spacing: 8) {
                 SettingsSectionIcon(section: result.section)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(result.title).foregroundStyle(.primary)
+                    Text(result.title)
+                        .fontWeight(selected ? .semibold : .regular)
+                        .foregroundStyle(.primary)
                     if isSearching, let subtitle = result.subtitle {
                         Text(subtitle).font(.caption).foregroundStyle(.secondary)
                     }
