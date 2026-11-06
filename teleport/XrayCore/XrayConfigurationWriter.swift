@@ -629,6 +629,13 @@ nonisolated struct XrayConfigurationWriter {
                 "kernelMode": false,
                 "peers": [peer]
             ]
+            // WireGuard resolves domain destinations in its own userspace stack,
+            // including names restored by TLS sniffing. Xray's DNS section alone
+            // does not configure that resolver; use the peer's DNS here too.
+            let remoteDNS = Self.resolverAddresses(parameters.dnsServers)
+            if !remoteDNS.isEmpty {
+                settings["remoteDNS"] = remoteDNS
+            }
             settings["mtu"] = parameters.mtu ?? WireGuardParameters.defaultMTU
             if let reserved = parameters.reserved {
                 settings["reserved"] = reserved
