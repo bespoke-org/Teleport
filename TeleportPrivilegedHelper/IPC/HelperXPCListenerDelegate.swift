@@ -30,6 +30,8 @@ nonisolated final class HelperXPCListenerDelegate: NSObject, NSXPCListenerDelega
         let dataClasses = NSSet(object: NSData.self) as! Set<AnyHashable>
         let errorClasses = NSSet(object: NSError.self) as! Set<AnyHashable>
         let methods = [
+            #selector(TUNHelperXPCProtocol.readProxyPreferences(_:withReply:)),
+            #selector(TUNHelperXPCProtocol.applyProxyPreferences(_:withReply:)),
             #selector(TUNHelperXPCProtocol.getStatus(_:withReply:)),
             #selector(TUNHelperXPCProtocol.startSession(_:withReply:)),
             #selector(TUNHelperXPCProtocol.stopSession(_:withReply:)),

@@ -227,6 +227,10 @@ nonisolated final class XPCTUNHelperTransport: TUNHelperTransport {
         }
 
         switch command {
+        case .readProxyPreferences:
+            proxy.readProxyPreferences(requestData, withReply: reply)
+        case .applyProxyPreferences:
+            proxy.applyProxyPreferences(requestData, withReply: reply)
         case .status:
             proxy.getStatus(requestData, withReply: reply)
         case .startSession:
@@ -366,11 +370,11 @@ nonisolated final class XPCTUNHelperTransport: TUNHelperTransport {
         message: String
     ) -> TUNHelperTransportError {
         switch command {
-        case .startSession, .stopSession:
+        case .startSession, .stopSession, .applyProxyPreferences:
             // A proxy/reply-channel error does not prove whether a mutating
             // message reached the helper, so the client must reconcile it.
             return .interrupted
-        case .status, .readDiagnostics, .engageLeakGuard, .releaseLeakGuard:
+        case .status, .readDiagnostics, .engageLeakGuard, .releaseLeakGuard, .readProxyPreferences:
             // A guard message that may or may not have arrived needs no
             // reconciliation: engaging is idempotent, and the caller repeats it
             // every renewal anyway. Releasing is retried, and a lease that nobody
@@ -384,6 +388,8 @@ nonisolated final class XPCTUNHelperTransport: TUNHelperTransport {
         let dataClasses = NSSet(object: NSData.self) as! Set<AnyHashable>
         let errorClasses = NSSet(object: NSError.self) as! Set<AnyHashable>
         let methods = [
+            #selector(TUNHelperXPCProtocol.readProxyPreferences(_:withReply:)),
+            #selector(TUNHelperXPCProtocol.applyProxyPreferences(_:withReply:)),
             #selector(TUNHelperXPCProtocol.getStatus(_:withReply:)),
             #selector(TUNHelperXPCProtocol.startSession(_:withReply:)),
             #selector(TUNHelperXPCProtocol.stopSession(_:withReply:)),

@@ -16,6 +16,14 @@ nonisolated final class HelperXPCService: NSObject, TUNHelperXPCProtocol {
         super.init()
     }
 
+    func readProxyPreferences(_ request: Data, withReply reply: @escaping (Data?, NSError?) -> Void) {
+        dispatch(.readProxyPreferences, request: request, reply: reply)
+    }
+
+    func applyProxyPreferences(_ request: Data, withReply reply: @escaping (Data?, NSError?) -> Void) {
+        dispatch(.applyProxyPreferences, request: request, reply: reply)
+    }
+
     func getStatus(_ request: Data, withReply reply: @escaping (Data?, NSError?) -> Void) {
         dispatch(.status, request: request, reply: reply)
     }

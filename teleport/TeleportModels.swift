@@ -37,7 +37,7 @@ enum ConnectionMode: String, Codable, CaseIterable, Identifiable {
     var description: String {
         switch self {
         case .systemProxy:
-            return "Routes apps that respect macOS proxy settings through Xray."
+            return "Routes apps that respect macOS proxy settings through Xray. Updating and restoring proxy settings may require administrator approval."
         case .tun:
             return "Full-device Xray TUN tunnel. Requires administrator approval to start and stop."
         }
@@ -696,14 +696,14 @@ nonisolated struct SubscriptionSource: Codable, Equatable, Identifiable {
     }
 }
 
-enum SplitTunnelRuleKind: String, Codable, Equatable {
+nonisolated enum SplitTunnelRuleKind: String, Codable, Equatable {
     case domain
     case ip
     case geosite
     case geoip
 }
 
-enum SplitTunnelRuleAction: String, Codable, CaseIterable, Identifiable, Equatable {
+nonisolated enum SplitTunnelRuleAction: String, Codable, CaseIterable, Identifiable, Equatable {
     case direct
     case proxy
     case block
@@ -719,7 +719,7 @@ enum SplitTunnelRuleAction: String, Codable, CaseIterable, Identifiable, Equatab
     }
 }
 
-struct SplitTunnelRule: Codable, Equatable, Identifiable {
+nonisolated struct SplitTunnelRule: Codable, Equatable, Identifiable {
     let id: UUID
     var value: String
     var kind: SplitTunnelRuleKind

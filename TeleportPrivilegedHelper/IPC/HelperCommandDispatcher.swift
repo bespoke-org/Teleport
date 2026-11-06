@@ -102,6 +102,22 @@ actor HelperCommandDispatcher {
 
         do {
             switch command {
+            case .readProxyPreferences:
+                let request: TUNHelperRequestEnvelope<ReadProxyPreferencesRequest> = try TUNHelperCodec.decodeRequest(requestData)
+                return try await execute(
+                    command: command, requestID: request.requestID, responseSessionID: nil,
+                    usesObservedSessionID: false, successfulSessionID: nil, fingerprint: fingerprint
+                ) { [executor] in
+                    try executor.readProxyPreferences(request: request.payload)
+                }
+            case .applyProxyPreferences:
+                let request: TUNHelperRequestEnvelope<ApplyProxyPreferencesRequest> = try TUNHelperCodec.decodeRequest(requestData)
+                return try await execute(
+                    command: command, requestID: request.requestID, responseSessionID: nil,
+                    usesObservedSessionID: false, successfulSessionID: nil, fingerprint: fingerprint
+                ) { [executor] in
+                    try executor.applyProxyPreferences(request: request.payload)
+                }
             case .status:
                 let request: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(requestData)
                 let projectedSessionID = queuedSessionID ?? observedSessionID
@@ -342,6 +358,10 @@ actor HelperCommandDispatcher {
         let requestID = metadata?.requestID ?? UUID()
         let sessionID = metadata?.sessionID
         switch command {
+        case .readProxyPreferences:
+            return Self.encodeFailure(requestID: requestID, sessionID: sessionID, payloadType: ProxyPreferencesSnapshot.self, failure: failure)
+        case .applyProxyPreferences:
+            return Self.encodeFailure(requestID: requestID, sessionID: sessionID, payloadType: ApplyProxyPreferencesResponse.self, failure: failure)
         case .status:
             return Self.encodeFailure(requestID: requestID, sessionID: sessionID, payloadType: StatusResponse.self, failure: failure)
         case .startSession:
@@ -407,8 +427,10 @@ actor HelperCommandDispatcher {
 
         let allowedPayloadKeys: Set<String>
         switch command {
-        case .status:
+        case .status, .readProxyPreferences:
             allowedPayloadKeys = []
+        case .applyProxyPreferences:
+            allowedPayloadKeys = ["transactionID", "expected", "mutations"]
         case .startSession:
             allowedPayloadKeys = [
                 "stateDirectoryPath",

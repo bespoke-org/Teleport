@@ -13,6 +13,7 @@ nonisolated final class BackendConnectionProvider: ConnectionProvider, @unchecke
     private let supervisionInterval: TimeInterval
     private let supervisionLock = NSLock()
     private var supervisionTask: Task<Void, Never>?
+    private var changeTask: Task<Void, Never>?
     /// The connect currently queued or running, so a disconnect can cancel it.
     /// Cancellation only reaches the backend's pre-flight; once a connect has
     /// started changing the machine it ignores the cancellation and finishes.
@@ -35,6 +36,27 @@ nonisolated final class BackendConnectionProvider: ConnectionProvider, @unchecke
         let selfBox = WeakProviderBox()
         operationQueue = ConnectionOperationQueue { [backend, stateStore, mode] in
             if await backend.hasActiveRuntimeSession() {
+                do { try await backend.adoptRuntimeSession() } catch {
+                    // In particular, do not stop a helper owned by another app
+                    // instance when acquiring the proxy journal lock fails.
+                    stateStore.update(.failed(ConnectionFailure(error: error)))
+                    return
+                }
+                if let failure = await backend.sessionFailure() {
+                    stateStore.update(.failed(failure))
+                    do { try await backend.stop() } catch {
+                        let cleanup = ConnectionFailure(error: error)
+                        if cleanup != failure {
+                            stateStore.update(
+                                .failed(
+                                    ConnectionFailure(
+                                        summary: failure.summary,
+                                        details: [failure.details, cleanup.details ?? cleanup.summary].compactMap { $0 }.joined(separator: "\n"),
+                                        requiresExplicitReconnect: true)))
+                        }
+                    }
+                    return
+                }
                 stateStore.update(
                     .connected(ConnectionSession(id: UUID(), mode: mode, connectedAt: Date()))
                 )
@@ -91,6 +113,15 @@ nonisolated final class BackendConnectionProvider: ConnectionProvider, @unchecke
     /// proxy settings and routes are put back.
     private func superviseRuntime() {
         stopSupervising()
+        guard case .connected(let session) = stateStore.current() else { return }
+        let expectedSessionID = session.id
+        let changes = backend.sessionChanges()
+        let notifications = Task { [weak self] in
+            for await _ in changes {
+                guard !Task.isCancelled else { return }
+                guard await self?.checkSessionFailure(expectedSessionID) == false else { return }
+            }
+        }
         let task = Task { [weak self, backend, supervisionInterval] in
             // One negative answer is not a lost runtime: the check runs over XPC
             // with a short deadline and the first one after a wake can miss it.
@@ -99,6 +130,7 @@ nonisolated final class BackendConnectionProvider: ConnectionProvider, @unchecke
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: UInt64(supervisionInterval * 1_000_000_000))
                 guard !Task.isCancelled else { return }
+                guard await self?.checkSessionFailure(expectedSessionID) == false else { return }
                 if await backend.hasActiveRuntimeSession() {
                     missedChecks = 0
                     continue
@@ -106,12 +138,13 @@ nonisolated final class BackendConnectionProvider: ConnectionProvider, @unchecke
                 missedChecks += 1
                 TeleportLog.shared.warn("app", "runtime check \(missedChecks) of 2 found no running session")
                 guard missedChecks >= 2 else { continue }
-                self?.handleRuntimeLoss()
+                self?.handleRuntimeLoss(expectedSessionID)
                 return
             }
         }
         supervisionLock.lock()
         supervisionTask = task
+        changeTask = notifications
         supervisionLock.unlock()
     }
 
@@ -119,21 +152,54 @@ nonisolated final class BackendConnectionProvider: ConnectionProvider, @unchecke
         supervisionLock.lock()
         supervisionTask?.cancel()
         supervisionTask = nil
+        changeTask?.cancel()
+        changeTask = nil
         supervisionLock.unlock()
     }
 
-    private func handleRuntimeLoss() {
+    private func checkSessionFailure(_ expectedSessionID: UUID) async -> Bool {
+        (try? await operationQueue.enqueue { [backend, stateStore] in
+            guard case .connected(let session) = stateStore.current(), session.id == expectedSessionID else { return true }
+            guard let failure = await backend.sessionFailure() else { return false }
+            // Publish the explicit-reconnect requirement before teardown can
+            // trigger path notifications or allow queued view-model work to run.
+            stateStore.update(.failed(failure))
+            do { try await backend.stop() } catch {
+                let cleanup = ConnectionFailure(error: error)
+                if cleanup != failure {
+                    stateStore.update(
+                        .failed(
+                            ConnectionFailure(
+                                summary: failure.summary,
+                                details: [failure.details, "Cleanup: \(cleanup.details ?? cleanup.summary)"].compactMap { $0 }.joined(separator: "\n"),
+                                requiresExplicitReconnect: true
+                            )))
+                }
+            }
+            return true
+        }) ?? true
+    }
+
+    private func handleRuntimeLoss(_ expectedSessionID: UUID) {
         Task { [operationQueue, backend, stateStore, mode] in
             try? await operationQueue.enqueue {
                 // A disconnect that was already queued behind the check wins.
-                guard case .connected = stateStore.current() else { return }
-                stateStore.update(.failed(ConnectionFailure(
-                    summary: "Xray stopped unexpectedly",
-                    details: mode == .tun
-                        ? "The tunnel's routes were removed so the machine routes directly. Reconnect to start it again."
-                        : "System proxy settings were restored so the machine routes directly. Reconnect to start it again."
-                )))
-                try? await backend.stop()
+                guard case .connected(let session) = stateStore.current(), session.id == expectedSessionID else { return }
+                // A proxy conflict discovered during cleanup takes precedence
+                // over the generic runtime-loss explanation.
+                stateStore.update(
+                    .failed(
+                        ConnectionFailure(
+                            summary: "Xray stopped unexpectedly",
+                            details: mode == .tun
+                                ? "The tunnel's routes were removed so the machine routes directly. Reconnect to start it again."
+                                : "System proxy settings were restored so the machine routes directly. Reconnect to start it again."
+                        )))
+                do { try await backend.stop() } catch {
+                    if let failure = error as? ConnectionFailure, failure.requiresExplicitReconnect {
+                        stateStore.update(.failed(failure))
+                    }
+                }
             }
         }
     }
@@ -145,6 +211,7 @@ nonisolated final class BackendConnectionProvider: ConnectionProvider, @unchecke
     func connect(_ request: ConnectionRequest) async throws {
         stopSupervising()
         let task = await operationQueue.register { [weak self, backend, stateStore, mode] in
+            try stateStore.validateReconnect(isAutomatic: request.isAutomaticReconnect)
             let previousState = stateStore.current()
             stateStore.update(.preparing)
             stateStore.update(.connecting)
@@ -161,6 +228,16 @@ nonisolated final class BackendConnectionProvider: ConnectionProvider, @unchecke
                     try await backend.reconnect(request, reportPhase: reportPhase)
                 } else {
                     try await backend.start(request, reportPhase: reportPhase)
+                }
+                if let failure = await backend.sessionFailure() {
+                    do { try await backend.stop() } catch {
+                        let cleanup = ConnectionFailure(error: error)
+                        throw ConnectionFailure(
+                            summary: failure.summary,
+                            details: [failure.details, cleanup.details ?? cleanup.summary].compactMap { $0 }.joined(separator: "\n"),
+                            requiresExplicitReconnect: true)
+                    }
+                    throw failure
                 }
                 stateStore.update(
                     .connected(ConnectionSession(id: UUID(), mode: mode, connectedAt: Date()))
@@ -211,12 +288,20 @@ nonisolated final class BackendConnectionProvider: ConnectionProvider, @unchecke
 
 /// Not generic: Swift 6.3.3 (Xcode 26.6) crashes in EarlyPerfInliner on the
 /// deinit of a generic version of this class in Release builds.
-private final class WeakProviderBox: @unchecked Sendable {
+nonisolated private final class WeakProviderBox: @unchecked Sendable {
     private let lock = NSLock()
     private weak var stored: BackendConnectionProvider?
     var value: BackendConnectionProvider? {
-        get { lock.lock(); defer { lock.unlock() }; return stored }
-        set { lock.lock(); stored = newValue; lock.unlock() }
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return stored
+        }
+        set {
+            lock.lock()
+            stored = newValue
+            lock.unlock()
+        }
     }
 }
 
