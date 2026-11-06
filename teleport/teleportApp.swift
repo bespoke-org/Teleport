@@ -84,7 +84,7 @@ struct TeleportApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            MenuBarView(viewModel: viewModel, navigation: $settingsNavigation)
+            MenuBarView(viewModel: viewModel)
         } label: {
             MenuBarIconView(
                 phase: viewModel.connectionPhase,
