@@ -430,6 +430,15 @@ final class SplitTunnelingTests: XCTestCase {
         )
         let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
 
+        // TLS sniffing replaces the IP with the hostname before WireGuard dials.
+        // Its userspace stack has a separate resolver from Xray's DNS module.
+        let wireGuardOutbound = (payload?["outbounds"] as? [[String: Any]])?.first {
+            $0["tag"] as? String == "proxy-1"
+        }
+        let wireGuardSettings = wireGuardOutbound?["settings"] as? [String: Any]
+        XCTAssertEqual(wireGuardSettings?["remoteDNS"] as? [String], ["10.72.0.53"],
+                       "WireGuard must resolve sniffed private names with the peer's DNS, not its public defaults")
+
         let servers = (payload?["dns"] as? [String: Any])?["servers"] as? [Any] ?? []
         guard let firstServer = servers.first as? [String: Any] else {
             XCTFail("expected the peer's resolver to be consulted first")
