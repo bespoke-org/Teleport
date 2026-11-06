@@ -1886,24 +1886,39 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private func refreshSubscription(id: UUID, autoSelectFirstImported: Bool) {
+    private enum SubscriptionRefreshOrigin {
+        case userInitiated
+        case background
+    }
+
+    private func refreshSubscription(
+        id: UUID,
+        autoSelectFirstImported: Bool,
+        origin: SubscriptionRefreshOrigin = .userInitiated
+    ) {
         guard let source = subscriptionSources.first(where: { $0.id == id }) else { return }
         if isSubscriptionInUse(id: id) {
-            setStoredError("Disconnect before refreshing the active subscription")
+            if origin == .userInitiated {
+                setStoredError("Disconnect before refreshing the active subscription")
+            }
             return
         }
 
-        startSubscriptionRefresh(for: source, autoSelectFirstImported: autoSelectFirstImported)
+        startSubscriptionRefresh(for: source, autoSelectFirstImported: autoSelectFirstImported, origin: origin)
     }
 
-    private func startSubscriptionRefresh(for source: SubscriptionSource, autoSelectFirstImported: Bool) {
+    private func startSubscriptionRefresh(
+        for source: SubscriptionSource,
+        autoSelectFirstImported: Bool,
+        origin: SubscriptionRefreshOrigin
+    ) {
         let refreshToken = UUID()
         subscriptionRefreshTokens[source.id] = refreshToken
         refreshingSubscriptionIDs.insert(source.id)
         updateSubscriptionSource(source.id) {
             $0.lastError = nil
         }
-        setStoredError(nil)
+        if origin == .userInitiated { setStoredError(nil) }
         persistSettingError()
 
         let parser = parser
@@ -1941,14 +1956,15 @@ final class AppViewModel: ObservableObject {
                     routing: fetched.routing,
                     to: source.id,
                     fetchedAt: Date(),
-                    autoSelectFirstImported: autoSelectFirstImported
+                    autoSelectFirstImported: autoSelectFirstImported,
+                    origin: origin
                 )
             } catch {
                 guard self?.subscriptionRefreshTokens[source.id] == refreshToken else { return }
                 self?.updateSubscriptionSource(source.id) {
                     $0.lastError = error.localizedDescription
                 }
-                self?.applyStoredError(error)
+                if origin == .userInitiated { self?.applyStoredError(error) }
                 self?.persistSettingError()
             }
         }
@@ -1975,15 +1991,20 @@ final class AppViewModel: ObservableObject {
         routing: SubscriptionRoutingImport?,
         to sourceID: UUID,
         fetchedAt: Date,
-        autoSelectFirstImported: Bool
+        autoSelectFirstImported: Bool,
+        origin: SubscriptionRefreshOrigin
     ) {
         if isSubscriptionInUse(id: sourceID) {
             refreshingSubscriptionIDs.remove(sourceID)
-            updateSubscriptionSource(sourceID) {
-                $0.lastError = "Disconnect before refreshing the active subscription"
+            // A connection can start while the download is in flight. Keep the
+            // active configs and refresh timestamp so the next timer can retry.
+            if origin == .userInitiated {
+                updateSubscriptionSource(sourceID) {
+                    $0.lastError = "Disconnect before refreshing the active subscription"
+                }
+                setStoredError("Disconnect before refreshing the active subscription")
+                persistSettingError()
             }
-            setStoredError("Disconnect before refreshing the active subscription")
-            persistSettingError()
             return
         }
 
@@ -2030,7 +2051,7 @@ final class AppViewModel: ObservableObject {
         }
 
         refreshingSubscriptionIDs.remove(sourceID)
-        setStoredError(nil)
+        if origin == .userInitiated { setStoredError(nil) }
         updateMenuBarAnimation()
         persistSettingError()
         refreshSubscriptionHealth(id: sourceID, force: true)
@@ -2075,11 +2096,11 @@ final class AppViewModel: ObservableObject {
     private func refreshUnfetchedSubscriptionsIfNeeded() {
         let shouldAutoSelectFirstImported = savedConnections.isEmpty
         for source in subscriptionSources where source.lastRefreshedAt == nil && !refreshingSubscriptionIDs.contains(source.id) {
-            refreshSubscription(id: source.id, autoSelectFirstImported: shouldAutoSelectFirstImported)
+            refreshSubscription(id: source.id, autoSelectFirstImported: shouldAutoSelectFirstImported, origin: .background)
         }
     }
 
-    private func performScheduledSubscriptionRefreshes() {
+    func performScheduledSubscriptionRefreshes() {
         let now = Date()
 
         for source in subscriptionSources {
@@ -2094,7 +2115,7 @@ final class AppViewModel: ObservableObject {
                 continue
             }
 
-            refreshSubscription(id: source.id, autoSelectFirstImported: false)
+            refreshSubscription(id: source.id, autoSelectFirstImported: false, origin: .background)
         }
     }
 

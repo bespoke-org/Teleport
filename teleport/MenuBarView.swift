@@ -3,37 +3,74 @@ import SwiftUI
 
 struct MenuBarView: View {
     @Environment(\.openWindow) private var openWindow
+    @ObservedObject private var appIcons = AppIconStore.shared
     @ObservedObject var viewModel: AppViewModel
+    @Binding var navigation: SettingsNavigation
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 0) {
             header
+            sectionDivider
             configurationSection
+            sectionDivider
             actionSection
 
             if let error = viewModel.connectionError?.summary ?? viewModel.lastError {
-                Divider()
+                sectionDivider
                 Label(error, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
+                    .padding(8)
             }
         }
-        .padding(14)
+        .padding(8)
         .frame(width: 280)
     }
 
     private var header: some View {
-        HStack(alignment: .top) {
-            Text("Teleport")
-                .font(.headline)
+        Button {
+            navigation.select(.portals)
+            showSettings()
+        } label: {
+            HStack(spacing: 10) {
+                Image(nsImage: appIcons.image(for: appIcons.selectedIcon) ?? NSApp.applicationIconImage)
+                    .resizable()
+                    .frame(width: 32, height: 32)
+                    .accessibilityHidden(true)
 
-            Spacer()
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Teleport")
+                        .font(.system(size: 14, weight: .semibold))
+                    HStack(spacing: 5) {
+                        Circle()
+                            .fill(headerStatusColor)
+                            .frame(width: 7, height: 7)
+                            .accessibilityHidden(true)
+                        Text(headerStatusText)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    }
+                }
 
-            Text(headerStatusText)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(headerStatusColor)
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(MenuBarRowStyle())
+        .accessibilityLabel("Teleport, \(headerStatusText)")
+        .accessibilityHint("Open portals")
+    }
+
+    private var sectionDivider: some View {
+        Divider()
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
     }
 
     private var headerStatusText: String {
@@ -60,13 +97,17 @@ struct MenuBarView: View {
     }
 
     private var headerStatusColor: Color {
+        if viewModel.isConnected || viewModel.proxyPhase == .enabled {
+            return .green
+        }
+        if viewModel.isInstallingHelper {
+            return .orange
+        }
         switch viewModel.connectionPhase {
         case .failed:
             return .red
         case .starting, .stopping:
             return .orange
-        case _ where viewModel.proxyPhase == .enabled:
-            return Color(NSColor.systemGreen.withAlphaComponent(0.72))
         case .unconfigured:
             return .secondary
         default:
@@ -106,31 +147,78 @@ struct MenuBarView: View {
     }
 
     private var actionSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Button(viewModel.canDisconnect ? "Disconnect" : "Connect") {
-                    if viewModel.canDisconnect {
-                        viewModel.disconnect()
-                    } else {
-                        viewModel.connect()
-                    }
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                if viewModel.canDisconnect {
+                    viewModel.disconnect()
+                } else {
+                    viewModel.connect()
                 }
-                .disabled(!viewModel.canConnect && !viewModel.canDisconnect)
+            } label: {
+                actionLabel(viewModel.canDisconnect ? "Disconnect" : "Connect")
+            }
+            .disabled(!viewModel.canConnect && !viewModel.canDisconnect)
 
-                Button("Settings") {
-                    NSApplication.shared.activate(ignoringOtherApps: true)
-                    DispatchQueue.main.async {
-                        openWindow(id: "settings")
-                    }
-                }
+            Button(action: showSettings) {
+                actionLabel("Settings…", shortcut: "⌘ ,")
+            }
+            .keyboardShortcut(",", modifiers: .command)
 
-                Spacer()
+            sectionDivider
 
-                Button("Quit") {
-                    NSApplication.shared.terminate(nil)
-                }
+            Button {
+                NSApplication.shared.terminate(nil)
+            } label: {
+                actionLabel("Quit Teleport", shortcut: "⌘ Q")
+            }
+            .keyboardShortcut("q", modifiers: .command)
+        }
+        .buttonStyle(MenuBarRowStyle())
+    }
+
+    private func actionLabel(_ title: String, shortcut: String? = nil) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            if let shortcut {
+                Text(shortcut)
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
             }
         }
+        .font(.system(size: 13))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+    }
+
+    private func showSettings() {
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        DispatchQueue.main.async {
+            openWindow(id: "settings")
+        }
+    }
+}
+
+private struct MenuBarRowStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var isHovered = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        let isHighlighted = isEnabled && (isHovered || configuration.isPressed)
+        return configuration.label
+            .foregroundStyle(.primary)
+            .opacity(isEnabled ? 1 : 0.4)
+            .background {
+                if #available(macOS 26.0, *) {
+                    ConcentricRectangle(corners: .concentric(minimum: 12), isUniform: true)
+                        .fill(.primary.opacity(isHighlighted ? 0.25 : 0))
+                } else {
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(.primary.opacity(isHighlighted ? 0.25 : 0))
+                }
+            }
+            .onHover { isHovered = $0 }
     }
 }
 
@@ -157,6 +245,7 @@ private struct ConnectionPickerSection: View, Equatable {
             && lhs.importedItemsBySourceID == rhs.importedItemsBySourceID
             && lhs.selectedConnectionID == rhs.selectedConnectionID
             && lhs.selectedDisplayName == rhs.selectedDisplayName
+            && lhs.subtitle == rhs.subtitle
             && lhs.canChangeSelection == rhs.canChangeSelection
             && lhs.showsLatency == rhs.showsLatency
     }
@@ -165,8 +254,9 @@ private struct ConnectionPickerSection: View, Equatable {
         VStack(alignment: .leading, spacing: 8) {
             if savedConnectionCount == 0 {
                 Text("No saved portals")
-                    .font(.caption)
+                    .font(.system(size: 12))
                     .foregroundStyle(.secondary)
+                    .padding(8)
             } else {
                 Menu {
                     if !manualItems.isEmpty {
@@ -186,28 +276,29 @@ private struct ConnectionPickerSection: View, Equatable {
                     HStack(spacing: 8) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(selectedDisplayName)
-                                .foregroundStyle(.primary)
-                            Text(subtitle)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .font(.system(size: 13))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
                         }
 
                         Spacer(minLength: 8)
 
-                        Image(systemName: "chevron.up.chevron.down")
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(.secondary)
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(Color(nsColor: .controlBackgroundColor))
-                    )
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .contentShape(Rectangle())
                 }
                 .simultaneousGesture(TapGesture().onEnded {
                     pickerHealthSnapshot = makeHealthSnapshot()
                 })
-                .menuStyle(.borderlessButton)
+                .menuStyle(.button)
+                .buttonStyle(MenuBarRowStyle())
+                .menuIndicator(.hidden)
+                .help(subtitle)
+                .accessibilityLabel("Portal: \(selectedDisplayName)")
                 .disabled(!canChangeSelection)
             }
         }
@@ -254,5 +345,5 @@ private struct ConnectionPickerSection: View, Equatable {
 }
 
 #Preview {
-    MenuBarView(viewModel: AppViewModel())
+    MenuBarView(viewModel: AppViewModel(), navigation: .constant(SettingsNavigation()))
 }

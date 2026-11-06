@@ -8,18 +8,18 @@ struct PortalsToolbar: ToolbarContent {
 
     var body: some ToolbarContent {
         if #available(macOS 26.0, *) {
-            ToolbarItem(id: "portals.search", placement: .primaryAction) {
-                search
-                    .glassEffect(.regular.interactive(), in: Capsule())
-                    .visibility(isActive)
-            }
-            .sharedBackgroundVisibility(.hidden)
-            ToolbarSpacer(.fixed, placement: .primaryAction)
-            ToolbarItem(id: "portals.add", placement: .primaryAction) {
-                add
-                    .buttonStyle(.plain)
-                    .glassEffect(.regular.interactive(), in: Circle())
-                    .visibility(isActive)
+            ToolbarItem(id: "portals.actions", placement: .primaryAction) {
+                // Own the gap between our custom glass shapes. Native toolbar
+                // spacers do not reliably separate items with hidden backgrounds.
+                HStack(spacing: 8) {
+                    search
+                        .glassEffect(.regular.interactive(), in: Capsule())
+                    add
+                        .buttonStyle(.plain)
+                        .glassEffect(.regular.interactive(), in: Circle())
+                }
+                .padding(.trailing, 4)
+                .visibility(isActive)
             }
             .sharedBackgroundVisibility(.hidden)
         } else if isActive {

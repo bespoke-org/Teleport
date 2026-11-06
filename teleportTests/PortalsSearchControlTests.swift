@@ -90,7 +90,11 @@ final class PortalsSearchControlTests: XCTestCase {
 
 @MainActor
 private final class SearchState: ObservableObject {
-    @Published var query = ""
+    @Published var portals = PortalsState()
+    var query: String {
+        get { portals.query }
+        set { portals.query = newValue }
+    }
 }
 
 private struct SearchFixture: View {
@@ -99,7 +103,7 @@ private struct SearchFixture: View {
     var body: some View {
         Color.clear.frame(width: 700, height: 400)
             .toolbar {
-                ToolbarItem(placement: .primaryAction) { PortalsSearchControl(query: $state.query) }
+                PortalsToolbar(state: $state.portals, isActive: true)
             }
     }
 }
