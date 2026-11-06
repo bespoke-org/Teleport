@@ -3,6 +3,20 @@
 Format is based on [_Keep a changelog_](https://keepachangelog.com) and uses
 [_Semantic versioning_](https://semver.org).
 
+## [0.6.0-rc.1] - 2026-11-06
+### Features
+- New app icon with selectable color palettes
+- Add settings search and polish sidebar navigation (#57)
+- Import subscription routing headers
+- Redesign menu bar controls and quiet background refreshes
+
+### Bug fixes
+- Prevent settings tests from hanging in CI
+- Honor peer DNS in WireGuard outbounds
+
+### Documentation
+- Add before and after menu bar screenshots
+
 ## [0.5.0] - 2026-10-31
 ### Features
 - Reorganize settings navigation and preferences
