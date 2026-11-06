@@ -38,6 +38,7 @@ struct SettingsClickAwayRegion: NSViewRepresentable {
 
 /// Observes clicks without consuming them or competing with row controls and dragging.
 struct SettingsClickAwayMonitor: NSViewRepresentable {
+    @Environment(\.isEnabled) private var isEnabled
     let scope: SettingsClickAwayScope
     let isActive: Bool
     let onClickAway: () -> Void
@@ -46,7 +47,7 @@ struct SettingsClickAwayMonitor: NSViewRepresentable {
 
     func updateNSView(_ view: MonitorView, context: Context) {
         view.scope = scope
-        view.isActive = isActive
+        view.isActive = isActive && isEnabled
         view.onClickAway = onClickAway
         view.updateMonitoring()
     }

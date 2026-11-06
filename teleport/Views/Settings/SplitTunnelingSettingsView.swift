@@ -142,7 +142,6 @@ struct SplitTunnelingSettingsView: View {
         .listStyle(.inset)
         .scrollContentBackground(.hidden)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .navigationTitle("Split Routing")
         .background(SettingsClickAwayMonitor(scope: ruleClickScope, isActive: selectedRuleID != nil) {
             selectedRuleID = nil
         })

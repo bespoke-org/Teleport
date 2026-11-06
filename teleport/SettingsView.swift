@@ -8,7 +8,6 @@ struct SettingsView: View {
     @Binding var navigation: SettingsNavigation
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var portalsState = PortalsState()
-    @State private var hasOpenedAbout = false
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             SettingsSidebar(navigation: $navigation)
@@ -55,31 +54,26 @@ struct SettingsView: View {
         }
         .focusedSceneValue(\.settingsNavigation, $navigation)
         .navigationSplitViewStyle(.balanced)
+        .transaction(value: navigation.section) { transaction in
+            transaction.animation = nil
+            transaction.disablesAnimations = true
+        }
         .frame(minHeight: SettingsSidebarLayout.minimumContentSize.height)
     }
 
-    // About has no page-scoped tasks. Retain its form after the first visit so
-    // returning does not reconstruct its controls and text-selection machinery.
-    @ViewBuilder
     private var detailContent: some View {
-        ZStack {
-            if navigation.section != .about {
-                selectedSectionView
-            }
-            if navigation.section == .about || hasOpenedAbout {
-                AboutSettingsView()
-                    .opacity(navigation.section == .about ? 1 : 0)
-                    .allowsHitTesting(navigation.section == .about)
-                    .accessibilityHidden(navigation.section != .about)
-                    .disabled(navigation.section != .about)
-                    .onAppear { hasOpenedAbout = true }
-            }
+        SettingsPages(selection: navigation.section) { section in
+            sectionView(section)
+        }
+        .onChange(of: navigation.section, initial: true) { _, section in
+            if section == .general { viewModel.refreshStartsAtLoginStatus() }
+            if section == .general || section == .advanced { viewModel.refreshHelperInstallationStatus() }
         }
     }
 
     @ViewBuilder
-    private var selectedSectionView: some View {
-        switch navigation.section {
+    private func sectionView(_ section: SettingsSection) -> some View {
+        switch section {
         case .general:
             GeneralSettingsView(viewModel: viewModel)
         case .portals:
@@ -93,7 +87,7 @@ struct SettingsView: View {
         case .logs:
             LogsSettingsView()
         case .about:
-            EmptyView()
+            AboutSettingsView()
         }
     }
 }
@@ -256,11 +250,6 @@ private struct GeneralSettingsView: View {
         }
         .formStyle(.grouped)
         .padding(.top, -20)
-        .navigationTitle("General")
-        .onAppear {
-            viewModel.refreshStartsAtLoginStatus()
-            viewModel.refreshHelperInstallationStatus()
-        }
     }
 
     private func modeDescription(for mode: ConnectionMode) -> String {

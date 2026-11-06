@@ -108,10 +108,6 @@ struct AdvancedSettingsView: View {
         }
         .formStyle(.grouped)
         .padding(.top, -20)
-        .navigationTitle("Nerd Shit")
-        .onAppear {
-            viewModel.refreshHelperInstallationStatus()
-        }
     }
 
     private var helperDescription: String {

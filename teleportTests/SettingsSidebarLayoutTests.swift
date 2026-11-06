@@ -29,6 +29,7 @@ final class SettingsSidebarLayoutTests: XCTestCase {
                         clickCount: 1, pressure: 1
                     )))
         }
+        XCTAssertEqual(model.navigation.section, .portals, "Page selection must happen immediately on mouse release")
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertEqual(model.navigation.section, .portals)
         let arrowDown = try XCTUnwrap(
@@ -100,6 +101,33 @@ final class SettingsSidebarLayoutTests: XCTestCase {
         window.sendEvent(enter)
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertEqual(model.navigation.section, .splitTunneling, "Down enters results and advances to the second match")
+    }
+
+    func testVisitedPagesAreReusedAndNestedPagesAreReleased() async throws {
+        _ = NSApplication.shared
+        let model = SidebarModel()
+        var appearances: [SettingsSection: Int] = [:]
+        var disappearances: [SettingsSection: Int] = [:]
+        let host = NSHostingController(rootView: PageFixture(model: model, appeared: {
+            appearances[$0, default: 0] += 1
+        }, disappeared: {
+            disappearances[$0, default: 0] += 1
+        }))
+        let window = NSWindow(contentViewController: host)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.makeKeyAndOrderFront(nil)
+        try await Task.sleep(for: .milliseconds(100))
+        for section: SettingsSection in [.portals, .general, .advanced, .logs, .general, .logs, .portals] {
+            model.navigation.select(section)
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        for section: SettingsSection in [.general, .portals, .advanced] {
+            XCTAssertEqual(appearances[section], 1, "Returning to a page must reuse its controls")
+            XCTAssertNil(disappearances[section])
+        }
+        XCTAssertEqual(appearances[.logs], 2)
+        XCTAssertEqual(disappearances[.logs], 2, "Leaving Logs must end its page-scoped work")
     }
 
     func testScrollViewportExtendsBehindSearchBar() async throws {
@@ -214,4 +242,19 @@ private struct SidebarFixture: View {
 @Observable
 private final class SidebarModel {
     var navigation = SettingsNavigation()
+}
+
+private struct PageFixture: View {
+    let model: SidebarModel
+    let appeared: (SettingsSection) -> Void
+    let disappeared: (SettingsSection) -> Void
+
+    var body: some View {
+        SettingsPages(selection: model.navigation.section) { section in
+            Text(section.title)
+                .onAppear { appeared(section) }
+                .onDisappear { disappeared(section) }
+        }
+        .frame(width: 400, height: 300)
+    }
 }
