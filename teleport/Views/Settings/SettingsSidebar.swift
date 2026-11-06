@@ -102,6 +102,7 @@ struct SettingsSidebar: View {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .keyboardShortcut(.cancelAction)
                 .help("Clear search")
                 .accessibilityLabel("Clear search")
             }

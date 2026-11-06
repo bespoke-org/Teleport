@@ -82,6 +82,11 @@ final class SettingsSidebarLayoutTests: XCTestCase {
         window.sendEvent(enter)
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertEqual(model.navigation.section, .advanced, "Return opens the matching settings page")
+        XCTAssertNil(search.currentEditor(), "Opening a result moves focus out of the search editor")
+        window.sendEvent(escape)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(search.stringValue, "", "Escape must also clear search after opening a result")
+        XCTAssertEqual(model.navigation.section, .advanced, "Clearing search must keep the opened page")
 
         for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
             NSApp.sendEvent(
@@ -103,6 +108,27 @@ final class SettingsSidebarLayoutTests: XCTestCase {
         window.sendEvent(enter)
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertEqual(model.navigation.section, .splitTunneling, "Down enters results and advances to the second match")
+
+        window.sendEvent(escape)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(search.stringValue, "")
+        let clearedEditor = try XCTUnwrap(search.currentEditor() as? NSTextView)
+        clearedEditor.insertText("socks5", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await Task.sleep(for: .milliseconds(100))
+        let resultY: CGFloat = 8 + 28 + 16 + 16
+        let resultPoint = view.convert(NSPoint(x: 80, y: view.isFlipped ? resultY : view.bounds.height - resultY), to: nil)
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            NSApp.sendEvent(try XCTUnwrap(NSEvent.mouseEvent(
+                with: type, location: resultPoint, modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1
+            )))
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(model.navigation.section, .advanced, "Clicking a search result opens its page")
+        window.sendEvent(escape)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(search.stringValue, "", "Escape also clears search after clicking a result")
+        XCTAssertEqual(model.navigation.section, .advanced)
     }
 
     func testVisitedPagesAreReusedAndNestedPagesAreReleased() async throws {
