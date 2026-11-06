@@ -17,6 +17,8 @@ final class SettingsSidebarLayoutTests: XCTestCase {
         let split = try XCTUnwrap(splitController(in: host.view))
         let sidebar = try XCTUnwrap(split.splitViewItems.first { $0.behavior == .sidebar })
         let view = sidebar.viewController.view
+        let search = try XCTUnwrap(searchField(in: view))
+        XCTAssertNil(search.currentEditor(), "Opening Settings must not start editing the search field")
         // Click Portals in the real sidebar, including its focus handling.
         let y: CGFloat = 8 + 28 + 16 + 32 + 16
         let point = view.convert(NSPoint(x: 80, y: view.isFlipped ? y : view.bounds.height - y), to: nil)
@@ -208,6 +210,11 @@ final class SettingsSidebarLayoutTests: XCTestCase {
     private func scrollView(in view: NSView) -> NSScrollView? {
         if let scroll = view as? NSScrollView { return scroll }
         return view.subviews.compactMap { scrollView(in: $0) }.first
+    }
+
+    private func searchField(in view: NSView) -> NSTextField? {
+        if let field = view as? NSTextField, field.accessibilityIdentifier() == "settingsSearch" { return field }
+        return view.subviews.compactMap { searchField(in: $0) }.first
     }
 
     private func tableView(in view: NSView) -> NSTableView? {

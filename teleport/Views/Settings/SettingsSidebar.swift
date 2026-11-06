@@ -21,6 +21,13 @@ struct SettingsSidebar: View {
             .frame(minWidth: SettingsSidebarLayout.sidebarWidth, maxHeight: .infinity)
             .navigationSplitViewColumnWidth(SettingsSidebarLayout.sidebarWidth)
             .background(SettingsSidebarLayout())
+            .background(SettingsInitialFocus())
+            .onAppear {
+                focus = .result(SettingsSearchResult(
+                    section: navigation.section.sidebarSection,
+                    title: navigation.section.sidebarSection.title
+                ).id)
+            }
             .onChange(of: query) { searchSelection = nil }
     }
 
