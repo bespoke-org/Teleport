@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// Keeps sidebar animation inside the window instead of letting AppKit grow it.
+/// Keeps sidebar sizing stable when toggling its visibility.
 struct SettingsSidebarLayout: NSViewRepresentable {
     static let sidebarWidth: CGFloat = 200
     static let minimumDetailWidth: CGFloat = 560
@@ -30,10 +30,11 @@ struct SettingsSidebarLayout: NSViewRepresentable {
             var ancestor = superview
             while let view = ancestor {
                 if let splitView = view as? NSSplitView,
-                   let controller = splitView.delegate as? NSSplitViewController,
-                   let sidebar = controller.splitViewItems.first(where: {
-                       $0.behavior == .sidebar && isDescendant(of: $0.viewController.view)
-                   }) {
+                    let controller = splitView.delegate as? NSSplitViewController,
+                    let sidebar = controller.splitViewItems.first(where: {
+                        $0.behavior == .sidebar && isDescendant(of: $0.viewController.view)
+                    })
+                {
                     // AppKit's default expansion can add the sidebar width to the window
                     // when its minimum is kept constant while the sidebar is collapsed.
                     // Let the existing pane constraints redistribute the available width.
@@ -45,5 +46,6 @@ struct SettingsSidebarLayout: NSViewRepresentable {
                 ancestor = view.superview
             }
         }
+
     }
 }
