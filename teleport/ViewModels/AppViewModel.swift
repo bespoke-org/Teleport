@@ -145,6 +145,9 @@ final class AppViewModel: ObservableObject {
     private var persistWorkItem: DispatchWorkItem?
     private var splitTunnelApplyWorkItem: DispatchWorkItem?
     private var pendingSplitTunnelLiveApply = false
+    /// Subscription imports persist immediately but leave the current session
+    /// alone, including callbacks from a connect or edit already in progress.
+    private var hasDeferredSubscriptionRoutingChanges = false
     /// The request whose `connect` is still running, kept so the applied split-tunnel
     /// policy can be recorded once the provider reports `.connected`. Not a queue.
     private var inFlightConnectionRequest: (operationID: UUID, request: ConnectionRequest)?
@@ -155,6 +158,7 @@ final class AppViewModel: ObservableObject {
     private var importedConnectionsBySourceID: [UUID: [SavedConnection]] = [:]
     private var importedConnectionCountsBySourceID: [UUID: Int] = [:]
     private var subscriptionSourcesByID: [UUID: SubscriptionSource] = [:]
+    private var subscriptionRefreshTokens: [UUID: UUID] = [:]
 
     convenience init() {
         let leakGuard = LeakGuardService()
@@ -645,6 +649,7 @@ final class AppViewModel: ObservableObject {
         rebuildSavedConnectionIndexes()
         rebuildSubscriptionSourceIndexes()
         refreshingSubscriptionIDs.remove(id)
+        subscriptionRefreshTokens.removeValue(forKey: id)
         let removedIDs = Set(affectedConnections.map(\.id))
         cancelHealthProbes(ids: removedIDs)
         normalizeSelection()
@@ -997,6 +1002,9 @@ final class AppViewModel: ObservableObject {
     /// toggles) into a single TUN reconnect once the user settles, instead of
     /// tearing the tunnel down and back up on every individual change.
     private func scheduleSplitTunnelLiveApply() {
+        // An explicit edit resumes live application, including any imported
+        // changes the user has since reviewed in the editor.
+        hasDeferredSubscriptionRoutingChanges = false
         guard connectionMode == .tun, hasActiveConnectionSession else { return }
         guard hasEstablishedConnection else {
             pendingSplitTunnelLiveApply = true
@@ -1012,8 +1020,11 @@ final class AppViewModel: ObservableObject {
     }
 
     private func applySplitTunnelRulesLiveIfNeeded() {
-        guard !isTerminating, connectionMode == .tun, hasEstablishedConnection else { return }
-        guard !isOperationPending else {
+        guard !isTerminating, !hasDeferredSubscriptionRoutingChanges,
+              connectionMode == .tun, hasEstablishedConnection else { return }
+        // connect() may return before its .connected update reaches this model.
+        // Wait until that update records the request's applied policy as well.
+        guard !isOperationPending, inFlightConnectionRequest == nil else {
             pendingSplitTunnelLiveApply = true
             return
         }
@@ -1707,6 +1718,8 @@ final class AppViewModel: ObservableObject {
 
     private func startConnection(using configuration: ConnectionConfiguration, afterUplinkChange: Bool = false) {
         guard !isTerminating else { return }
+        // A new connection captures all current settings, including imports.
+        hasDeferredSubscriptionRoutingChanges = false
 
         // The helper pins routes to the gateway that is current when its script
         // runs, which is moments from now; the connected state can arrive seconds
@@ -1884,6 +1897,8 @@ final class AppViewModel: ObservableObject {
     }
 
     private func startSubscriptionRefresh(for source: SubscriptionSource, autoSelectFirstImported: Bool) {
+        let refreshToken = UUID()
+        subscriptionRefreshTokens[source.id] = refreshToken
         refreshingSubscriptionIDs.insert(source.id)
         updateSubscriptionSource(source.id) {
             $0.lastError = nil
@@ -1895,29 +1910,41 @@ final class AppViewModel: ObservableObject {
         let subscriptionClient = subscriptionClient
 
         Task { @MainActor [weak self] in
+            defer {
+                if self?.subscriptionRefreshTokens[source.id] == refreshToken {
+                    self?.subscriptionRefreshTokens.removeValue(forKey: source.id)
+                    self?.refreshingSubscriptionIDs.remove(source.id)
+                }
+            }
             do {
                 guard let url = URL(string: source.urlString) else {
                     throw SubscriptionError.invalidURL
                 }
 
-                let candidates = try await subscriptionClient.fetchCandidates(from: url)
+                let fetched = try await subscriptionClient.fetch(from: url)
+                // A newer refresh (or source deletion) invalidates this request.
+                // Cosmetic URL edits do not invalidate a pending import.
+                guard self?.subscriptionRefreshTokens[source.id] == refreshToken else { return }
                 let importResult = try SubscriptionImportProcessor.importEntries(
-                    candidates: candidates,
+                    candidates: fetched.candidates,
                     parser: parser,
                     sourceID: source.id,
                     filterDuplicateImports: source.filterDuplicateImports
                 )
+                let importStatus = [importResult.statusMessage, fetched.routingWarning]
+                    .compactMap { $0 }.joined(separator: " ")
 
                 self?.applyImportedEntries(
                     importResult.importedEntries,
                     skippedCount: importResult.skippedCount,
-                    importStatus: importResult.statusMessage,
+                    importStatus: importStatus.isEmpty ? nil : importStatus,
+                    routing: fetched.routing,
                     to: source.id,
                     fetchedAt: Date(),
                     autoSelectFirstImported: autoSelectFirstImported
                 )
             } catch {
-                self?.refreshingSubscriptionIDs.remove(source.id)
+                guard self?.subscriptionRefreshTokens[source.id] == refreshToken else { return }
                 self?.updateSubscriptionSource(source.id) {
                     $0.lastError = error.localizedDescription
                 }
@@ -1945,6 +1972,7 @@ final class AppViewModel: ObservableObject {
         _ importedEntries: [ImportedSubscriptionEntry],
         skippedCount: Int,
         importStatus: String?,
+        routing: SubscriptionRoutingImport?,
         to sourceID: UUID,
         fetchedAt: Date,
         autoSelectFirstImported: Bool
@@ -1978,6 +2006,22 @@ final class AppViewModel: ObservableObject {
         invalidateHealthChecksForImportedConnections(from: sourceID)
         rebuildSavedConnectionIndexes()
         selectedConnectionID = replacementResult.selectedConnectionID
+
+        if let routing {
+            let previousPolicy = SplitTunnelPolicy(rules: activeSplitTunnelRules, defaultAction: activeSplitTunnelDefaultAction)
+            routing.apply(
+                to: &splitTunnelProfiles, sourceID: sourceID,
+                selectedProfileID: &selectedSplitTunnelProfileID,
+                isEnabled: &isSplitTunnelEnabled
+            )
+            let importedPolicy = SplitTunnelPolicy(rules: activeSplitTunnelRules, defaultAction: activeSplitTunnelDefaultAction)
+            if hasActiveConnectionSession, previousPolicy != importedPolicy {
+                hasDeferredSubscriptionRoutingChanges = true
+                splitTunnelApplyWorkItem?.cancel()
+                splitTunnelApplyWorkItem = nil
+                pendingSplitTunnelLiveApply = false
+            }
+        }
 
         updateSubscriptionSource(sourceID) {
             $0.lastRefreshedAt = fetchedAt

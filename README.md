@@ -43,6 +43,27 @@ Without a `DEVELOPMENT_TEAM` the build is signed ad hoc. Both System Proxy and T
 
 On first launch the app has no connections. Add a link or a subscription URL in Settings > Connections. The same page can add two community subscription lists that ship with the app (`packaging/bundled-connections.json`, from [igareck/vpn-configs-for-russia](https://github.com/igareck/vpn-configs-for-russia)). They are not added on their own: the servers in those lists are run by people nobody here knows, and everything sent through them can be read or altered by whoever operates them.
 
+## Subscription routing
+
+Subscription responses can deliver a Happ/INCY routing profile in the HTTP `routing`
+header. Teleport imports it into Settings > Split Tunneling as soon as the
+subscription is added, and updates that subscription's profile on refresh.
+The header accepts raw base64 JSON, `happ://routing/onadd/<base64>`,
+`incy://routing/onadd/<base64>` and the scheme-less `://routing/onadd/<base64>` form.
+`onadd` (and raw base64) selects the profile and enables split tunneling;
+`add` stores it without changing the selected profile; `off` or
+`<scheme>://routing/off` disables split tunneling while keeping profiles.
+
+The imported fields are `Name`, `GlobalProxy`, `RouteOrder`, and the
+`DirectSites`/`DirectIp`, `ProxySites`/`ProxyIp`, `BlockSites`/`BlockIp` lists.
+Rules support domains (including `domain:` and `full:`), IP/CIDR, `geosite:` and
+`geoip:`. They apply in TUN mode on the next connection. Profile DNS settings,
+geodata URLs, FakeDNS, chunk files and `DomainStrategy` are not transferred;
+Teleport reports these in the subscription's status and uses its own settings.
+Invalid routing leaves existing profiles intact and does not prevent server
+imports. Routing links in the response body and the separate `autorouting`
+header are not imported.
+
 ## Connection modes
 
 ### System Proxy

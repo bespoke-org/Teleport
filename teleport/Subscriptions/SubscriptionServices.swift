@@ -107,16 +107,37 @@ struct SubscriptionConnectionReconciler {
     }
 }
 
+struct SubscriptionFetchResult {
+    let candidates: [SubscriptionCandidate]
+    let routing: SubscriptionRoutingImport?
+    let routingWarning: String?
+
+    init(data: Data, response: HTTPURLResponse) throws {
+        candidates = try SubscriptionPayloadDecoder().decode(data)
+        let result = SubscriptionRoutingHeaderParser().parse(response.value(forHTTPHeaderField: "routing"))
+        routing = result.routing
+        routingWarning = result.warning
+    }
+}
+
 struct SubscriptionClient {
-    func fetchCandidates(from url: URL) async throws -> [SubscriptionCandidate] {
-        let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
+    private let loadResponse: @Sendable (URLRequest) async throws -> (Data, URLResponse)
+
+    init(loadResponse: @escaping @Sendable (URLRequest) async throws -> (Data, URLResponse) = { request in
         let session = URLSession(configuration: .ephemeral)
         defer { session.finishTasksAndInvalidate() }
+        return try await session.data(for: request)
+    }) {
+        self.loadResponse = loadResponse
+    }
+
+    func fetch(from url: URL) async throws -> SubscriptionFetchResult {
+        let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
 
         let responseData: Data
         let response: URLResponse
         do {
-            (responseData, response) = try await session.data(for: request)
+            (responseData, response) = try await loadResponse(request)
         } catch let error as URLError where error.code == .cancelled {
             throw CancellationError()
         } catch is CancellationError {
@@ -137,6 +158,6 @@ struct SubscriptionClient {
             throw SubscriptionError.emptyPayload
         }
 
-        return try SubscriptionPayloadDecoder().decode(responseData)
+        return try SubscriptionFetchResult(data: responseData, response: httpResponse)
     }
 }

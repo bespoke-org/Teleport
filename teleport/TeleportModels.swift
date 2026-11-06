@@ -775,12 +775,15 @@ struct SplitTunnelProfile: Codable, Equatable, Identifiable {
     /// whitelist (only matched destinations use the proxy) without hand-writing a
     /// catch-all rule.
     var defaultAction: SplitTunnelRuleAction
+    /// Present only for profiles delivered by a subscription's HTTP headers.
+    var subscriptionSourceID: UUID?
 
-    init(id: UUID = UUID(), name: String, rules: [SplitTunnelRule] = [], defaultAction: SplitTunnelRuleAction = .proxy) {
+    init(id: UUID = UUID(), name: String, rules: [SplitTunnelRule] = [], defaultAction: SplitTunnelRuleAction = .proxy, subscriptionSourceID: UUID? = nil) {
         self.id = id
         self.name = name
         self.rules = rules
         self.defaultAction = defaultAction
+        self.subscriptionSourceID = subscriptionSourceID
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -788,6 +791,7 @@ struct SplitTunnelProfile: Codable, Equatable, Identifiable {
         case name
         case rules
         case defaultAction
+        case subscriptionSourceID
     }
 
     init(from decoder: Decoder) throws {
@@ -796,6 +800,7 @@ struct SplitTunnelProfile: Codable, Equatable, Identifiable {
         name = try container.decodeIfPresent(String.self, forKey: .name) ?? "Profile"
         rules = try container.decodeIfPresent([SplitTunnelRule].self, forKey: .rules) ?? []
         defaultAction = try container.decodeIfPresent(SplitTunnelRuleAction.self, forKey: .defaultAction) ?? .proxy
+        subscriptionSourceID = try container.decodeIfPresent(UUID.self, forKey: .subscriptionSourceID)
     }
 }
 
