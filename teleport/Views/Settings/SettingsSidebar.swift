@@ -34,12 +34,14 @@ struct SettingsSidebar: View {
     @ViewBuilder
     private var scrollWithSearch: some View {
         if #available(macOS 26.0, *) {
-            sidebarScroll
+            sidebarScroll()
                 .safeAreaBar(edge: .top, spacing: 16) { searchHeader }
                 .scrollEdgeEffectStyle(.soft, for: .top)
         } else {
-            sidebarScroll
-                .safeAreaInset(edge: .top, spacing: 16) { searchHeader }
+            // Pad the scrollable rows, keeping the viewport behind search.
+            // safeAreaInset clips the native scroll view below the header on macOS 15.
+            sidebarScroll(topPadding: 8 + 28 + 16)
+                .overlay(alignment: .top) { searchHeader }
         }
     }
 
@@ -49,7 +51,7 @@ struct SettingsSidebar: View {
             .padding(.top, 8)
     }
 
-    private var sidebarScroll: some View {
+    private func sidebarScroll(topPadding: CGFloat = 0) -> some View {
         ScrollView {
             VStack(spacing: 0) {
                 ForEach(results) { result in
@@ -64,6 +66,7 @@ struct SettingsSidebar: View {
                 }
             }
             .padding(.horizontal, 10)
+            .padding(.top, topPadding)
             .padding(.bottom, 8)
         }
         .onMoveCommand(perform: moveSelection)

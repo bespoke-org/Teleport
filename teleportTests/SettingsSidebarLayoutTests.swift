@@ -22,15 +22,7 @@ final class SettingsSidebarLayoutTests: XCTestCase {
         // Click Portals in the real sidebar, including its focus handling.
         let y: CGFloat = 8 + 28 + 16 + 32 + 16
         let point = view.convert(NSPoint(x: 80, y: view.isFlipped ? y : view.bounds.height - y), to: nil)
-        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-            NSApp.sendEvent(
-                try XCTUnwrap(
-                    NSEvent.mouseEvent(
-                        with: type, location: point, modifierFlags: [], timestamp: 0,
-                        windowNumber: window.windowNumber, context: nil, eventNumber: 0,
-                        clickCount: 1, pressure: 1
-                    )))
-        }
+        try click(in: window, at: point)
         XCTAssertEqual(model.navigation.section, .portals, "Page selection must happen immediately on mouse release")
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertEqual(model.navigation.section, .portals)
@@ -49,15 +41,7 @@ final class SettingsSidebarLayoutTests: XCTestCase {
 
         let searchY: CGFloat = 8 + 14
         let searchPoint = view.convert(NSPoint(x: 80, y: view.isFlipped ? searchY : view.bounds.height - searchY), to: nil)
-        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-            NSApp.sendEvent(
-                try XCTUnwrap(
-                    NSEvent.mouseEvent(
-                        with: type, location: searchPoint, modifierFlags: [], timestamp: 0,
-                        windowNumber: window.windowNumber, context: nil, eventNumber: 0,
-                        clickCount: 1, pressure: 1
-                    )))
-        }
+        try click(in: window, at: searchPoint)
         let editor = try XCTUnwrap(window.firstResponder as? NSTextView)
         editor.insertText("socks5", replacementRange: NSRange(location: NSNotFound, length: 0))
         try await Task.sleep(for: .milliseconds(100))
@@ -88,15 +72,7 @@ final class SettingsSidebarLayoutTests: XCTestCase {
         XCTAssertEqual(search.stringValue, "", "Escape must also clear search after opening a result")
         XCTAssertEqual(model.navigation.section, .advanced, "Clearing search must keep the opened page")
 
-        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-            NSApp.sendEvent(
-                try XCTUnwrap(
-                    NSEvent.mouseEvent(
-                        with: type, location: searchPoint, modifierFlags: [], timestamp: 0,
-                        windowNumber: window.windowNumber, context: nil, eventNumber: 0,
-                        clickCount: 1, pressure: 1
-                    )))
-        }
+        try click(in: window, at: searchPoint)
         let searchEditor = try XCTUnwrap(window.firstResponder as? NSTextView)
         searchEditor.selectAll(nil)
         searchEditor.insertText("proxy", replacementRange: NSRange(location: NSNotFound, length: 0))
@@ -117,18 +93,29 @@ final class SettingsSidebarLayoutTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(100))
         let resultY: CGFloat = 8 + 28 + 16 + 16
         let resultPoint = view.convert(NSPoint(x: 80, y: view.isFlipped ? resultY : view.bounds.height - resultY), to: nil)
-        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-            NSApp.sendEvent(try XCTUnwrap(NSEvent.mouseEvent(
-                with: type, location: resultPoint, modifierFlags: [], timestamp: 0,
-                windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1
-            )))
-        }
+        try click(in: window, at: resultPoint)
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertEqual(model.navigation.section, .advanced, "Clicking a search result opens its page")
         window.sendEvent(escape)
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertEqual(search.stringValue, "", "Escape also clears search after clicking a result")
         XCTAssertEqual(model.navigation.section, .advanced)
+    }
+
+    func testClickReleasesMouseTrackingLoop() async throws {
+        _ = NSApplication.shared
+        let trackingView = MouseTrackingView(frame: NSRect(x: 10, y: 10, width: 100, height: 24))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 160, height: 80),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentView?.addSubview(trackingView)
+        window.makeKeyAndOrderFront(nil)
+        try await Task.sleep(for: .milliseconds(100))
+
+        try click(in: window, at: NSPoint(x: 30, y: 22))
+
+        XCTAssertTrue(trackingView.receivedMouseUp, "Mouse-up must be available inside the mouse-down tracking loop")
     }
 
     func testVisitedPagesAreReusedAndNestedPagesAreReleased() async throws {
@@ -178,7 +165,8 @@ final class SettingsSidebarLayoutTests: XCTestCase {
 
     func testSidebarTogglesKeepWindowFrameAtMinimumAndLargerWidths() async throws {
         _ = NSApplication.shared
-        let host = NSHostingController(rootView: SidebarFixture())
+        let model = SidebarModel()
+        let host = NSHostingController(rootView: SidebarFixture(model: model))
         let window = NSWindow(contentViewController: host)
         window.isReleasedWhenClosed = false
         window.styleMask.insert(.resizable)
@@ -200,11 +188,14 @@ final class SettingsSidebarLayoutTests: XCTestCase {
         let split = try XCTUnwrap(splitController(in: host.view))
         let sidebar = try XCTUnwrap(split.splitViewItems.first { $0.behavior == .sidebar })
         XCTAssertEqual(sidebar.collapseBehavior, .useConstraints)
+        let initialConnectionFrame = model.connectionFrame
 
         for width in [SettingsSidebarLayout.minimumContentSize.width, 900, 1100] {
             window.setContentSize(NSSize(width: width, height: 600))
             try await Task.sleep(for: .milliseconds(100))
             let expectedFrame = window.frame
+            let expectedConnectionFrame = model.connectionFrame
+            XCTAssertGreaterThan(expectedConnectionFrame.width, 0)
             for collapsed in [true, false, true, false] {
                 split.toggleSidebar(nil)
                 var firstChangedFrame: NSRect?
@@ -221,8 +212,37 @@ final class SettingsSidebarLayoutTests: XCTestCase {
                 XCTAssertEqual(sidebar.isCollapsed, collapsed)
                 if !collapsed {
                     XCTAssertEqual(sidebar.viewController.view.frame.width, SettingsSidebarLayout.sidebarWidth, accuracy: 1)
+                    XCTAssertEqual(model.connectionFrame.minX, expectedConnectionFrame.minX, accuracy: 1,
+                                   "Connection must return to its original position after reopening the sidebar")
+                    XCTAssertEqual(model.connectionFrame.width, expectedConnectionFrame.width, accuracy: 1)
                 }
             }
+        }
+        window.setContentSize(NSSize(width: 900, height: 600))
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(model.connectionFrame.minX, initialConnectionFrame.minX, accuracy: 1,
+                       "Connection must retain its position after toggling and restoring the original window width")
+        XCTAssertEqual(model.connectionFrame.width, initialConnectionFrame.width, accuracy: 1)
+    }
+
+    private func click(in window: NSWindow, at point: NSPoint) throws {
+        let down = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseDown, location: point, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+            clickCount: 1, pressure: 1
+        ))
+        let up = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseUp, location: point, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+            clickCount: 1, pressure: 0
+        ))
+        // Native controls may wait for mouse-up inside mouseDown's tracking loop.
+        NSApp.postEvent(up, atStart: true)
+        NSApp.sendEvent(down)
+        // SwiftUI controls can return immediately, leaving mouse-up to dispatch.
+        if let pending = NSApp.nextEvent(matching: .leftMouseUp, until: .distantPast,
+                                         inMode: .default, dequeue: true) {
+            NSApp.sendEvent(pending)
         }
     }
 
@@ -258,9 +278,14 @@ private struct SidebarFixture: View {
             SettingsSidebar(navigation: $model.navigation)
         } detail: {
             Form {
-                Section("Connection") {
+                Section {
                     Text("Mode")
                     Text("Protect traffic")
+                } header: {
+                    Text("Connection")
+                        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
+                            model.connectionFrame = $0
+                        }
                 }
             }
             .formStyle(.grouped)
@@ -275,6 +300,7 @@ private struct SidebarFixture: View {
 @Observable
 private final class SidebarModel {
     var navigation = SettingsNavigation()
+    var connectionFrame = CGRect.zero
 }
 
 private struct PageFixture: View {
@@ -289,5 +315,20 @@ private struct PageFixture: View {
                 .onDisappear { disappeared(section) }
         }
         .frame(width: 400, height: 300)
+    }
+}
+
+/// Model AppKit controls that consume mouse-up before returning from mouseDown.
+@MainActor
+private final class MouseTrackingView: NSView {
+    private(set) var receivedMouseUp = false
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        receivedMouseUp = window?.nextEvent(
+            matching: .leftMouseUp, until: Date(timeIntervalSinceNow: 0.1),
+            inMode: .eventTracking, dequeue: true
+        ) != nil
     }
 }

@@ -199,6 +199,9 @@ package-open: package
 # Run the XCTest bundles of the teleport scheme; the Debug app is built for the build-approval check
 test: fetch-xray
     xcodebuild test \
+      -test-timeouts-enabled YES \
+      -default-test-execution-time-allowance 60 \
+      -maximum-test-execution-time-allowance 120 \
       -project {{project}} \
       -scheme {{scheme}} \
       -destination '{{debug_destination}}' \
@@ -207,6 +210,9 @@ test: fetch-xray
 # Run one test class or method of either bundle. Usage: just test-case CoreTests[/testMethod]
 test-case name: fetch-xray
     xcodebuild test \
+      -test-timeouts-enabled YES \
+      -default-test-execution-time-allowance 60 \
+      -maximum-test-execution-time-allowance 120 \
       -project {{project}} \
       -scheme {{scheme}} \
       -destination '{{debug_destination}}' \

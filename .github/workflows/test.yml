@@ -22,6 +22,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(inputs.matrix) }}
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
     env:
       DEVELOPER_DIR: ${{ matrix.developer-dir }}
     steps:
@@ -43,3 +44,13 @@ jobs:
       - run: just build-debug
 
       - run: just test
+        timeout-minutes: 15
+
+      - name: Upload test diagnostics
+        if: ${{ failure() || cancelled() }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: test-diagnostics-macos-${{ matrix.macos }}-${{ matrix.arch }}
+          path: build/DerivedData/Logs/Test/
+          if-no-files-found: ignore
+          retention-days: 7
