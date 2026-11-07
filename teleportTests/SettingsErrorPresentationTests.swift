@@ -46,14 +46,28 @@ final class SettingsErrorPresentationTests: XCTestCase {
             NSApp.windows.contains { !existing.contains($0.windowNumber) && $0.isVisible && $0.frame.height > 100 }
         }
         model.issue = SettingsIssue(kind: .action, failure: ConnectionFailure(summary: "New failure", details: "Fresh details"))
-        await awaitUIUpdate("Updated error details are rendered")
-        let latest = try XCTUnwrap(NSApp.windows.first { !existing.contains($0.windowNumber) && $0.isVisible })
+        await awaitUIUpdate("Updated error details are rendered") {
+            NSApp.windows.contains {
+                !existing.contains($0.windowNumber) && $0.isVisible && self.containsText("New failure", in: $0)
+            }
+        }
+        let latest = try XCTUnwrap(NSApp.windows.first {
+            !existing.contains($0.windowNumber) && $0.isVisible && containsText("New failure", in: $0)
+        })
         // The footer is fixed within the popover: Dismiss is its trailing button.
         try click(in: latest, at: NSPoint(x: latest.frame.width - 55, y: 38))
         await awaitUIUpdate("Dismiss acknowledges the new error and closes details") { model.issue == nil && !latest.isVisible }
         XCTAssertEqual(model.dismissed.map(\.failure.summary), ["New failure"])
         XCTAssertNil(model.issue)
         XCTAssertFalse(latest.isVisible)
+    }
+
+    private func containsText(_ text: String, in element: Any) -> Bool {
+        guard let accessible = element as? NSAccessibilityProtocol else { return false }
+        if accessible.accessibilityValue() as? String == text || accessible.accessibilityLabel() == text {
+            return true
+        }
+        return (accessible.accessibilityChildren() ?? []).contains { containsText(text, in: $0) }
     }
 
     private func click(in window: NSWindow, at point: NSPoint = NSPoint(x: 180, y: 80)) throws {
