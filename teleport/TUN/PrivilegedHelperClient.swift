@@ -381,7 +381,7 @@ nonisolated struct PrivilegedHelperClient: Sendable {
     }
 
     private func mapClientError(_ error: Error) -> Error {
-        if error is PrivilegedHelperClientError {
+        if error is PrivilegedHelperClientError || error is ConnectionFailure {
             return error
         }
         if let transportError = error as? TUNHelperTransportError {

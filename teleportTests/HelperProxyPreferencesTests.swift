@@ -27,7 +27,7 @@ final class HelperProxyPreferencesTests: XCTestCase {
         XCTAssertThrowsError(try preferences.transaction { _, apply in
             try apply([ProxyMutation(serviceID: "wifi", values: ["HTTPEnable": .number(1)])])
         }) { error in
-            XCTAssertTrue((error as? ConnectionFailure)?.requiresExplicitReconnect == true)
+            XCTAssertTrue((error as? ConnectionFailure)?.requiresExplicitReconnect == true, "Unexpected error: \(error)")
         }
         XCTAssertEqual(transport.inventory.services["wifi"]?.values["HTTPEnable"], .number(0))
     }

@@ -248,14 +248,15 @@ final class HelperCommandDispatchTests: XCTestCase {
         XCTAssert(readAdmitted.wait(timeout: .now() + 5) == .success)
         XCTAssertEqual(executor.commands, [.applyProxyPreferences])
         executor.releaseStart.signal()
-        let written: TUNHelperResponseEnvelope<ApplyProxyPreferencesResponse> = try await TUNHelperCodec.decodeResponse(writeResponse)
+        let originalReply = await writeResponse
+        let written: TUNHelperResponseEnvelope<ApplyProxyPreferencesResponse> = try TUNHelperCodec.decodeResponse(originalReply)
         let snapshot: TUNHelperResponseEnvelope<ProxyPreferencesSnapshot> = try await TUNHelperCodec.decodeResponse(readResponse)
         XCTAssertEqual(written.payload?.applied, true)
         XCTAssertNotNil(snapshot.payload)
         XCTAssertEqual(executor.commands, [.applyProxyPreferences, .readProxyPreferences])
         // Ledger replay returns the previous reply without executing again.
         let repeated = await dispatcher.dispatch(command: .applyProxyPreferences, requestData: write)
-        XCTAssertEqual(repeated, try TUNHelperCodec.encodeResponse(written))
+        XCTAssertEqual(repeated, originalReply)
         XCTAssertEqual(executor.commands, [.applyProxyPreferences, .readProxyPreferences])
     }
 
