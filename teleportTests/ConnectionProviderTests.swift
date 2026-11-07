@@ -385,6 +385,23 @@ final class ConnectionProviderTests: XCTestCase {
             systemProxyService: SystemProxyService(fileManager: fileManager, log: log),
             log: log
         )
+        @MainActor func waitForCurrentConnection(file: StaticString = #filePath, line: UInt = #line) async {
+            let delivered = XCTestExpectation(description: "Current provider session reaches the model")
+            var completed = false
+            let observation = Publishers.CombineLatest(viewModel.$connectionState, viewModel.$isOperationPending)
+                .sink { _, _ in
+                    Task { @MainActor in
+                        let providerState = await provider.currentState()
+                        guard !completed, providerState.isConnected, !viewModel.isOperationPending,
+                              viewModel.connectionState == providerState else { return }
+                        completed = true
+                        delivered.fulfill()
+                    }
+                }
+            defer { observation.cancel() }
+            let result = await XCTWaiter.fulfillment(of: [delivered], timeout: 5)
+            XCTAssertEqual(result, .completed, "The current session was not delivered", file: file, line: line)
+        }
         await waitUntil("selection is ready") { await MainActor.run { viewModel.canConnect } }
         let first = connections[0].id
         let second = connections[1].id
@@ -401,9 +418,7 @@ final class ConnectionProviderTests: XCTestCase {
             }
             viewModel.selectConnection(id: second)
             viewModel.selectConnection(id: latest)
-            await waitUntil("the latest choice replaces the cancelled pre-flight") {
-                await MainActor.run { viewModel.isConnected && !viewModel.isOperationPending }
-            }
+            await waitForCurrentConnection()
             XCTAssert(backend.requestedConnectionIDs() == [first, latest])
             XCTAssert(backend.recordedCalls() == ["start", "cancel", "start"])
             XCTAssert(viewModel.selectedConnectionID == latest && viewModel.lastError == nil)
@@ -430,9 +445,7 @@ final class ConnectionProviderTests: XCTestCase {
         XCTAssert(viewModel.savedConnections.contains { $0.id == first }, "the in-flight server must remain protected")
         viewModel.selectConnection(id: third)
         await backend.startGate.open()
-        await waitUntil("latest initial selection connects") {
-            await MainActor.run { viewModel.isConnected && !viewModel.isOperationPending }
-        }
+        await waitForCurrentConnection()
         XCTAssert(backend.requestedConnectionIDs() == [first, third])
         XCTAssert(viewModel.canChangeSelection)
         viewModel.selectConnection(id: third)
@@ -453,9 +466,7 @@ final class ConnectionProviderTests: XCTestCase {
         XCTAssert(viewModel.canChangeSelection && viewModel.lastError == nil)
         XCTAssert(backend.requestedConnectionIDs() == [first, third, second])
         await backend.reconnectGate.open()
-        await waitUntil("the latest replacement server connects") {
-            await MainActor.run { viewModel.isConnected && !viewModel.isOperationPending }
-        }
+        await waitForCurrentConnection()
         XCTAssert(backend.requestedConnectionIDs() == [first, third, second, first])
         XCTAssert(viewModel.lastError == nil)
 
@@ -466,9 +477,7 @@ final class ConnectionProviderTests: XCTestCase {
         viewModel.selectConnection(id: second)
         await backend.reconnectGate.waitUntilEntered()
         await backend.reconnectGate.open()
-        await waitUntil("the original target connects without another switch") {
-            await MainActor.run { viewModel.isConnected && !viewModel.isOperationPending }
-        }
+        await waitForCurrentConnection()
         XCTAssert(backend.requestedConnectionIDs() == [first, third, second, first, second])
 
         // A failure must not discard a newer selection.
@@ -478,9 +487,7 @@ final class ConnectionProviderTests: XCTestCase {
         await backend.reconnectGate.waitUntilEntered()
         viewModel.selectConnection(id: first)
         await backend.reconnectGate.open()
-        await waitUntil("a newer selection recovers from the previous failure") {
-            await MainActor.run { viewModel.isConnected && !viewModel.isOperationPending }
-        }
+        await waitForCurrentConnection()
         XCTAssert(viewModel.selectedConnectionID == first && viewModel.lastError == nil)
         XCTAssert(Array(backend.requestedConnectionIDs().suffix(2)) == [third, first])
 
@@ -495,9 +502,7 @@ final class ConnectionProviderTests: XCTestCase {
         viewModel.selectConnection(id: first)
         XCTAssert(!viewModel.isOperationPending, "selection after failure must not start a hidden connection")
         viewModel.connect()
-        await waitUntil("retry connects") {
-            await MainActor.run { viewModel.isConnected && !viewModel.isOperationPending }
-        }
+        await waitForCurrentConnection()
 
         // Disconnect wins over any pending selection.
         await backend.reconnectGate.enableBlocking()
@@ -968,34 +973,36 @@ final class ConnectionProviderTests: XCTestCase {
     /// Async gate used instead of a DispatchSemaphore: blocking a cooperative
     /// thread inside an async backend call would stall the concurrency pool.
     private actor Gate {
-        private var entered = false
-        private var opened = false
         private var shouldBlock = false
+        private var hasEntered = false
+        private var entered = XCTestExpectation(description: "Backend operation entered")
+        private var continuations: [CheckedContinuation<Void, Never>] = []
 
         func enableBlocking() {
-            entered = false
-            opened = false
+            precondition(continuations.isEmpty, "Finish the previous operation before rearming its gate")
             shouldBlock = true
+            hasEntered = false
+            entered = XCTestExpectation(description: "Backend operation entered")
         }
 
         func enter() async {
             guard shouldBlock else { return }
-            entered = true
-            while !opened {
-                try? await Task.sleep(nanoseconds: 2_000_000)
-            }
+            hasEntered = true
+            entered.fulfill()
+            await withCheckedContinuation { continuations.append($0) }
         }
 
         func open() {
-            opened = true
+            shouldBlock = false
+            let pending = continuations
+            continuations.removeAll()
+            pending.forEach { $0.resume() }
         }
 
-        func waitUntilEntered(timeout: TimeInterval = 2) async {
-            let deadline = Date().addingTimeInterval(timeout)
-            while !entered && Date() < deadline {
-                try? await Task.sleep(nanoseconds: 2_000_000)
-            }
-            XCTAssert(entered, "backend call did not start in time")
+        func waitUntilEntered(file: StaticString = #filePath, line: UInt = #line) async {
+            guard !hasEntered else { return }
+            let result = await XCTWaiter.fulfillment(of: [entered], timeout: 5)
+            XCTAssertEqual(result, .completed, "Backend call did not start", file: file, line: line)
         }
     }
 

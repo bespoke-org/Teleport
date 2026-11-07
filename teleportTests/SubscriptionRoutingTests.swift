@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 import XCTest
 
 final class SubscriptionRoutingTests: XCTestCase {
@@ -444,17 +445,37 @@ final class SubscriptionRoutingTests: XCTestCase {
         await waitUntil { !viewModel.isRefreshingSubscription(fixture.source.id) }
         // The 0.7s debounce is a minimum delay, not a completion deadline.
         // Wait for the reconnect itself, including its asynchronous completion.
-        await waitUntil { await fixture.provider.requests.count == 2 && !viewModel.isOperationPending }
+        await waitForLiveApply(fixture, requestCount: 2)
         let requestsBeforeEdit = await fixture.provider.requests
         XCTAssertEqual(requestsBeforeEdit.count, 2, "The manual target keeps its own queued edit")
         XCTAssertEqual(requestsBeforeEdit.last?.splitTunnelPolicy.defaultAction, .direct)
         XCTAssertEqual(requestsBeforeEdit.last?.splitTunnelPolicy.rules, viewModel.splitTunnelRules)
         viewModel.setSplitTunnelDefaultAction(.proxy)
-        await waitUntil { await fixture.provider.requests.count == 3 && !viewModel.isOperationPending }
+        await waitForLiveApply(fixture, requestCount: 3)
         let requests = await fixture.provider.requests
         XCTAssertEqual(requests.last?.splitTunnelPolicy.rules, viewModel.splitTunnelRules)
         viewModel.disconnect()
         await waitUntil { viewModel.connectionState == .idle && !viewModel.isOperationPending }
+    }
+
+    @MainActor
+    private func waitForLiveApply(_ fixture: ViewModelFixture, requestCount: Int,
+                                  file: StaticString = #filePath, line: UInt = #line) async {
+        let applied = XCTestExpectation(description: "Manual routing policy reaches the provider")
+        var completed = false
+        let observation = Publishers.CombineLatest(fixture.viewModel.$connectionState, fixture.viewModel.$isOperationPending)
+            .sink { _, _ in
+                Task { @MainActor in
+                    let requests = await fixture.provider.requests
+                    guard !completed, requests.count == requestCount, fixture.viewModel.isConnected,
+                          !fixture.viewModel.isOperationPending else { return }
+                    completed = true
+                    applied.fulfill()
+                }
+            }
+        defer { observation.cancel() }
+        let result = await XCTWaiter.fulfillment(of: [applied], timeout: 5)
+        XCTAssertEqual(result, .completed, "Manual routing edit did not complete", file: file, line: line)
     }
 
     @MainActor
