@@ -47,7 +47,11 @@ struct SplitTunnelTester: View {
 
     @ViewBuilder private var result: some View {
         let match = viewModel.matchingSplitTunnelRule(for: destination)
-        if viewModel.hasEnabledSplitTunnelGeodataRules, !viewModel.isSplitTunnelGeodataReady {
+        if viewModel.hasEnabledSplitTunnelGeodataRules, let error = viewModel.geodataProfileError {
+            Label("Geodata unavailable", systemImage: "exclamationmark.triangle")
+                .foregroundStyle(.orange).help(error)
+        } else if viewModel.hasEnabledSplitTunnelGeodataRules,
+                  !viewModel.updatingSelectedProfileGeodataKinds.isEmpty || !viewModel.isSplitTunnelGeodataReady {
             ProgressView("Loading geodata…").controlSize(.small)
         } else {
             let action = match?.action ?? viewModel.splitTunnelDefaultAction
@@ -67,7 +71,10 @@ struct SplitTunnelTester: View {
 
     private func routeDescription(_ action: SplitTunnelRuleAction, portalID: UUID?) -> String {
         guard action == .proxy else { return action.displayName }
-        let portal = portalID.flatMap { id in viewModel.savedConnections.first { $0.id == id } } ?? viewModel.selectedConnection
-        return portal.map { "Proxy via \($0.displayName)" } ?? "Proxy via selected portal"
+        guard let portalID,
+              let portal = viewModel.savedConnections.first(where: { $0.id == portalID }) else {
+            return "Via proxy"
+        }
+        return "Via \(portal.displayName)"
     }
 }

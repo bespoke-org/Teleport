@@ -5,62 +5,87 @@ struct SplitTunnelRoutePicker: View {
     let action: SplitTunnelRuleAction
     let connectionID: UUID?
     let onSelect: (SplitTunnelRuleAction, UUID?) -> Void
+    @State private var isHovered = false
+
+    static let controlWidth: CGFloat = 150
 
     var body: some View {
-        SettingsValueMenu(title: title) {
-            Button(markedTitle("Direct", selected: action == .direct), systemImage: "arrow.up.right") { onSelect(.direct, nil) }
-            Menu(markedTitle("Proxy", selected: action == .proxy), systemImage: "point.topleft.down.curvedto.point.bottomright.up") {
-                portalButton("Selected portal", id: nil)
-                Divider()
-                if !viewModel.manualConnectionPickerItems.isEmpty {
-                    Text("Standalone")
-                    ForEach(viewModel.manualConnectionPickerItems) { portal in
-                        portalButton(portal.displayName, id: portal.id)
-                    }
-                }
-                if !viewModel.subscriptionPickerItems.isEmpty {
-                    Text("Subscriptions")
-                    ForEach(viewModel.subscriptionPickerItems) { source in
-                        subscriptionMenu(source)
-                    }
-                }
+        GlassSelectionPicker(options: routeOptions, selectedID: selectedID, onSelect: { id in
+            switch id {
+            case "default": onSelect(.proxy, nil)
+            case "direct": onSelect(.direct, nil)
+            case "block": onSelect(.block, nil)
+            default:
+                guard let portalID = UUID(uuidString: id) else { return }
+                onSelect(.proxy, portalID)
             }
-            Button(markedTitle("Block", selected: action == .block), systemImage: "hand.raised") { onSelect(.block, nil) }
+        }) {
+            HStack(spacing: 7) {
+                Text(routeTitle)
+                    .lineLimit(1).truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+            }
+            .font(.system(size: 13))
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 10)
+            .frame(width: Self.controlWidth, height: 28)
+            .background(.primary.opacity(isHovered ? 0.06 : 0), in: RoundedRectangle(cornerRadius: 6))
+            .contentShape(RoundedRectangle(cornerRadius: 6))
         }
-        .frame(maxWidth: 180, alignment: .trailing)
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
         .accessibilityLabel("Route")
-        .accessibilityValue(title)
+        .accessibilityValue(action == .proxy ? "Proxy, " + portalTitle : routeTitle)
+        .help(action == .proxy ? "Proxy through " + portalTitle : routeTitle)
     }
 
-    private func subscriptionMenu(_ source: SubscriptionPickerItem) -> some View {
-        let portals = viewModel.importedConnectionPickerItems(for: source.id)
-        let containsSelection = action == .proxy && portals.contains { $0.id == connectionID }
-        return Menu(markedTitle("\(source.displayName) (\(portals.count))", selected: containsSelection)) {
-            if portals.isEmpty {
-                Button("No portals") {}
-                    .disabled(true)
-            } else {
-                ForEach(portals) { portal in
-                    portalButton(portal.displayName, id: portal.id)
-                }
+    private var selectedID: String {
+        switch action {
+        case .proxy: connectionID?.uuidString ?? "default"
+        case .direct: "direct"
+        case .block: "block"
+        }
+    }
+
+    private var routeTitle: String {
+        switch action {
+        case .proxy: connectionID == nil ? "Proxy" : "Proxy · " + portalTitle
+        case .direct: "Direct"
+        case .block: "Block"
+        }
+    }
+
+    private var routeOptions: [GlassSelectionOption] {
+        [
+            GlassSelectionOption(id: "default", title: "Proxy · Selected portal", systemImage: InterfaceSymbol.portal),
+            GlassSelectionOption(id: "direct", title: "Direct", systemImage: InterfaceSymbol.directRoute),
+            GlassSelectionOption(id: "block", title: "Block", systemImage: InterfaceSymbol.blockedRoute)
+        ] + portalOptions
+    }
+
+    private var portalOptions: [GlassSelectionOption] {
+        var options: [GlassSelectionOption] = []
+        options += viewModel.manualConnectionPickerItems.map {
+            GlassSelectionOption(id: $0.id.uuidString, title: $0.displayName, systemImage: InterfaceSymbol.portal, section: "Standalone")
+        }
+        for source in viewModel.subscriptionPickerItems {
+            options += viewModel.importedConnectionPickerItems(for: source.id).map {
+                GlassSelectionOption(id: $0.id.uuidString, title: $0.displayName, systemImage: InterfaceSymbol.portal, section: source.displayName)
             }
         }
-    }
-
-    private func portalButton(_ name: String, id: UUID?) -> some View {
-        Button(markedTitle(name, selected: action == .proxy && connectionID == id)) {
-            onSelect(.proxy, id)
+        if let connectionID, !viewModel.savedConnections.contains(where: { $0.id == connectionID }) {
+            options.append(GlassSelectionOption(id: connectionID.uuidString, title: "Unavailable portal", isEnabled: false))
         }
+        return options
     }
 
-    private func markedTitle(_ title: String, selected: Bool) -> String {
-        selected ? "✓ \(title)" : title
-    }
-
-    private var title: String {
-        guard action == .proxy, let connectionID else { return action.displayName }
-        let portal = viewModel.savedConnections.first { $0.id == connectionID }
-        return "Proxy: \(portal?.displayName ?? "Unavailable portal")"
+    private var portalTitle: String {
+        guard let connectionID else { return "Selected portal" }
+        return viewModel.savedConnections.first { $0.id == connectionID }?.displayName ?? "Unavailable portal"
     }
 }
 

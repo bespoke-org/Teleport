@@ -200,7 +200,7 @@ final class HelperCommandDispatchTests: XCTestCase {
         )) { error in
             XCTAssertTrue(error.localizedDescription.contains("Geosite"), error.localizedDescription)
             XCTAssertTrue(error.localizedDescription.contains("TELEPORT-DOES-NOT-EXIST"), error.localizedDescription)
-            XCTAssertTrue(error.localizedDescription.contains("Settings → Tunnel"), error.localizedDescription)
+            XCTAssertTrue(error.localizedDescription.contains("Settings → Routing"), error.localizedDescription)
             XCTAssertFalse(error.localizedDescription.contains(config.path))
         }
     }

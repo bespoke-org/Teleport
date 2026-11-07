@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct SubscriptionSettingsSheet: View {
+struct SubscriptionSettingsPopover: View {
     @Environment(\.dismiss) private var dismiss
 
     let source: SubscriptionSource
@@ -29,7 +29,7 @@ struct SubscriptionSettingsSheet: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("Name")
-                    .font(.subheadline.weight(.semibold))
+                    .font(.caption).foregroundStyle(.secondary)
 
                 TextField("Custom name", text: $customName)
                     .textFieldStyle(.roundedBorder)
@@ -37,26 +37,28 @@ struct SubscriptionSettingsSheet: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("Subscription URL")
-                    .font(.subheadline.weight(.semibold))
+                    .font(.caption).foregroundStyle(.secondary)
 
                 TextField("https://subscription…", text: $urlString)
                     .textFieldStyle(.roundedBorder)
                     .font(.caption.monospaced())
             }
 
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Auto update")
-                    .font(.subheadline.weight(.semibold))
-
-                Picker("Auto update interval", selection: $selectedIntervalMinutes) {
-                    ForEach(intervalOptions, id: \.self) { option in
-                        Text(intervalLabel(option)).tag(option)
-                    }
-                }
-                .pickerStyle(.menu)
+            HStack {
+                Label("Auto update", systemImage: "clock.arrow.circlepath")
+                Spacer()
+                SettingsChoicePicker(
+                    title: intervalLabel(selectedIntervalMinutes), selection: $selectedIntervalMinutes,
+                    choices: intervalOptions.map { SettingsChoice(value: $0, title: intervalLabel($0)) },
+                    font: .callout
+                )
+                .accessibilityLabel("Auto update interval")
             }
+            .font(.callout)
 
-            Toggle("Filter duplicate configs", isOn: $filterDuplicateImports)
+            Toggle("Skip duplicate portals", isOn: $filterDuplicateImports)
+                .toggleStyle(.switch)
+                .controlSize(.small)
 
             HStack {
                 Spacer()
@@ -64,6 +66,7 @@ struct SubscriptionSettingsSheet: View {
                 Button("Cancel") {
                     dismiss()
                 }
+                .keyboardShortcut(.cancelAction)
 
                 Button("Save") {
                     onSave(customName, urlString, selectedIntervalMinutes, filterDuplicateImports)
@@ -72,8 +75,8 @@ struct SubscriptionSettingsSheet: View {
                 .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(20)
-        .frame(width: 420)
+        .padding(16)
+        .frame(width: 380)
     }
 
     private func intervalLabel(_ minutes: Int?) -> String {

@@ -13,11 +13,11 @@ struct HelperError: LocalizedError, TUNHelperClientPresentableError {
 
     var clientSummary: String {
         if message == "Missing geosite.dat" || message == "Missing geoip.dat" || message == "Missing geodata asset directory" {
-            return "The tunnel's geodata files are missing. Open Settings → Tunnel and download the selected profile's geodata before connecting again."
+            return "The tunnel's geodata files are missing. Open Settings → Routing and download the selected profile's geodata before connecting again."
         }
         if message.contains("group/world-writable") || message.contains("not owned") {
             if message.contains("geodata") || message.contains("geosite.dat") || message.contains("geoip.dat") {
-                return "The geodata files have incorrect ownership or permissions. Download the selected profile's data again in Settings → Tunnel to recreate them for your macOS account."
+                return "The geodata files have incorrect ownership or permissions. Download the selected profile's data again in Settings → Routing to recreate them for your macOS account."
             }
             if message.contains("state directory"), !message.contains("helper state") {
                 return "Teleport's support folder has incorrect ownership or permissions. Restore your macOS account's ownership of ~/Library/Application Support/teleport and restrict the folder to that account, then reconnect."
@@ -28,7 +28,7 @@ struct HelperError: LocalizedError, TUNHelperClientPresentableError {
             return "The privileged helper rejected invalid tunnel settings from Teleport. Update or reinstall Teleport so the app and helper agree on the configuration."
         }
         if message == "Xray tunnel config is too large" {
-            return "The tunnel profile contains too many routing rules or additional portals. Reduce them in Settings → Tunnel, then connect again."
+            return "The tunnel profile contains too many routing rules or additional portals. Reduce them in Settings → Routing, then connect again."
         }
         if message.contains("packet filter") || message.contains("leak-guard firewall") {
             return "macOS could not enable Teleport's traffic-protection firewall. Close other VPN or firewall apps and reconnect. You can also turn off traffic protection in Settings → General if you do not need it."

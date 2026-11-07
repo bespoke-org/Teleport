@@ -3,7 +3,7 @@ import SwiftUI
 
 struct TunnelSettingsView: View {
     @ObservedObject var viewModel: AppViewModel
-    @State private var isShowingProfilesSheet = false
+    @State private var isShowingProfilesPopover = false
     @State private var isShowingAddSheet = false
     @State private var selectedRuleID: UUID?
     @State private var ruleClickScope = SettingsClickAwayScope()
@@ -19,21 +19,20 @@ struct TunnelSettingsView: View {
     }
 
     private func settingsList(horizontalInset: CGFloat) -> some View {
-        let rowColors = NSColor.alternatingContentBackgroundColors
-        // Keep native List reordering and one scrolling surface for the page.
+        // Rules participate in the page List, sharing its scrolling and native reordering.
         return List {
             Section {
                 targetSettings
                     .padding(.vertical, 8)
                     .listRowSeparator(.hidden)
                     .listRowInsets(EdgeInsets(top: 0, leading: horizontalInset, bottom: 0, trailing: horizontalInset))
-                    .listRowBackground(RoundedRectangle(cornerRadius: 10).fill(sectionBackground).padding(.horizontal, horizontalInset))
+                    .listRowBackground(Color.clear)
             }
             .listSectionSeparator(.hidden)
 
             if viewModel.selectedTunnelTarget == nil {
-                ContentUnavailableView("Add a subscription or portal", systemImage: "network",
-                    description: Text("Its tunnel settings will appear here."))
+                ContentUnavailableView("Add a subscription or portal", systemImage: InterfaceSymbol.portal,
+                    description: Text("Its routing settings will appear here."))
             } else if viewModel.inheritsSubscriptionTunnel {
                 Section {
                     providerSummary
@@ -54,25 +53,33 @@ struct TunnelSettingsView: View {
                 .listSectionSeparator(.hidden)
 
                 Section {
+                    sectionHeading("Rules", horizontalInset: horizontalInset)
+                    ruleColumnHeadings
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets(top: 0, leading: horizontalInset, bottom: 0, trailing: horizontalInset))
+                        .listRowBackground(
+                            UnevenRoundedRectangle(topLeadingRadius: 10, topTrailingRadius: 10)
+                                .fill(sectionBackground).padding(.horizontal, horizontalInset)
+                        )
                     if viewModel.splitTunnelRules.isEmpty {
                         Text("No rules yet")
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.vertical, 8)
+                            .padding(10)
                             .listRowSeparator(.hidden)
                             .listRowInsets(EdgeInsets(top: 0, leading: horizontalInset, bottom: 0, trailing: horizontalInset))
-                            .listRowBackground(
-                                UnevenRoundedRectangle(topLeadingRadius: 10, topTrailingRadius: 10)
-                                    .fill(sectionBackground).padding(.horizontal, horizontalInset)
-                            )
+                            .listRowBackground(sectionBackground.padding(.horizontal, horizontalInset))
                     } else {
-                        ForEach(Array(viewModel.splitTunnelRules.enumerated()), id: \.element.id) { index, rule in
+                        ForEach(viewModel.splitTunnelRules) { rule in
                             ruleRow(rule)
                                 .foregroundStyle(.primary)
                                 .padding(.vertical, 5)
                                 .padding(.horizontal, 10)
-                                .padding(.top, index == 0 ? 10 : 0)
-                                .padding(.bottom, index == viewModel.splitTunnelRules.count - 1 ? 10 : 0)
+                                .overlay(alignment: .bottom) {
+                                    if rule.id != viewModel.splitTunnelRules.last?.id {
+                                        Divider().opacity(0.35).padding(.horizontal, 10)
+                                    }
+                                }
                                 .background(SettingsClickAwayRegion(scope: ruleClickScope))
                                 .contentShape(Rectangle())
                                 .onTapGesture { selectedRuleID = rule.id }
@@ -82,23 +89,8 @@ struct TunnelSettingsView: View {
                                 .listRowSeparator(.hidden)
                                 .listRowInsets(EdgeInsets(top: 0, leading: horizontalInset, bottom: 0, trailing: horizontalInset))
                                 .listRowBackground(
-                                    ZStack {
-                                        UnevenRoundedRectangle(
-                                            topLeadingRadius: index == 0 ? 10 : 0,
-                                            topTrailingRadius: index == 0 ? 10 : 0
-                                        ).fill(sectionBackground)
-                                        UnevenRoundedRectangle(
-                                            topLeadingRadius: index == 0 ? 6 : 0,
-                                            bottomLeadingRadius: index == viewModel.splitTunnelRules.count - 1 ? 6 : 0,
-                                            bottomTrailingRadius: index == viewModel.splitTunnelRules.count - 1 ? 6 : 0,
-                                            topTrailingRadius: index == 0 ? 6 : 0
-                                        ).fill(selectedRuleID == rule.id
-                                            ? Color.accentColor.opacity(0.2)
-                                            : Color(nsColor: rowColors[index % rowColors.count]))
-                                            .padding(.horizontal, 10)
-                                            .padding(.top, index == 0 ? 10 : 0)
-                                            .padding(.bottom, index == viewModel.splitTunnelRules.count - 1 ? 10 : 0)
-                                    }
+                                    Rectangle().fill(selectedRuleID == rule.id
+                                        ? Color.accentColor.opacity(0.15) : sectionBackground)
                                     .padding(.horizontal, horizontalInset)
                                 )
                         }
@@ -109,19 +101,17 @@ struct TunnelSettingsView: View {
                         .listRowInsets(EdgeInsets(top: 0, leading: horizontalInset, bottom: 0, trailing: horizontalInset))
                         .listRowBackground(
                             UnevenRoundedRectangle(bottomLeadingRadius: 10, bottomTrailingRadius: 10)
-                                .fill(Color(nsColor: rowColors.last ?? .controlBackgroundColor))
+                                .fill(sectionBackground)
                                 .overlay(alignment: .top) { Divider() }
                                 .padding(.horizontal, horizontalInset)
                         )
-                } header: {
-                    sectionHeading("Rules", horizontalInset: horizontalInset)
                 }
                 .listSectionSeparator(.hidden)
 
-                GeodataSettingsView(viewModel: viewModel)
-                    .listRowInsets(EdgeInsets(top: 6, leading: horizontalInset + 10, bottom: 6, trailing: horizontalInset + 10))
+                GeodataSettingsView(viewModel: viewModel, horizontalInset: horizontalInset)
 
                 Section {
+                    sectionHeading("Test route", horizontalInset: horizontalInset)
                     SplitTunnelTester(viewModel: viewModel)
                         .padding(.vertical, 10)
                         .padding(.bottom, 20)
@@ -132,8 +122,6 @@ struct TunnelSettingsView: View {
                                 .padding(.horizontal, horizontalInset)
                                 .padding(.bottom, 20)
                         )
-                } header: {
-                    sectionHeading("Test route", horizontalInset: horizontalInset)
                 }
                 .listSectionSeparator(.hidden)
             }
@@ -148,10 +136,6 @@ struct TunnelSettingsView: View {
         .onChange(of: viewModel.splitTunnelRules.map(\.id)) { _, ids in
             if let selectedRuleID, !ids.contains(selectedRuleID) { self.selectedRuleID = nil }
         }
-        .sheet(isPresented: $isShowingProfilesSheet) {
-            SplitTunnelProfilesSheet(viewModel: viewModel)
-                .background(SettingsDialogWindow())
-        }
         .sheet(isPresented: $isShowingAddSheet) {
             AddSplitTunnelRulesSheet(viewModel: viewModel)
                 .background(SettingsDialogWindow())
@@ -162,9 +146,15 @@ struct TunnelSettingsView: View {
         Text(title)
             .font(.headline)
             .foregroundStyle(.primary)
-            // List adds 16 points; grouped Form headings sit 10 points inside their cards.
-            .padding(.horizontal, horizontalInset - 6)
-            .padding(.bottom, 4)
+            .accessibilityAddTraits(.isHeader)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 20)
+            .padding(.bottom, 8)
+            // A regular row scrolls away; native Section headers pin in a List.
+            // Compensate List's 16-point content inset to match grouped Form headings.
+            .listRowInsets(EdgeInsets(top: 0, leading: horizontalInset - 6, bottom: 0, trailing: horizontalInset))
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
     }
 
     private var ruleActions: some View {
@@ -190,94 +180,211 @@ struct TunnelSettingsView: View {
             .help("Remove selected rule")
             .background(SettingsClickAwayRegion(scope: ruleClickScope))
             Spacer()
+            Text("\(viewModel.splitTunnelRules.count) \(viewModel.splitTunnelRules.count == 1 ? "rule" : "rules")")
+                .font(.caption)
+                .padding(.trailing, 10)
         }
         .buttonStyle(.plain)
         .foregroundStyle(.secondary)
     }
 
     private var targetSettings: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Picker("Configure tunnel for", selection: Binding(
-                get: { viewModel.selectedTunnelTarget },
-                set: { if let target = $0 { viewModel.selectTunnelTarget(target) } }
-            )) {
-                ForEach(viewModel.tunnelTargets) { target in
-                    switch target {
-                    case .subscription:
-                        Label(viewModel.tunnelTargetName(target), systemImage: "rectangle.stack").tag(Optional(target))
-                    case .connection:
-                        Label(viewModel.tunnelTargetName(target), systemImage: "network").tag(Optional(target))
-                    }
+        VStack(alignment: .leading, spacing: 10) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) {
+                    targetMenu
+                    Spacer(minLength: 12)
+                    if viewModel.selectedTunnelTarget != nil { profileControls }
+                }
+                VStack(alignment: .leading, spacing: 10) {
+                    targetMenu
+                    if viewModel.selectedTunnelTarget != nil { profileControls }
                 }
             }
-            if viewModel.selectedTunnelTarget != nil {
-                if viewModel.providerTunnelProfile != nil {
-                    Picker("Settings", selection: Binding(
-                        get: { viewModel.inheritsSubscriptionTunnel },
-                        set: { viewModel.setInheritsSubscriptionTunnel($0) }
-                    )) {
-                        Text("Subscription settings").tag(true)
-                        Text("Personal profile").tag(false)
-                    }
-                    .pickerStyle(.segmented)
-                } else {
-                    Text("Choose a personal profile for this subscription or portal.")
+            if let profile = viewModel.selectedSplitTunnelProfile, !viewModel.inheritsSubscriptionTunnel {
+                let users = viewModel.tunnelProfileUsers(id: profile.id)
+                if users.count > 1 {
+                    Label("Personal profile shared by \(users.count) tunnels", systemImage: InterfaceSymbol.routing)
                         .font(.caption).foregroundStyle(.secondary)
-                }
-                if !viewModel.inheritsSubscriptionTunnel {
-                    HStack {
-                        Picker("Personal profile", selection: Binding(
-                            get: { viewModel.selectedSplitTunnelProfileID },
-                            set: { if let id = $0 { viewModel.selectSplitTunnelProfile(id: id) } }
-                        )) {
-                            ForEach(viewModel.personalTunnelProfiles) { profile in
-                                Text(profile.name).tag(Optional(profile.id))
-                            }
-                        }
-                        Button("Manage profiles") { isShowingProfilesSheet = true }
-                    }
-                    if let id = viewModel.selectedSplitTunnelProfileID {
-                        Text("Used by: " + viewModel.tunnelProfileUsers(id: id).joined(separator: ", "))
-                            .font(.caption).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                        .help("Changes apply to: " + users.joined(separator: ", "))
                 }
             }
         }
     }
 
-    private var providerSummary: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if let profile = viewModel.providerTunnelProfile {
-                Text(profile.name).font(.headline)
-                Text(profile.isRoutingEnabled
-                    ? "\(profile.rules.count) routing rules · Unmatched traffic: \(profile.defaultAction.displayName)"
-                    : "All traffic uses the selected portal.")
+    private var targetMenu: some View {
+        GlassSelectionPicker(
+            options: targetOptions,
+            selectedID: viewModel.selectedTunnelTarget?.id,
+            onSelect: { id in
+                if let target = viewModel.tunnelTargets.first(where: { $0.id == id }) {
+                    viewModel.selectTunnelTarget(target)
+                }
+            }
+        ) {
+            HStack(spacing: 8) {
+                Image(systemName: viewModel.selectedTunnelTarget.map(targetIcon) ?? InterfaceSymbol.portal)
                     .foregroundStyle(.secondary)
-                Text("Rules and geodata update with this subscription.")
-                    .font(.caption).foregroundStyle(.secondary)
-                if case let .subscription(id) = viewModel.selectedTunnelTarget,
-                   let warning = viewModel.subscriptionSources.first(where: { $0.id == id })?.lastError {
-                    Text(warning).font(.caption).foregroundStyle(.orange)
+                    .accessibilityHidden(true)
+                Text(selectedTargetName)
+                    .font(.headline)
+                    .lineLimit(1).truncationMode(.middle)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .modifier(TunnelScopeGlass())
+        .disabled(viewModel.tunnelTargets.isEmpty)
+        .accessibilityLabel("Configure routing for")
+        .accessibilityValue(selectedTargetDescription)
+        .help(selectedTargetDescription)
+    }
+
+    private var targetOptions: [GlassSelectionOption] {
+        viewModel.tunnelTargets.map { target in
+            GlassSelectionOption(id: target.id, title: viewModel.tunnelTargetName(target),
+                                 systemImage: targetIcon(target), section: targetSection(target))
+        }
+    }
+
+    private var selectedTargetDescription: String {
+        guard let target = viewModel.selectedTunnelTarget else { return selectedTargetName }
+        return targetSection(target) + ": " + selectedTargetName
+    }
+
+    private var profileControls: some View {
+        HStack(spacing: 8) {
+            GlassSelectionPicker(
+                options: profileOptions,
+                selectedID: viewModel.inheritsSubscriptionTunnel ? "inherit" : viewModel.selectedSplitTunnelProfileID?.uuidString,
+                onSelect: { id in
+                    if id == "inherit" { viewModel.setInheritsSubscriptionTunnel(true) }
+                    else if let profileID = UUID(uuidString: id) { viewModel.selectSplitTunnelProfile(id: profileID) }
                 }
-                if !viewModel.updatingGeodataKinds.isEmpty {
-                    HStack { ProgressView().controlSize(.small); Text("Downloading geodata…") }
+            ) {
+                HStack(spacing: 8) {
+                    Text(viewModel.inheritsSubscriptionTunnel
+                        ? "Inherited"
+                        : "Personal: " + (viewModel.selectedSplitTunnelProfile?.name ?? "Select profile"))
+                        .lineLimit(1).truncationMode(.middle)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .modifier(TunnelScopeGlass())
+            .accessibilityLabel("Routing settings source")
+            Button { isShowingProfilesPopover.toggle() } label: {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: 14, weight: .medium))
+                    .frame(width: 32, height: 32)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .modifier(TunnelScopeGlass(isCircular: true))
+            .help("Manage personal profiles")
+            .accessibilityLabel("Manage profiles")
+            .popover(isPresented: $isShowingProfilesPopover, attachmentAnchor: .rect(.bounds), arrowEdge: .top) {
+                TunnelProfilesPopover(viewModel: viewModel)
+                    .modifier(SettingsGlassPopoverSurface())
+                    .presentationBackground(.clear)
+            }
+        }
+    }
+
+    private var profileOptions: [GlassSelectionOption] {
+        var options: [GlassSelectionOption] = []
+        if case .subscription = viewModel.selectedTunnelTarget {
+            options.append(GlassSelectionOption(id: "inherit", title: viewModel.providerTunnelProfile == nil
+                ? "No subscription profile available" : "Inherit from subscription", systemImage: InterfaceSymbol.inheritedProfile,
+                isEnabled: viewModel.providerTunnelProfile != nil))
+        }
+        options += viewModel.personalTunnelProfiles.map { profile in
+            GlassSelectionOption(id: profile.id.uuidString, title: profile.name, systemImage: InterfaceSymbol.tunnelProfile,
+                                 section: "Personal profiles")
+        }
+        return options
+    }
+
+    private var selectedTargetName: String {
+        viewModel.selectedTunnelTarget.map(viewModel.tunnelTargetName) ?? "Select subscription or portal"
+    }
+
+    private func targetIcon(_ target: TunnelTarget) -> String {
+        switch target {
+        case .subscription: return InterfaceSymbol.subscription
+        case .connection: return InterfaceSymbol.portal
+        }
+    }
+
+    private func targetSection(_ target: TunnelTarget) -> String {
+        switch target {
+        case .subscription: "Subscriptions"
+        case .connection: "Standalone portals"
+        }
+    }
+
+    private var providerSummary: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if let profile = viewModel.providerTunnelProfile {
+                HStack(alignment: .top, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label("Inherited from subscription", systemImage: InterfaceSymbol.inheritedProfile)
+                            .font(.headline)
+                        Text(profile.isRoutingEnabled
+                            ? "\(profile.rules.count) rules · Unmatched: \(profile.defaultAction.displayName)"
+                            : "All traffic via proxy")
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 0)
+                    Button("Create personal copy", systemImage: "doc.on.doc") {
+                        viewModel.customizeTunnelProfile()
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Create an editable copy. The original keeps updating with the subscription.")
+                }
+                if !viewModel.updatingSelectedProfileGeodataKinds.isEmpty {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.mini)
+                        Text("Downloading geodata…")
+                    }
+                    .font(.callout).foregroundStyle(.secondary)
                 } else if let error = viewModel.geodataProfileError {
-                    Text(error).font(.caption).foregroundStyle(.secondary)
+                    HStack(alignment: .top) {
+                        Label(error, systemImage: "exclamationmark.triangle")
+                            .font(.callout).foregroundStyle(.orange).textSelection(.enabled)
+                        Spacer(minLength: 8)
+                        Button("Retry") { viewModel.downloadSelectedProfileGeodata() }
+                    }
                 } else {
-                    Label("Geodata ready", systemImage: "checkmark.circle").foregroundStyle(.secondary)
+                    let ready = GeodataKind.allCases.allSatisfy { kind in
+                        switch viewModel.profileGeodataStatus(kind: kind) {
+                        case .bundled, .ready: return true
+                        default: return false
+                        }
+                    }
+                    HStack {
+                        Label(ready ? "Geodata ready" : "Geodata download paused", systemImage: ready ? "checkmark.circle" : "pause.circle")
+                            .font(.caption).foregroundStyle(.secondary)
+                        if !ready { Button("Retry") { viewModel.downloadSelectedProfileGeodata() } }
+                    }
                 }
-                if viewModel.geodataLastAttemptSources == viewModel.selectedProfileGeodataSources,
-                   let error = viewModel.geodataSettings.geositeLastError ?? viewModel.geodataSettings.geoipLastError {
-                    Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled)
+                if case let .subscription(id) = viewModel.selectedTunnelTarget,
+                   let notice = viewModel.subscriptionSources.first(where: { $0.id == id })?.lastError {
+                    DisclosureGroup("Subscription notice") {
+                        Text(notice).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    }
+                    .font(.caption)
                 }
-                HStack {
-                    Button("Customize this profile") { viewModel.customizeTunnelProfile() }
-                    Button("Download geodata") { viewModel.downloadSelectedProfileGeodata(forceDownload: true) }
-                        .disabled(!viewModel.updatingGeodataKinds.isEmpty || viewModel.isOperationPending)
-                }
-                Text("Customization creates a personal copy. Subscription updates keep the original profile current.")
-                    .font(.caption).foregroundStyle(.secondary)
             }
         }
     }
@@ -301,18 +408,14 @@ struct TunnelSettingsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
-                SettingsValueMenu(title: viewModel.splitTunnelDefaultAction.displayName) {
-                    Picker("Unmatched traffic", selection: Binding(
-                        get: { viewModel.splitTunnelDefaultAction },
-                        set: { viewModel.setSplitTunnelDefaultAction($0) }
-                    )) {
-                        Text("Proxy").tag(SplitTunnelRuleAction.proxy)
-                        Text("Direct").tag(SplitTunnelRuleAction.direct)
-                    }
-                    .pickerStyle(.inline)
-                    .labelsHidden()
-                }
-                .accessibilityLabel("Unmatched traffic")
+                SettingsSegmentedPicker(title: "Unmatched traffic", selection: Binding(
+                    get: { viewModel.splitTunnelDefaultAction },
+                    set: { viewModel.setSplitTunnelDefaultAction($0) }
+                ), choices: [
+                    SettingsChoice(value: SplitTunnelRuleAction.proxy, title: "Proxy"),
+                    SettingsChoice(value: SplitTunnelRuleAction.direct, title: "Direct")
+                ])
+                .frame(width: 220, height: 28)
             }
             if viewModel.connectionMode != .tun {
                 Label("Applies only in TUN mode", systemImage: "exclamationmark.triangle")
@@ -321,24 +424,65 @@ struct TunnelSettingsView: View {
         }
     }
 
+    private var ruleColumnHeadings: some View {
+        HStack(spacing: 12) {
+            Text("Destination").frame(maxWidth: .infinity, alignment: .leading)
+            Text("Route")
+                .padding(.leading, 10)
+                .frame(width: SplitTunnelRoutePicker.controlWidth, alignment: .leading)
+            Text("Enabled").frame(width: 48)
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 10)
+        .overlay(alignment: .bottom) { Divider().opacity(0.5).padding(.horizontal, 10) }
+        .accessibilityAddTraits(.isHeader)
+    }
+
     private func ruleRow(_ rule: SplitTunnelRule) -> some View {
-        HStack(spacing: 10) {
-            Toggle("Enable \(SplitTunnelPresentation.destination(rule))", isOn: Binding(
-                get: { rule.isEnabled },
-                set: { viewModel.setSplitTunnelRuleEnabled(id: rule.id, isEnabled: $0) }
-            ))
-            .labelsHidden()
-            .toggleStyle(.checkbox)
+        HStack(spacing: 12) {
             Text(SplitTunnelPresentation.destination(rule))
                 .lineLimit(1)
                 .truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .opacity(rule.isEnabled ? 1 : 0.45)
-            Spacer(minLength: 8)
             SplitTunnelRoutePicker(viewModel: viewModel, action: rule.action, connectionID: rule.connectionID) { action, portal in
                 viewModel.setSplitTunnelRuleAction(id: rule.id, action: action)
                 viewModel.setSplitTunnelRuleConnection(id: rule.id, connectionID: portal)
             }
             .opacity(rule.isEnabled ? 1 : 0.45)
+            Toggle("Enable \(SplitTunnelPresentation.destination(rule))", isOn: Binding(
+                get: { rule.isEnabled },
+                set: { viewModel.setSplitTunnelRuleEnabled(id: rule.id, isEnabled: $0) }
+            ))
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .frame(width: 48)
+        }
+    }
+
+}
+
+/// Glass identifies the context and its actions; the editor keeps quiet surfaces.
+private struct TunnelScopeGlass: ViewModifier {
+    var isCircular = false
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            if isCircular {
+                content.glassEffect(.regular.interactive(), in: Circle())
+            } else {
+                content.glassEffect(.regular.interactive(), in: Capsule())
+            }
+        } else {
+            if isCircular {
+                content.background(.regularMaterial, in: Circle())
+            } else {
+                content.background(.regularMaterial, in: Capsule())
+            }
         }
     }
 }

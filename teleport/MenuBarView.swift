@@ -294,21 +294,15 @@ private struct ConnectionPickerSection: View, Equatable {
                     .foregroundStyle(.secondary)
                     .padding(8)
             } else {
-                Menu {
-                    if !manualItems.isEmpty {
-                        Text("Standalone")
-                        ForEach(manualItems) { connection in
-                            connectionSelectionButton(connection)
-                        }
+                GlassSelectionPicker(
+                    options: portalOptions,
+                    selectedID: selectedConnectionID?.uuidString,
+                    onSelect: { id in if let id = UUID(uuidString: id) { onSelect(id) } },
+                    onOpen: {
+                        pickerHealthSnapshot = makeHealthSnapshot()
+                        return portalOptions
                     }
-
-                    if !subscriptionItems.isEmpty {
-                        Text("Subscriptions")
-                        ForEach(subscriptionItems) { source in
-                            subscriptionMenu(source)
-                        }
-                    }
-                } label: {
+                ) {
                     HStack(spacing: 8) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(selectedDisplayName)
@@ -327,12 +321,7 @@ private struct ConnectionPickerSection: View, Equatable {
                     .padding(.vertical, 6)
                     .contentShape(Rectangle())
                 }
-                .simultaneousGesture(TapGesture().onEnded {
-                    pickerHealthSnapshot = makeHealthSnapshot()
-                })
-                .menuStyle(.button)
                 .buttonStyle(MenuBarRowStyle())
-                .menuIndicator(.hidden)
                 .help(subtitle)
                 .accessibilityLabel("Portal: \(selectedDisplayName)")
                 .disabled(!canChangeSelection)
@@ -343,33 +332,22 @@ private struct ConnectionPickerSection: View, Equatable {
         }
     }
 
-    @ViewBuilder
-    private func subscriptionMenu(_ source: SubscriptionPickerItem) -> some View {
-        let connections = importedItemsBySourceID[source.id] ?? []
-
-        Menu {
+    private var portalOptions: [GlassSelectionOption] {
+        var options = manualItems.map {
+            GlassSelectionOption(id: $0.id.uuidString, title: connectionLabel(for: $0), section: "Standalone")
+        }
+        for source in subscriptionItems {
+            let connections = importedItemsBySourceID[source.id] ?? []
+            let section = "\(source.displayName) (\(connections.count))"
             if connections.isEmpty {
-                Button("No imported configs") {}
-                    .disabled(true)
+                options.append(GlassSelectionOption(id: "empty:\(source.id)", title: "No imported configs", section: section, isEnabled: false))
             } else {
-                ForEach(connections) { connection in
-                    connectionSelectionButton(connection)
+                options += connections.map {
+                    GlassSelectionOption(id: $0.id.uuidString, title: connectionLabel(for: $0), section: section)
                 }
             }
-        } label: {
-            Text("\(source.displayName) (\(connections.count))")
         }
-    }
-
-    @ViewBuilder
-    private func connectionSelectionButton(_ connection: ConnectionPickerItem) -> some View {
-        Button {
-            onSelect(connection.id)
-        } label: {
-            let isSelected = connection.id == selectedConnectionID
-            let prefix = isSelected ? "✓ " : ""
-            Text(prefix + connectionLabel(for: connection))
-        }
+        return options
     }
 
     private func connectionLabel(for connection: ConnectionPickerItem) -> String {
