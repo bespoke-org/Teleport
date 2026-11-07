@@ -130,7 +130,11 @@ final class ConnectionProviderTests: XCTestCase {
         XCTAssertNil(model.connectionError)
         XCTAssertNotNil(model.lastError)
         model.connect()
-        await waitUntil("cancelled connect finishes") { await MainActor.run { !model.isOperationPending } }
+        // Operation completion and state-stream delivery are independent tasks.
+        // Observe both before asserting the cancelled connection's presentation.
+        await waitUntil("cancelled connect finishes") {
+            await MainActor.run { !model.isOperationPending && model.connectionState == .idle }
+        }
         XCTAssertNil(model.connectionError)
         XCTAssertEqual(model.connectionState, .idle)
     }
@@ -454,7 +458,8 @@ final class ConnectionProviderTests: XCTestCase {
         await backend.reconnectGate.enableBlocking()
         viewModel.selectConnection(id: second)
         XCTAssert(viewModel.isOperationPending && viewModel.canChangeSelection)
-        // Coalesce rapid clicks even before the provider publishes its state.
+        // Exercise a committed reconnect; superseded preflight is covered above.
+        await backend.reconnectGate.waitUntilEntered()
         viewModel.selectConnection(id: first)
         viewModel.selectConnection(id: third)
         viewModel.selectConnection(id: first)
@@ -473,9 +478,9 @@ final class ConnectionProviderTests: XCTestCase {
         // Choosing the in-flight target again withdraws the pending switch.
         await backend.reconnectGate.enableBlocking()
         viewModel.selectConnection(id: second)
+        await backend.reconnectGate.waitUntilEntered()
         viewModel.selectConnection(id: third)
         viewModel.selectConnection(id: second)
-        await backend.reconnectGate.waitUntilEntered()
         await backend.reconnectGate.open()
         await waitForCurrentConnection()
         XCTAssert(backend.requestedConnectionIDs() == [first, third, second, first, second])
