@@ -417,10 +417,12 @@ final class SubscriptionRoutingTests: XCTestCase {
             "Geoipurl": "https://provider.example/new-geoip.dat"
         ]))
         await waitUntil { !model.isRefreshingSubscription(fixture.source.id) }
-        try await Task.sleep(for: .milliseconds(800))
+        await waitUntil { fixture.geodata.requestedKinds.count == 2 && model.updatingSelectedProfileGeodataKinds.isEmpty }
         let afterRefresh = await fixture.provider.requests
         XCTAssertEqual(afterRefresh, initial, "Refreshing the catalog must not rebuild the running session")
-        XCTAssertTrue(fixture.geodata.requestedKinds.isEmpty)
+        XCTAssertEqual(fixture.geodata.activationCount, 0, "Refresh may fill the cache, but cannot replace active datasets")
+        XCTAssertNil(model.geodataSettings.geositeURLString)
+        XCTAssertNil(model.geodataSettings.geoipURLString)
         XCTAssertNil(model.lastError)
         XCTAssertTrue(model.isConnected)
         XCTAssertEqual(model.selectedConnectionID, initial[0].defaultConnection.id)
