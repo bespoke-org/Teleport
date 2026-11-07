@@ -51,6 +51,10 @@ Name and Latency remain available in General settings. Previously saved sort
 choices are preserved; select Original and refresh an existing subscription
 once to restore the provider's order.
 
+Subscriptions can refresh while connected. Portal lists update immediately;
+the running connection keeps its configuration until the next connection.
+Imported routing rules and geodata changes also wait until then.
+
 Subscription responses can deliver a Happ/INCY routing profile in the HTTP `routing`
 header. Teleport imports it into Settings > Split Tunneling as soon as the
 subscription is added, and updates that subscription's profile on refresh.
@@ -165,6 +169,15 @@ just test
 ```
 
 Checks are XCTest cases in `teleportTests/` (app and shared code) and `TeleportPrivilegedHelperTests/` (helper code); both bundles compile the sources they test, so no app or helper process runs. Run one class or method with `just test-case <Class>[/<method>]`, e.g. `just test-case CoreTests`, or press Cmd-U in Xcode. `just coverage` prints line coverage. Connecting, helper installation and the leak guard on a real network are tested by hand.
+
+For UI responsiveness regressions, match the app's default main-actor isolation:
+
+```sh
+XCODE_XCCONFIG_FILE="$PWD/Config/AppActorIsolationTests.xcconfig" just test-case AppViewModelSubscriptionRefreshTests
+XCODE_XCCONFIG_FILE="$PWD/Config/AppActorIsolationTests.xcconfig" just test-case ConnectionHealthTests
+```
+
+These cover subscription processing, asynchronous persistence, and probe runtime setup/cleanup. Without the override, the hostless tests can miss work that hops onto the main actor only in the app build.
 
 ## Buy us some tokens
 

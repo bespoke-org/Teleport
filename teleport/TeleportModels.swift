@@ -750,7 +750,7 @@ enum SplitTunnelRuleAction: String, Codable, CaseIterable, Identifiable, Equatab
     }
 }
 
-struct SplitTunnelRule: Codable, Equatable, Identifiable {
+nonisolated struct SplitTunnelRule: Codable, Equatable, Identifiable {
     let id: UUID
     var value: String
     var kind: SplitTunnelRuleKind
@@ -802,7 +802,7 @@ nonisolated struct GeodataSources: Codable, Equatable, Sendable {
     var geoipURLString: String?
 }
 
-struct SplitTunnelProfile: Codable, Equatable, Identifiable {
+nonisolated struct SplitTunnelProfile: Codable, Equatable, Identifiable {
     let id: UUID
     var name: String
     var rules: [SplitTunnelRule]

@@ -106,7 +106,7 @@ struct SubscriptionConnectionReconciler {
     }
 }
 
-struct SubscriptionFetchResult {
+nonisolated struct SubscriptionFetchResult {
     let candidates: [SubscriptionCandidate]
     let routing: SubscriptionRoutingImport?
     let routingWarning: String?
@@ -119,7 +119,7 @@ struct SubscriptionFetchResult {
     }
 }
 
-struct SubscriptionClient {
+nonisolated struct SubscriptionClient {
     private let loadResponse: @Sendable (URLRequest) async throws -> (Data, URLResponse)
 
     init(loadResponse: @escaping @Sendable (URLRequest) async throws -> (Data, URLResponse) = { request in

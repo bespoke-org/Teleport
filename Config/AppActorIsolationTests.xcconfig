@@ -1,0 +1,7 @@
+// Hostless tests compile app sources with different defaults. Use this override
+// for regressions involving UI isolation so the tests match the shipping app.
+// Keep the privileged helper on its own isolation defaults.
+APP_TEST_ISOLATION_teleport = MainActor
+APP_TEST_ISOLATION_teleportTests = MainActor
+SWIFT_DEFAULT_ACTOR_ISOLATION = $(APP_TEST_ISOLATION_$(TARGET_NAME))
+SWIFT_APPROACHABLE_CONCURRENCY = YES

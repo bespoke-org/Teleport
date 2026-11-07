@@ -9,7 +9,9 @@ struct ConnectionHealthProbeResult {
     let failureSummary: String?
 }
 
-final class ConnectionHealthProbeService: @unchecked Sendable {
+// Runtime launch/teardown and config I/O must not inherit the app's default
+// MainActor isolation. The queue runs probes in detached utility tasks.
+nonisolated final class ConnectionHealthProbeService: @unchecked Sendable {
     private let tcpTimeoutSeconds: Int
     private let tunnelProbeTimeoutSeconds: Int
     private let tunnelProbeURL: URL

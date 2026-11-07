@@ -61,7 +61,7 @@ struct SubscriptionRoutingHeaderResult {
 /// Happ/INCY's HTTP `routing` header contains a base64 JSON profile, optionally
 /// wrapped in `<scheme>://routing/{add,onadd}/`. It is separate from the body:
 /// a bad routing header must not prevent importing otherwise valid servers.
-struct SubscriptionRoutingHeaderParser {
+nonisolated struct SubscriptionRoutingHeaderParser {
     func parse(_ header: String?) -> SubscriptionRoutingHeaderResult {
         guard let header, !header.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return SubscriptionRoutingHeaderResult(routing: nil, warning: nil)
