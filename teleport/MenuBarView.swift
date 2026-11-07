@@ -3,6 +3,7 @@ import SwiftUI
 
 struct MenuBarView: View {
     @Environment(\.openWindow) private var openWindow
+    @State private var presentation = MenuBarPresentation()
     @ObservedObject private var appIcons = AppIconStore.shared
     @ObservedObject var viewModel: AppViewModel
 
@@ -28,6 +29,7 @@ struct MenuBarView: View {
         }
         .padding(8)
         .frame(width: 280)
+        .background(MenuBarWindowReader(reference: presentation))
     }
 
     private var header: some View {
@@ -189,9 +191,32 @@ struct MenuBarView: View {
     }
 
     private func showSettings() {
-        NSApplication.shared.activate(ignoringOtherApps: true)
+        presentation.dismiss()
         DispatchQueue.main.async {
             openWindow(id: "settings")
+            NSApplication.shared.activate(ignoringOtherApps: true)
+        }
+    }
+}
+
+/// Capture this panel rather than relying on whichever app window is key.
+private struct MenuBarWindowReader: NSViewRepresentable {
+    let reference: MenuBarPresentation
+
+    func makeNSView(context: Context) -> ReaderView {
+        let view = ReaderView()
+        view.reference = reference
+        return view
+    }
+
+    func updateNSView(_ nsView: ReaderView, context: Context) {}
+
+    final class ReaderView: NSView {
+        var reference: MenuBarPresentation?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            reference?.window = window
         }
     }
 }
