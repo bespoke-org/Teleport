@@ -29,8 +29,22 @@ final class ConnectionProviderTests: XCTestCase {
     func testConnectionPopoverShowsStartupAndApprovalFailuresWithDetails() async throws {
         let errors: [Error] = [
             PrivilegedHelperInstallerError.helperDidNotStart("Xray exited with status 1"),
+            PrivilegedHelperInstallerError.bundledHelperMissing,
+            PrivilegedHelperInstallerError.installFailed("invalid code signature"),
             PrivilegedShellError.commandFailed("User canceled."),
-        ]
+            PrivilegedShellError.approvalCancelled,
+            PrivilegedHelperClientError.unavailable("XPC service unavailable"),
+            PrivilegedHelperClientError.invalidResponse("Request identifier mismatch"),
+            PrivilegedHelperClientError.incompatibleService("revision mismatch", "expected revision 8"),
+            PrivilegedHelperClientError.commandFailed("Missing Geosite category RU. Download the profile's geodata.", "required by routing rule"),
+            PrivilegedHelperClientError.inProgress("request pending", "status starting"),
+            PrivilegedHelperClientError.indeterminate(requestID: UUID(), sessionID: UUID(), summary: "lost reply"),
+            PrivilegedHelperClientError.indeterminateStatus("cannot correlate session"),
+            XrayRuntimeManager.RuntimeError.binaryNotFound,
+            XrayRuntimeManager.RuntimeError.startupTimedOut("specific Xray startup diagnostic"),
+        ] + TUNHelperFailureCode.allCases.map {
+            PrivilegedHelperClientError.protocolFailure(.init(code: $0, summary: "helper response", details: "specific protocol reason", retryDisposition: .never))
+        }
         for error in errors {
             let root = try makeIsolatedRoot("connection-popover")
             defer { try? FileManager.default.removeItem(at: root) }

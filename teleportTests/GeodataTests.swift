@@ -2,6 +2,21 @@ import Foundation
 import XCTest
 
 final class GeodataTests: XCTestCase {
+    func testLegacyGlobalSourcesMigrateToTheSelectedRoutingProfile() throws {
+        let selected = UUID()
+        let other = UUID()
+        let json = """
+        {"selectedSplitTunnelProfileID":"\(selected)",
+         "splitTunnelProfiles":[{"id":"\(other)","name":"Other"},{"id":"\(selected)","name":"Active"}],
+         "geodataSettings":{"geositeURLString":"https://provider.example/geosite.dat"}}
+        """
+        let snapshot = try JSONDecoder().decode(AppSnapshot.self, from: Data(json.utf8))
+        XCTAssertNil(snapshot.splitTunnelProfiles[0].geodataSources)
+        XCTAssertEqual(snapshot.splitTunnelProfiles[1].geodataSources,
+                       GeodataSources(geositeURLString: "https://provider.example/geosite.dat"))
+        XCTAssertEqual(try JSONDecoder().decode(AppSnapshot.self, from: JSONEncoder().encode(snapshot)), snapshot)
+    }
+
     /// Redirects the Application Support base directory to a throwaway location so
     /// GeodataUpdateService.store writes to a temp path instead of the developer's
     /// real ~/Library/Application Support/teleport/geodata store.

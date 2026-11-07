@@ -86,8 +86,10 @@ nonisolated struct PrivilegedHelperInstaller: Sendable {
         let script = try installScript(appBundleURL: bundle.bundleURL, helperURL: helperURL, runtimeURL: runtimeURL, manifest: manifest, plist: plist)
         do {
             try await shellRunner.runAdministratorShellScript(script, prompt: administratorPrompt)
+        } catch PrivilegedShellError.approvalCancelled {
+            throw PrivilegedShellError.approvalCancelled
         } catch {
-            throw PrivilegedHelperInstallerError.installFailed((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+            throw PrivilegedHelperInstallerError.installFailed((error as? LocalizedError)?.failureReason ?? error.localizedDescription)
         }
     }
 
@@ -127,7 +129,10 @@ nonisolated struct PrivilegedHelperInstaller: Sendable {
             try? await Task.sleep(nanoseconds: 200_000_000)
         }
         throw PrivilegedHelperInstallerError.helperDidNotStart(
-            (lastError as? LocalizedError)?.errorDescription ?? lastError?.localizedDescription
+            lastError.map { error in
+                [error.localizedDescription, (error as? LocalizedError)?.failureReason]
+                    .compactMap { $0 }.joined(separator: "\n")
+            }
         )
     }
 
@@ -310,9 +315,19 @@ enum PrivilegedHelperInstallerError: LocalizedError {
         case .bundledHelperMissing:
             return "Teleport's privileged helper is missing from the app bundle. Rebuild or reinstall Teleport."
         case let .installFailed(message):
-            return message.isEmpty ? "Failed to install Teleport's privileged helper" : message
+            let lower = message.lowercased()
+            if lower.contains("signature") || lower.contains("codesign") {
+                return "Teleport's app or helper has an invalid code signature. Replace Teleport with a fresh signed copy, then connect again."
+            }
+            if lower.contains("hash") || lower.contains("digest") {
+                return "The bundled Xray executable does not match this Teleport build. Replace Teleport with a fresh copy; keep the app's bundled Xray unchanged."
+            }
+            if lower.contains("permission") || lower.contains("not permitted") {
+                return "macOS denied permission to install Teleport's helper. Try connecting again and approve the administrator request. If your Mac is managed, ask its administrator to allow Teleport."
+            }
+            return "Teleport could not install its privileged helper. Try connecting again and approve the administrator request. If installation keeps failing, reinstall Teleport and restart your Mac."
         case .helperDidNotStart:
-            return "Teleport's privileged helper was installed but did not start."
+            return "Teleport's privileged helper was installed, but macOS did not start it. Restart your Mac and connect again; if this repeats, reinstall Teleport."
         }
     }
 
@@ -320,6 +335,8 @@ enum PrivilegedHelperInstallerError: LocalizedError {
         switch self {
         case let .helperDidNotStart(details):
             return details
+        case let .installFailed(message):
+            return message.isEmpty ? nil : message
         default:
             return nil
         }

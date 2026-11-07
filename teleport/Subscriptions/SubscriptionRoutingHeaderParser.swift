@@ -36,7 +36,10 @@ enum SubscriptionRoutingImport {
                         return rule
                     },
                     defaultAction: imported.defaultAction,
-                    subscriptionSourceID: sourceID
+                    subscriptionSourceID: sourceID,
+                    geodataSources: imported.geodataSources ?? previous.geodataSources,
+                    isRoutingEnabled: imported.isRoutingEnabled,
+                    geodataUpdateIntervalMinutes: previous.geodataUpdateIntervalMinutes
                 )
                 profiles[index] = profile
             } else {
@@ -144,12 +147,27 @@ struct SubscriptionRoutingHeaderParser {
             }
         }
 
-        // Teleport owns DNS and its geodata sources globally. Report settings
-        // we cannot transfer instead of silently promising a complete import.
+        var geodata: GeodataSources? = GeodataSources()
+        var geodataWarning: String?
+        do {
+            let geosite = try string(fields["geositeurl"])
+            let geoip = try string(fields["geoipurl"])
+            if geosite != nil || geoip != nil {
+                guard [geosite, geoip].compactMap({ $0 }).allSatisfy({ GeodataUpdateService.validatedSourceURL($0) != nil }) else {
+                    throw InvalidProfile.invalid
+                }
+                geodata = GeodataSources(geositeURLString: geosite, geoipURLString: geoip)
+            }
+        } catch {
+            geodata = nil
+            geodataWarning = "Profile geodata was not imported: use valid HTTPS URLs for Geosite and GeoIP. Existing geodata was kept."
+        }
+
+        // Report settings we cannot transfer instead of promising a complete import.
         let ignoredSettings = [
             "remotedns", "remotednstype", "remotednsdomain", "remotednsip",
             "domesticdns", "domesticdnstype", "domesticdnsdomain", "domesticdnsip",
-            "dnshosts", "geoipurl", "geositeurl"
+            "dnshosts"
         ].filter { key in
             guard let value = fields[key] else { return false }
             if let text = value as? String { return !text.isEmpty }
@@ -159,11 +177,13 @@ struct SubscriptionRoutingHeaderParser {
         let hasOtherSettings = try boolean(fields["fakedns"], default: false)
             || boolean(fields["usechunkfiles"], default: false)
             || (string(fields["domainstrategy"]).map { $0.lowercased() != "asis" } ?? false)
-        let warning = ignoredSettings.isEmpty && !hasOtherSettings ? nil
-            : "Routing rules imported. Profile DNS, geodata URLs, FakeDNS, chunk files and DomainStrategy are not imported; Teleport uses its own settings."
+        let settingsWarning = ignoredSettings.isEmpty && !hasOtherSettings ? nil
+            : "Routing rules imported. Profile DNS, FakeDNS, chunk files and DomainStrategy are not imported; Teleport uses its own settings."
+        let warning = [settingsWarning, geodataWarning].compactMap { $0 }.joined(separator: " ")
         return SubscriptionRoutingHeaderResult(
-            routing: .profile(SplitTunnelProfile(name: name, rules: rules, defaultAction: globalProxy ? .proxy : .direct), activate: activate),
-            warning: warning
+            routing: .profile(SplitTunnelProfile(name: name, rules: rules, defaultAction: globalProxy ? .proxy : .direct,
+                                               geodataSources: geodata), activate: activate),
+            warning: warning.isEmpty ? nil : warning
         )
     }
 

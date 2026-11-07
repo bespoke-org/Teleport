@@ -3,17 +3,19 @@ import XCTest
 
 private struct PresentableFailure: TUNHelperClientPresentableError {
     let clientSummary: String
+    var clientDetails: String? = nil
 }
 
 private struct PresentableFailingExecutor: HelperCommandExecuting, Sendable {
     let summary: String
+    var details: String? = nil
 
-    func status(request: StatusRequest) throws -> StatusResponse { throw PresentableFailure(clientSummary: summary) }
-    func start(request: StartSessionRequest, sessionID: UUID) throws -> StartSessionResponse { throw PresentableFailure(clientSummary: summary) }
-    func stop(request: StopSessionRequest, sessionID: UUID) throws -> StopSessionResponse { throw PresentableFailure(clientSummary: summary) }
-    func readDiagnostics(request: ReadDiagnosticsRequest) throws -> DiagnosticsResponse { throw PresentableFailure(clientSummary: summary) }
-    func engageLeakGuard(request: EngageLeakGuardRequest) throws -> LeakGuardResponse { throw PresentableFailure(clientSummary: summary) }
-    func releaseLeakGuard(request: ReleaseLeakGuardRequest) throws -> LeakGuardResponse { throw PresentableFailure(clientSummary: summary) }
+    func status(request: StatusRequest) throws -> StatusResponse { throw PresentableFailure(clientSummary: summary, clientDetails: details) }
+    func start(request: StartSessionRequest, sessionID: UUID) throws -> StartSessionResponse { throw PresentableFailure(clientSummary: summary, clientDetails: details) }
+    func stop(request: StopSessionRequest, sessionID: UUID) throws -> StopSessionResponse { throw PresentableFailure(clientSummary: summary, clientDetails: details) }
+    func readDiagnostics(request: ReadDiagnosticsRequest) throws -> DiagnosticsResponse { throw PresentableFailure(clientSummary: summary, clientDetails: details) }
+    func engageLeakGuard(request: EngageLeakGuardRequest) throws -> LeakGuardResponse { throw PresentableFailure(clientSummary: summary, clientDetails: details) }
+    func releaseLeakGuard(request: ReleaseLeakGuardRequest) throws -> LeakGuardResponse { throw PresentableFailure(clientSummary: summary, clientDetails: details) }
 }
 
 private struct SecretFailure: LocalizedError, Sendable {
@@ -136,6 +138,85 @@ private final class RecordingExecutor: HelperCommandExecuting, @unchecked Sendab
 }
 
 final class HelperCommandDispatchTests: XCTestCase {
+    func testSafeFailureDetailsSurviveTheReplyAndStatusReconciliation() async throws {
+        let summary = "Geosite data is missing. Download the profile again."
+        let details = "Missing geosite.dat"
+        let dispatcher = HelperCommandDispatcher(executor: PresentableFailingExecutor(summary: summary, details: details))
+        let sessionID = UUID()
+        let reply: TUNHelperResponseEnvelope<StartSessionResponse> = try TUNHelperCodec.decodeResponse(
+            await dispatcher.dispatch(command: .startSession,
+                requestData: makeStartData(requestID: UUID(), sessionID: sessionID, protectedHosts: ["example.com"])))
+        XCTAssertEqual(reply.failure?.summary, summary)
+        XCTAssertEqual(reply.failure?.details, details)
+        let status: TUNHelperResponseEnvelope<StatusResponse> = try TUNHelperCodec.decodeResponse(
+            await dispatcher.dispatch(command: .status, requestData: makeStatusData(requestID: UUID())))
+        XCTAssertEqual(status.payload?.phase, .failed)
+        XCTAssertEqual(status.payload?.summary, summary)
+        XCTAssertEqual(status.payload?.details, details)
+    }
+
+    func testNativeSystemFailuresExplainTheFixWithoutExposingRawOutput() {
+        let disk = HelperError.systemFailure(POSIXError(.ENOSPC))
+        XCTAssertTrue(disk?.clientSummary.contains("Free disk space") == true)
+        let denied = HelperError.systemFailure(POSIXError(.EPERM))
+        XCTAssertTrue(denied?.clientSummary.contains("administrator approval") == true)
+        let port = HelperError.systemFailure(POSIXError(.EADDRINUSE))
+        XCTAssertTrue(port?.clientSummary.contains("proxy ports") == true)
+        XCTAssertNil(HelperError.systemFailure(SecretFailure(secret: "private-output")))
+    }
+
+    func testShellFailuresExplainPortDiskPermissionsAndRoutingFixes() {
+        let cases = [
+            ("listen tcp: address already in use", "proxy ports"),
+            ("listen tcp 127.0.0.1:10808: bind: address already in use", "port 10808"),
+            ("chmod: Operation not permitted", "administrator approval"),
+            ("write: No space left on device", "Free disk space"),
+            ("Teleport TUN mode could not install IPv6 default routes", "Disconnect other VPN"),
+            ("Teleport TUN mode started Xray, but macOS did not route lower-half public traffic", "Disconnect other VPN"),
+            ("Teleport TUN mode started Xray, but macOS did not create a TUN interface", "tunnel interface"),
+            ("TELEPORT_FAILURE_STAGE=protect-server-routes", "Wi-Fi or Ethernet"),
+            ("Failed to start: invalid UUID", "user ID")
+        ]
+        for (output, fix) in cases {
+            XCTAssertThrowsError(try HelperShellRunner().run("printf '%s\\n' \(shellQuote(output)) >&2; exit 1", label: "tunnel start script")) { error in
+                XCTAssertTrue(error.localizedDescription.contains(fix), error.localizedDescription)
+                XCTAssertFalse(error.localizedDescription.contains("Logs"))
+                XCTAssertFalse(error.localizedDescription.contains("helper.log"))
+            }
+        }
+    }
+
+    func testBundledXrayMissingCategoryBecomesAnActionableHelperError() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let config = FileManager.default.temporaryDirectory.appendingPathComponent("teleport-missing-\(UUID()).json")
+        try Data(#"{"outbounds":[{"protocol":"freedom","tag":"direct"}],"routing":{"rules":[{"type":"field","domain":["geosite:teleport-does-not-exist"],"outboundTag":"direct"}]}}"#.utf8)
+            .write(to: config)
+        defer { try? FileManager.default.removeItem(at: config) }
+        let assets = root.appendingPathComponent("teleport/Resources/xray-assets").path
+        let binary = root.appendingPathComponent("teleport/Resources/xray").path
+        XCTAssertThrowsError(try HelperShellRunner().run(
+            "XRAY_LOCATION_ASSET=\(shellQuote(assets)) \(shellQuote(binary)) run -test -c \(shellQuote(config.path))",
+            label: "tunnel start script"
+        )) { error in
+            XCTAssertTrue(error.localizedDescription.contains("Geosite"), error.localizedDescription)
+            XCTAssertTrue(error.localizedDescription.contains("TELEPORT-DOES-NOT-EXIST"), error.localizedDescription)
+            XCTAssertTrue(error.localizedDescription.contains("Settings → Tunnel"), error.localizedDescription)
+            XCTAssertFalse(error.localizedDescription.contains(config.path))
+        }
+    }
+
+    func testShellFailureExplainsMissingGeodataWithoutLeakingOutput() throws {
+        XCTAssertThrowsError(try HelperShellRunner().run(
+            "printf '%s\\n' 'secret-token Failed to start: failed to load geosite > list not found in geosite.dat: PROVIDER' >&2; exit 1",
+            label: "tunnel start script"
+        )) { error in
+            XCTAssertTrue(error.localizedDescription.contains("Geosite"))
+            XCTAssertTrue(error.localizedDescription.contains("PROVIDER"))
+            XCTAssertTrue(error.localizedDescription.contains("Settings"))
+            XCTAssertFalse(error.localizedDescription.contains("secret-token"))
+        }
+    }
+
     func testMatchingCommandsDispatchOnlyTheirExecutorMethod() async throws {
         let executor = RecordingExecutor()
         let dispatcher = HelperCommandDispatcher(executor: executor)

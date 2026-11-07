@@ -766,6 +766,11 @@ struct SplitTunnelRule: Codable, Equatable, Identifiable {
     }
 }
 
+nonisolated struct GeodataSources: Codable, Equatable, Sendable {
+    var geositeURLString: String?
+    var geoipURLString: String?
+}
+
 struct SplitTunnelProfile: Codable, Equatable, Identifiable {
     let id: UUID
     var name: String
@@ -777,13 +782,21 @@ struct SplitTunnelProfile: Codable, Equatable, Identifiable {
     var defaultAction: SplitTunnelRuleAction
     /// Present only for profiles delivered by a subscription's HTTP headers.
     var subscriptionSourceID: UUID?
+    /// Sources travel with the rules that reference their categories. A nil URL
+    /// uses Teleport's bundled file for that kind; nil sources decode old profiles.
+    var geodataSources: GeodataSources?
+    var isRoutingEnabled: Bool
+    var geodataUpdateIntervalMinutes: Int?
 
-    init(id: UUID = UUID(), name: String, rules: [SplitTunnelRule] = [], defaultAction: SplitTunnelRuleAction = .proxy, subscriptionSourceID: UUID? = nil) {
+    init(id: UUID = UUID(), name: String, rules: [SplitTunnelRule] = [], defaultAction: SplitTunnelRuleAction = .proxy, subscriptionSourceID: UUID? = nil, geodataSources: GeodataSources? = nil, isRoutingEnabled: Bool = true, geodataUpdateIntervalMinutes: Int? = nil) {
         self.id = id
         self.name = name
         self.rules = rules
         self.defaultAction = defaultAction
         self.subscriptionSourceID = subscriptionSourceID
+        self.geodataSources = geodataSources
+        self.isRoutingEnabled = isRoutingEnabled
+        self.geodataUpdateIntervalMinutes = geodataUpdateIntervalMinutes
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -792,6 +805,9 @@ struct SplitTunnelProfile: Codable, Equatable, Identifiable {
         case rules
         case defaultAction
         case subscriptionSourceID
+        case geodataSources
+        case isRoutingEnabled
+        case geodataUpdateIntervalMinutes
     }
 
     init(from decoder: Decoder) throws {
@@ -801,6 +817,9 @@ struct SplitTunnelProfile: Codable, Equatable, Identifiable {
         rules = try container.decodeIfPresent([SplitTunnelRule].self, forKey: .rules) ?? []
         defaultAction = try container.decodeIfPresent(SplitTunnelRuleAction.self, forKey: .defaultAction) ?? .proxy
         subscriptionSourceID = try container.decodeIfPresent(UUID.self, forKey: .subscriptionSourceID)
+        geodataSources = try container.decodeIfPresent(GeodataSources.self, forKey: .geodataSources)
+        isRoutingEnabled = try container.decodeIfPresent(Bool.self, forKey: .isRoutingEnabled) ?? true
+        geodataUpdateIntervalMinutes = try container.decodeIfPresent(Int.self, forKey: .geodataUpdateIntervalMinutes)
     }
 }
 
@@ -872,6 +891,7 @@ struct AppSnapshot: Codable, Equatable {
     /// open without the user doing anything.
     var isLeakGuardEnabled: Bool
     var geodataSettings: GeodataSourceSettings
+    var tunnelAssignments: [TunnelProfileAssignment]
 
     init(
         savedConnections: [SavedConnection],
@@ -888,7 +908,8 @@ struct AppSnapshot: Codable, Equatable {
         selectedSplitTunnelProfileID: UUID? = nil,
         isSplitTunnelEnabled: Bool = false,
         isLeakGuardEnabled: Bool = false,
-        geodataSettings: GeodataSourceSettings = GeodataSourceSettings()
+        geodataSettings: GeodataSourceSettings = GeodataSourceSettings(),
+        tunnelAssignments: [TunnelProfileAssignment]? = nil
     ) {
         self.savedConnections = savedConnections
         self.subscriptionSources = subscriptionSources
@@ -905,6 +926,14 @@ struct AppSnapshot: Codable, Equatable {
         self.isSplitTunnelEnabled = isSplitTunnelEnabled
         self.isLeakGuardEnabled = isLeakGuardEnabled
         self.geodataSettings = geodataSettings
+        self.tunnelAssignments = tunnelAssignments ?? []
+        if tunnelAssignments == nil {
+            for index in self.splitTunnelProfiles.indices {
+                self.splitTunnelProfiles[index].isRoutingEnabled = isSplitTunnelEnabled
+            }
+            migrateGeodataSources()
+        }
+        ensurePersonalTunnelProfile()
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -923,6 +952,7 @@ struct AppSnapshot: Codable, Equatable {
         case isSplitTunnelEnabled
         case isLeakGuardEnabled
         case geodataSettings
+        case tunnelAssignments
     }
 
     init(from decoder: Decoder) throws {
@@ -956,6 +986,48 @@ struct AppSnapshot: Codable, Equatable {
         // A snapshot written before the guard existed gets it off, like a fresh one.
         isLeakGuardEnabled = try container.decodeIfPresent(Bool.self, forKey: .isLeakGuardEnabled) ?? false
         geodataSettings = try container.decodeIfPresent(GeodataSourceSettings.self, forKey: .geodataSettings) ?? GeodataSourceSettings()
+        tunnelAssignments = try container.decodeIfPresent([TunnelProfileAssignment].self, forKey: .tunnelAssignments) ?? []
+        if !container.contains(.tunnelAssignments) {
+            for index in splitTunnelProfiles.indices where splitTunnelProfiles[index].subscriptionSourceID == nil {
+                splitTunnelProfiles[index].isRoutingEnabled = isSplitTunnelEnabled
+            }
+            // Preserve the old global configuration for existing targets. If it
+            // used a provider profile, keep a personal copy rather than tying all
+            // other subscriptions to that provider's future updates.
+            if let selected = splitTunnelProfiles.first(where: { $0.id == selectedSplitTunnelProfileID }) {
+                var legacyProfileID = selected.id
+                if selected.subscriptionSourceID != nil {
+                    let copy = SplitTunnelProfile(name: "\(selected.name) — Saved", rules: selected.rules,
+                        defaultAction: selected.defaultAction, geodataSources: selected.geodataSources,
+                        isRoutingEnabled: isSplitTunnelEnabled,
+                        geodataUpdateIntervalMinutes: selected.geodataUpdateIntervalMinutes)
+                    splitTunnelProfiles.append(copy)
+                    selectedSplitTunnelProfileID = copy.id
+                    legacyProfileID = copy.id
+                }
+                let targets = subscriptionSources.map { TunnelTarget.subscription($0.id) }
+                    + savedConnections.filter { $0.source == nil }.map { TunnelTarget.connection($0.id) }
+                tunnelAssignments = targets.map { TunnelProfileAssignment(target: $0, personalProfileID: legacyProfileID) }
+            }
+            migrateGeodataSources()
+        }
+        ensurePersonalTunnelProfile()
+    }
+
+    private mutating func ensurePersonalTunnelProfile() {
+        if !splitTunnelProfiles.contains(where: { $0.subscriptionSourceID == nil }) {
+            splitTunnelProfiles.append(SplitTunnelProfile(name: "Default", geodataSources: GeodataSources(), isRoutingEnabled: false))
+        }
+    }
+
+    private mutating func migrateGeodataSources() {
+        guard geodataSettings.geositeURLString != nil || geodataSettings.geoipURLString != nil
+            || geodataSettings.autoUpdateIntervalMinutes != nil else { return }
+        guard let index = splitTunnelProfiles.firstIndex(where: { $0.id == selectedSplitTunnelProfileID }),
+              splitTunnelProfiles[index].geodataSources == nil else { return }
+        splitTunnelProfiles[index].geodataSources = GeodataSources(
+            geositeURLString: geodataSettings.geositeURLString, geoipURLString: geodataSettings.geoipURLString)
+        splitTunnelProfiles[index].geodataUpdateIntervalMinutes = geodataSettings.autoUpdateIntervalMinutes
     }
 }
 

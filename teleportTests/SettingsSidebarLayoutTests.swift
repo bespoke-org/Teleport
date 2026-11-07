@@ -35,7 +35,7 @@ final class SettingsSidebarLayoutTests: XCTestCase {
             ))
         window.sendEvent(arrowDown)
         try await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(model.navigation.section, .splitTunneling)
+        XCTAssertEqual(model.navigation.section, .tunnel)
         // There must be no native table selection layer behind our gray buttons.
         XCTAssertNil(tableView(in: view))
 
@@ -45,7 +45,7 @@ final class SettingsSidebarLayoutTests: XCTestCase {
         let editor = try XCTUnwrap(window.firstResponder as? NSTextView)
         editor.insertText("socks5", replacementRange: NSRange(location: NSNotFound, length: 0))
         try await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(model.navigation.section, .splitTunneling, "Typing should not change pages")
+        XCTAssertEqual(model.navigation.section, .tunnel, "Typing should not change pages")
         let escape = try XCTUnwrap(
             NSEvent.keyEvent(
                 with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
@@ -83,7 +83,7 @@ final class SettingsSidebarLayoutTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(100))
         window.sendEvent(enter)
         try await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(model.navigation.section, .splitTunneling, "Down enters results and advances to the second match")
+        XCTAssertEqual(model.navigation.section, .tunnel, "Down enters results and advances to the second match")
 
         window.sendEvent(escape)
         try await Task.sleep(for: .milliseconds(100))

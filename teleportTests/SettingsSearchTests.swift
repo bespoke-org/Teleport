@@ -22,6 +22,6 @@ final class SettingsSearchTests: XCTestCase {
         XCTAssertEqual(logs.count, 1)
         XCTAssertEqual(logs.first?.section, .logs)
         XCTAssertEqual(logs.first?.subtitle, "Nerd Shit")
-        XCTAssertEqual(SettingsSearch.results(for: "geodata").first?.section, .geodata)
+        XCTAssertEqual(SettingsSearch.results(for: "geodata").first?.section, .tunnel)
     }
 }

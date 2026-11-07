@@ -2,6 +2,29 @@ import Foundation
 import XCTest
 
 final class MachServiceInstallationTests: XCTestCase {
+    func testInstallationErrorsExplainTheFixAndKeepTechnicalDetailsSeparate() {
+        let signature = ConnectionFailure(error: PrivilegedHelperInstallerError.installFailed("codesign: invalid signature"))
+        XCTAssertTrue(signature.summary.contains("fresh signed copy"))
+        XCTAssertEqual(signature.details, "codesign: invalid signature")
+        let digest = ConnectionFailure(error: PrivilegedHelperInstallerError.installFailed("Bundled Xray runtime hash verification failed."))
+        XCTAssertTrue(digest.summary.contains("does not match"))
+        XCTAssertTrue(digest.summary.contains("fresh copy"))
+        let startup = ConnectionFailure(error: PrivilegedHelperInstallerError.helperDidNotStart("service bootstrap failed"))
+        XCTAssertTrue(startup.summary.contains("Restart your Mac"))
+        XCTAssertEqual(startup.details, "service bootstrap failed")
+        let removal = ConnectionFailure(error: PrivilegedHelperUninstallerError.uninstallFailed("file is locked"))
+        XCTAssertTrue(removal.summary.contains("Try Uninstall again"))
+        XCTAssertEqual(removal.details, "file is locked")
+    }
+
+    func testAdministratorCancellationIsRecognizedByItsCodeInAnyLanguage() {
+        let error = PrivilegedShellRunner.failure(fromOSAScriptOutput: "0:42: execution error: Операция отменена. (-128)")
+        guard case .approvalCancelled = error else { return XCTFail("Expected cancellation") }
+        XCTAssertTrue(error.localizedDescription.contains("Administrator approval was cancelled"))
+        XCTAssertTrue(error.localizedDescription.contains("Try again"))
+        XCTAssertFalse(error.localizedDescription.contains("(-128)"))
+    }
+
     func testLaunchDaemonPlist() throws {
         let plistData = Data(PrivilegedHelperInstaller.launchDaemonPlist().utf8)
         let decoded = try PropertyListSerialization.propertyList(from: plistData, format: nil)

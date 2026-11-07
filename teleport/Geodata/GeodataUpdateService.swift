@@ -276,6 +276,7 @@ nonisolated struct GeodataUpdateService: GeodataUpdateServicing, @unchecked Send
 
             if fileManager.fileExists(atPath: destinationURL.path),
                manifest[kind.rawValue] == sourceStamp {
+                try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destinationURL.path)
                 continue
             }
             // Custom files live in a user-writable directory and are only checked at

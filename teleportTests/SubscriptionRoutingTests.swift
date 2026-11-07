@@ -138,6 +138,117 @@ final class SubscriptionRoutingTests: XCTestCase {
         XCTAssertNotNil(fetched.routingWarning)
     }
 
+    func testGeodataURLsAreImportedIntoTheRoutingProfile() throws {
+        let fetched = try fetchResult(header: link([
+            "Name": "Provider", "DirectSites": ["geosite:provider-only"],
+            "Geositeurl": "https://provider.example/geosite.dat", "Geoipurl": "https://provider.example/geoip.dat"
+        ]))
+        XCTAssertNil(fetched.routingWarning)
+        let (profile, _) = try profile(from: fetched.routing)
+        XCTAssertEqual(profile.geodataSources, GeodataSources(
+            geositeURLString: "https://provider.example/geosite.dat", geoipURLString: "https://provider.example/geoip.dat"))
+        XCTAssertEqual(try JSONDecoder().decode(SplitTunnelProfile.self, from: JSONEncoder().encode(profile)), profile)
+    }
+
+    func testInvalidGeodataKeepsRoutingAndServersImportable() throws {
+        for value: Any in ["http://provider.example/geosite.dat", "invalid", 42] {
+            let fetched = try fetchResult(header: link(["Geositeurl": value, "DirectSites": ["example.com"]]))
+            let (profile, _) = try profile(from: fetched.routing)
+            XCTAssertNil(profile.geodataSources)
+            XCTAssertTrue(fetched.routingWarning?.contains("HTTPS") == true)
+            XCTAssertEqual(fetched.candidates.count, 1)
+        }
+    }
+
+    @MainActor
+    func testImportAssignsOnlyItsSubscriptionAndPersonalCopySurvivesRefresh() async throws {
+        let fixture = try ViewModelFixture()
+        defer { fixture.cleanUp() }
+        let model = fixture.viewModel
+        await waitUntil { model.canConnect }
+        let manualID = try XCTUnwrap(model.selectedSplitTunnelProfileID)
+        model.refreshSubscription(id: fixture.source.id)
+        await waitUntil { await fixture.loader.requestCount == 1 }
+        await fixture.loader.complete(index: 0, header: try link([
+            "Name": "Provider", "Geositeurl": "https://provider.example/geosite.dat",
+            "Geoipurl": "https://provider.example/geoip.dat", "DirectSites": ["geosite:provider-only"]
+        ]))
+        await waitUntil { !model.isRefreshingSubscription(fixture.source.id) }
+        XCTAssertEqual(model.selectedSplitTunnelProfileID, manualID)
+        XCTAssertTrue(fixture.geodata.requestedKinds.isEmpty, "An unrelated import must not replace the active datasets")
+
+        model.selectTunnelTarget(.subscription(fixture.source.id))
+        XCTAssertTrue(model.inheritsSubscriptionTunnel)
+        XCTAssertFalse(model.canEditTunnelProfile)
+        XCTAssertEqual(model.addSplitTunnelRule(value: "example.com", action: .direct), .failure(.readOnlyProfile))
+        let providerID = try XCTUnwrap(model.selectedSplitTunnelProfileID)
+        XCTAssertEqual(model.selectedProfileGeodataSources.geositeURLString, "https://provider.example/geosite.dat")
+        model.setSplitTunnelDefaultAction(.direct)
+        XCTAssertEqual(model.splitTunnelDefaultAction, .proxy, "Provider profiles are read-only")
+
+        let copyID = try XCTUnwrap(model.customizeTunnelProfile())
+        XCTAssertFalse(model.inheritsSubscriptionTunnel)
+        model.setSplitTunnelDefaultAction(.direct)
+        model.applyGeodataSources(geositeURLString: "https://custom.example/geosite.dat", geoipURLString: nil)
+        await waitUntil { model.updatingGeodataKinds.isEmpty }
+
+        // Browsing and editing the subscription must not change the manual portal's request.
+        model.connect()
+        await waitUntil { model.isConnected && !model.isOperationPending }
+        var requests = await fixture.provider.requests
+        XCTAssertEqual(requests.last?.splitTunnelPolicy.rules.first?.value, "original.example")
+        XCTAssertNil(model.geodataSettings.geositeURLString)
+
+        let imported = try XCTUnwrap(model.savedConnections.first { $0.source?.subscriptionSourceID == fixture.source.id })
+        model.selectConnection(id: imported.id)
+        await waitUntil { await fixture.provider.requests.count == 2 && !model.isOperationPending }
+        requests = await fixture.provider.requests
+        XCTAssertEqual(requests.last?.splitTunnelPolicy.defaultAction, .direct)
+        XCTAssertEqual(requests.last?.splitTunnelPolicy.rules.first?.value, "geosite:provider-only")
+        XCTAssertEqual(model.geodataSettings.geositeURLString, "https://custom.example/geosite.dat")
+        model.disconnect()
+        await waitUntil { model.connectionState == .idle && !model.isOperationPending }
+
+        model.refreshSubscription(id: fixture.source.id)
+        await waitUntil { await fixture.loader.requestCount == 2 }
+        await fixture.loader.complete(index: 1, header: try link([
+            "Name": "Updated provider", "Geositeurl": "https://provider.example/new.dat",
+            "DirectSites": ["new.example"]
+        ]))
+        await waitUntil { !model.isRefreshingSubscription(fixture.source.id) && model.updatingGeodataKinds.isEmpty }
+        XCTAssertEqual(model.selectedSplitTunnelProfileID, copyID)
+        XCTAssertEqual(model.splitTunnelDefaultAction, .direct)
+        XCTAssertEqual(model.selectedProfileGeodataSources.geositeURLString, "https://custom.example/geosite.dat")
+        XCTAssertEqual(model.providerTunnelProfile?.id, providerID)
+        XCTAssertEqual(model.providerTunnelProfile?.name, "Updated provider")
+        XCTAssertEqual(fixture.store.load().tunnelAssignments, model.tunnelAssignments)
+
+        model.setInheritsSubscriptionTunnel(true)
+        model.connect()
+        await waitUntil { model.isConnected && !model.isOperationPending }
+        requests = await fixture.provider.requests
+        XCTAssertEqual(requests.last?.splitTunnelPolicy.rules.first?.value, "new.example")
+        XCTAssertEqual(model.geodataSettings.geositeURLString, "https://provider.example/new.dat")
+        model.disconnect()
+        await waitUntil { model.connectionState == .idle && !model.isOperationPending }
+    }
+
+    @MainActor
+    func testAddSavesRulesAndGeodataWithoutDownloadingOrActivating() async throws {
+        let fixture = try ViewModelFixture()
+        defer { fixture.cleanUp() }
+        let selected = fixture.viewModel.selectedSplitTunnelProfileID
+        fixture.viewModel.refreshSubscription(id: fixture.source.id)
+        await waitUntil { await fixture.loader.requestCount == 1 }
+        await fixture.loader.complete(index: 0, header: try link([
+            "Name": "Saved only", "Geositeurl": "https://provider.example/geosite.dat"
+        ], command: "add"))
+        await waitUntil { !fixture.viewModel.isRefreshingSubscription(fixture.source.id) }
+        XCTAssertNotNil(fixture.viewModel.splitTunnelProfiles.last?.geodataSources)
+        XCTAssertEqual(fixture.viewModel.selectedSplitTunnelProfileID, selected)
+        XCTAssertTrue(fixture.geodata.requestedKinds.isEmpty)
+    }
+
     func testRefreshUpdatesOnlyOwningSubscriptionAndPreservesIdentity() throws {
         let sourceID = UUID()
         let otherSourceID = UUID()
@@ -282,7 +393,7 @@ final class SubscriptionRoutingTests: XCTestCase {
     }
 
     @MainActor
-    func testImportCancelsQueuedLiveApplyButLaterManualEditsStillApply() async throws {
+    func testUnrelatedImportDoesNotCancelManualLiveEdits() async throws {
         let fixture = try ViewModelFixture()
         defer { fixture.cleanUp() }
         let viewModel = fixture.viewModel
@@ -298,9 +409,9 @@ final class SubscriptionRoutingTests: XCTestCase {
         await waitUntil { !viewModel.isRefreshingSubscription(fixture.source.id) }
         try await Task.sleep(for: .milliseconds(800))
         let requestsBeforeEdit = await fixture.provider.requests
-        XCTAssertEqual(requestsBeforeEdit.count, 1, "An earlier work item must not apply imported routing")
+        XCTAssertEqual(requestsBeforeEdit.count, 2, "The manual target keeps its own queued edit")
         viewModel.setSplitTunnelDefaultAction(.proxy)
-        await waitUntil { await fixture.provider.requests.count == 2 && !viewModel.isOperationPending }
+        await waitUntil { await fixture.provider.requests.count == 3 && !viewModel.isOperationPending }
         let requests = await fixture.provider.requests
         XCTAssertEqual(requests.last?.splitTunnelPolicy.rules, viewModel.splitTunnelRules)
         viewModel.disconnect()
@@ -325,6 +436,7 @@ final class SubscriptionRoutingTests: XCTestCase {
                                         savedAt: Date(), lastRefreshedAt: Date())
         let loader = ResponseLoader()
         let provider = RecordingProvider()
+        let geodata = SubscriptionGeodataService()
         let viewModel: AppViewModel
 
         init() throws {
@@ -350,7 +462,8 @@ final class SubscriptionRoutingTests: XCTestCase {
                 leakGuard: LeakGuardService(isEnabled: false, log: log),
                 subscriptionClient: SubscriptionClient(loadResponse: { try await loader.load($0) }),
                 healthProbeService: ConnectionHealthProbeService(),
-                systemProxyService: SystemProxyService(fileManager: fileManager, log: log), log: log
+                systemProxyService: SystemProxyService(fileManager: fileManager, log: log),
+                geodataUpdateCoordinator: GeodataUpdateCoordinator(service: geodata), log: log
             )
         }
 
@@ -366,6 +479,24 @@ final class SubscriptionRoutingTests: XCTestCase {
         override func urls(for directory: FileManager.SearchPathDirectory, in domainMask: FileManager.SearchPathDomainMask) -> [URL] {
             directory == .applicationSupportDirectory ? [root] : super.urls(for: directory, in: domainMask)
         }
+    }
+
+    private final class SubscriptionGeodataService: GeodataUpdateServicing, @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: Set<GeodataKind> = []
+        private var requests: [GeodataKind] = []
+        var requestedKinds: [GeodataKind] { lock.withLock { requests } }
+        func cacheCurrentDownload(for kind: GeodataKind, source: URL?, updatedAt: Date?) throws {}
+        func prepareUpdate(kind: GeodataKind, from source: URL, useCache: Bool) async throws -> GeodataUpdateService.PreparedUpdate {
+            lock.withLock { requests.append(kind) }
+            return .init(stagedURL: URL(fileURLWithPath: "/unused"), updatedAt: Date(), changed: true)
+        }
+        func activate(_ update: GeodataUpdateService.PreparedUpdate, for kind: GeodataKind) throws {
+            _ = lock.withLock { stored.insert(kind) }
+        }
+        func discard(_ update: GeodataUpdateService.PreparedUpdate) {}
+        func hasCustomGeodata(for kind: GeodataKind) -> Bool { lock.withLock { stored.contains(kind) } }
+        func removeCustomGeodata(for kind: GeodataKind) throws { _ = lock.withLock { stored.remove(kind) } }
     }
 
     private actor ResponseLoader {

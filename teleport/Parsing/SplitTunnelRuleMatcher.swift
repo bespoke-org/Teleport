@@ -4,11 +4,13 @@ import Network
 enum SplitTunnelRuleValidationError: LocalizedError, Equatable {
     case emptyValue
     case invalidValue
+    case readOnlyProfile
 
     var errorDescription: String? {
         switch self {
         case .emptyValue: return "Enter a domain, IP/CIDR, geosite, or geoip value."
         case .invalidValue: return "Enter a valid domain, IP address, CIDR range, geosite:category, or geoip:category."
+        case .readOnlyProfile: return "Create a personal copy of the subscription's tunnel profile before editing its rules."
         }
     }
 }

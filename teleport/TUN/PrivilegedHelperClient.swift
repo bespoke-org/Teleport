@@ -265,7 +265,8 @@ nonisolated struct PrivilegedHelperClient: Sendable {
                     throw PrivilegedHelperClientError.indeterminate(
                         requestID: requestID,
                         sessionID: sessionID,
-                        summary: error.errorDescription ?? lastErrorSummary
+                        summary: [error.errorDescription ?? lastErrorSummary, error.failureReason]
+                            .compactMap { $0 }.joined(separator: "\n")
                     )
                 }
             } catch {
@@ -340,9 +341,10 @@ nonisolated struct PrivilegedHelperClient: Sendable {
         case .inProgress:
             return .inProgress(failure.summary, failure.details)
         case .unavailable:
-            return .unavailable(failure.summary)
-        default:
-            return .invalidResponse(failure.details ?? failure.summary)
+            return .unavailable([failure.summary, failure.details].compactMap { $0 }.joined(separator: "\n"))
+        case .malformedPayload, .payloadTooLarge, .requestConflict, .interrupted,
+             .invalidated, .deadlineExceeded, .indeterminate:
+            return .protocolFailure(failure)
         }
     }
 
@@ -367,7 +369,8 @@ nonisolated struct PrivilegedHelperClient: Sendable {
         if let failure = error as? TUNHelperProtocolFailure {
             return mapProtocolFailure(failure)
         }
-        return error
+        if error is CancellationError { return error }
+        return PrivilegedHelperClientError.unavailable(error.localizedDescription)
     }
 }
 
@@ -396,32 +399,69 @@ nonisolated enum PrivilegedHelperClientError: LocalizedError, Equatable {
     case inProgress(String, String?)
     case indeterminate(requestID: UUID, sessionID: UUID, summary: String)
     case indeterminateStatus(String)
+    case protocolFailure(TUNHelperProtocolFailure)
 
     var errorDescription: String? {
         switch self {
-        case let .unavailable(message):
-            return "Teleport privileged helper is not running: \(message)"
-        case let .invalidResponse(message):
-            return message
-        case let .incompatibleService(summary, _),
-             let .commandFailed(summary, _),
-             let .inProgress(summary, _):
+        case .unavailable:
+            return "Teleport could not contact its privileged helper. Try connecting again so Teleport can repair the helper installation."
+        case .invalidResponse:
+            return "Teleport received an invalid reply from its privileged helper. Try again; if this repeats, update or reinstall Teleport."
+        case .incompatibleService:
+            return "Teleport and its privileged helper use incompatible versions. Reinstall Teleport, then connect again to update the helper."
+        case let .commandFailed(summary, _):
+            let summary = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+            if summary.isEmpty || summary == "The privileged helper command failed" {
+                return "The privileged helper encountered an internal error. Disconnect and connect again; if this repeats, reinstall Teleport."
+            }
+            let action = #"(?i)\b(try|check|choose|download|reinstall|update|disconnect|reduce|free|close|refresh|edit|correct|restart|restore|replace|approve|sign out)\b"#
+            if summary.range(of: action, options: .regularExpression) == nil {
+                return summary + (summary.hasSuffix(".") ? " " : ". ") + "Try disconnecting and connecting again."
+            }
             return summary
-        case let .indeterminate(_, _, summary),
-             let .indeterminateStatus(summary):
-            return summary
+        case .inProgress:
+            return "The privileged helper is still processing an earlier request. Wait a moment, then try again."
+        case .indeterminate, .indeterminateStatus:
+            return "Teleport could not confirm whether the tunnel is running. Try Disconnect to stop the session before connecting again."
+        case let .protocolFailure(failure):
+            switch failure.code {
+            case .payloadTooLarge:
+                return "The tunnel configuration is too large for the privileged helper. Reduce the routing rules or additional portals in the Tunnel profile, then try again."
+            case .malformedPayload, .requestConflict:
+                return "The privileged helper rejected Teleport's tunnel request. Try again; if this repeats, update or reinstall Teleport."
+            case .interrupted, .invalidated, .indeterminate:
+                return "Communication with the privileged helper was interrupted. The tunnel may still be active. Try Disconnect before connecting again."
+            case .deadlineExceeded:
+                return "The privileged helper did not reply in time. Try Disconnect to confirm the tunnel has stopped, then connect again."
+            case .incompatibleService:
+                return PrivilegedHelperClientError.incompatibleService(failure.summary, failure.details).errorDescription
+            case .commandFailed:
+                return PrivilegedHelperClientError.commandFailed(failure.summary, failure.details).errorDescription
+            case .inProgress:
+                return PrivilegedHelperClientError.inProgress(failure.summary, failure.details).errorDescription
+            case .unavailable:
+                return PrivilegedHelperClientError.unavailable(failure.summary).errorDescription
+            }
         }
     }
 
     var failureReason: String? {
         switch self {
-        case let .incompatibleService(_, details),
-             let .commandFailed(_, details),
-             let .inProgress(_, details):
-            return details
-        default:
-            return nil
+        case let .incompatibleService(summary, details), let .commandFailed(summary, details), let .inProgress(summary, details):
+            return diagnosticText([summary == errorDescription ? nil : summary, details])
+        case let .unavailable(message), let .invalidResponse(message), let .indeterminateStatus(message):
+            return diagnosticText([message])
+        case let .indeterminate(requestID, sessionID, summary):
+            return diagnosticText([summary, "Request: \(requestID)\nSession: \(sessionID)"])
+        case let .protocolFailure(failure):
+            return diagnosticText(["Helper response: \(failure.code.rawValue)", failure.summary, failure.details])
         }
+    }
+
+    private func diagnosticText(_ values: [String?]) -> String? {
+        let text = values.compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }.joined(separator: "\n")
+        return text.isEmpty ? nil : text
     }
 }
 

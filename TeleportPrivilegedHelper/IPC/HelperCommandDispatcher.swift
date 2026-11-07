@@ -16,6 +16,7 @@ actor HelperCommandDispatcher {
     private var queuedSessionID: UUID?
     private var queuedPhase: TUNHelperSessionPhase?
     private var observedFailureSummary: String?
+    private var observedFailureDetails: String?
     private var correlationGeneration: UInt64 = 0
     private let onRequestAdmitted: @Sendable (TUNHelperCommand) -> Void
 
@@ -107,6 +108,7 @@ actor HelperCommandDispatcher {
                 let projectedSessionID = queuedSessionID ?? observedSessionID
                 let projectedPhase = queuedPhase ?? (observedFailureSummary == nil ? nil : .failed)
                 let projectedFailureSummary = observedFailureSummary
+                let projectedFailureDetails = observedFailureDetails
                 return try await execute(
                     command: command,
                     requestID: request.requestID,
@@ -121,7 +123,7 @@ actor HelperCommandDispatcher {
                             helperVersion: PrivilegedHelperConstants.version,
                             phase: projectedPhase,
                             summary: projectedFailureSummary,
-                            details: nil
+                            details: projectedFailureDetails
                         )
                     }
                     return try executor.status(request: request.payload)
@@ -249,6 +251,7 @@ actor HelperCommandDispatcher {
             queuedSessionID = successfulSessionID
             queuedPhase = command == .startSession ? .starting : .stopping
             observedFailureSummary = nil
+            observedFailureDetails = nil
         }
         let effectiveResponseSessionID = usesObservedSessionID
             ? (queuedSessionID ?? observedSessionID)
@@ -256,7 +259,7 @@ actor HelperCommandDispatcher {
         onRequestAdmitted(command)
 
         let precedingExecution = waitsForPrecedingExecution ? executionTail : nil
-        let execution = Task.detached { () -> (data: Data, succeeded: Bool, failureSummary: String?) in
+        let execution = Task.detached { () -> (data: Data, succeeded: Bool, failureSummary: String?, failureDetails: String?) in
             await precedingExecution?.value
             do {
                 let payload = try operation()
@@ -267,7 +270,7 @@ actor HelperCommandDispatcher {
                     payload: payload,
                     failure: nil
                 )
-                return (try TUNHelperCodec.encodeResponse(response), true, nil)
+                return (try TUNHelperCodec.encodeResponse(response), true, nil, nil)
             } catch let protocolFailure as TUNHelperProtocolFailure {
                 return (
                     Self.encodeFailure(
@@ -277,7 +280,8 @@ actor HelperCommandDispatcher {
                         failure: protocolFailure
                     ),
                     false,
-                    protocolFailure.summary
+                    protocolFailure.summary,
+                    protocolFailure.details
                 )
             } catch let presentableError as any TUNHelperClientPresentableError {
                 let summary = presentableError.clientSummary
@@ -286,13 +290,15 @@ actor HelperCommandDispatcher {
                         requestID: requestID,
                         sessionID: effectiveResponseSessionID,
                         payloadType: Response.self,
-                        failure: Self.failure(code: .commandFailed, summary: summary)
+                        failure: Self.failure(code: .commandFailed, summary: summary, details: presentableError.clientDetails)
                     ),
                     false,
-                    summary
+                    summary,
+                    presentableError.clientDetails
                 )
             } catch {
-                let summary = "The privileged helper command failed"
+                TeleportLog.shared.error("helper", "\(command.rawValue) failed: \(LogFormat.error(error))")
+                let summary = HelperError.systemFailure(error)?.clientSummary ?? "The privileged helper command failed"
                 return (
                     Self.encodeFailure(
                         requestID: requestID,
@@ -301,7 +307,8 @@ actor HelperCommandDispatcher {
                         failure: Self.failure(code: .commandFailed, summary: summary)
                     ),
                     false,
-                    summary
+                    summary,
+                    nil
                 )
             }
         }
@@ -321,6 +328,7 @@ actor HelperCommandDispatcher {
                 ? nil
                 : successfulSessionID
             observedFailureSummary = result.failureSummary
+            observedFailureDetails = result.failureDetails
         }
         if reservedCorrelationGeneration == correlationGeneration {
             queuedSessionID = nil
@@ -440,12 +448,13 @@ actor HelperCommandDispatcher {
     private nonisolated static func failure(
         code: TUNHelperFailureCode,
         summary: String,
+        details: String? = nil,
         retryDisposition: TUNHelperRetryDisposition = .never
     ) -> TUNHelperProtocolFailure {
         TUNHelperProtocolFailure(
             code: code,
             summary: summary,
-            details: nil,
+            details: details,
             retryDisposition: retryDisposition
         )
     }

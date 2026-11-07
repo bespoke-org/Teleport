@@ -14,7 +14,10 @@ struct SettingsView: View {
         } detail: {
             detailContent
                 .frame(minWidth: SettingsSidebarLayout.minimumDetailWidth)
-                .padding(.top, navigation.section == .portals || navigation.section == .splitTunneling ? 0 : 16)
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    ConnectionErrorBanner(viewModel: viewModel)
+                }
+                .padding(.top, navigation.section == .portals || navigation.section == .tunnel ? 0 : 16)
                 .navigationTitle(navigation.section.title)
         }
         .toolbar {
@@ -78,10 +81,8 @@ struct SettingsView: View {
             GeneralSettingsView(viewModel: viewModel)
         case .portals:
             PortalsSettingsView(viewModel: viewModel, state: $portalsState)
-        case .splitTunneling:
-            SplitTunnelingSettingsView(viewModel: viewModel, onOpenGeodata: { navigation.select(.geodata) })
-        case .geodata:
-            GeodataSettingsView(viewModel: viewModel)
+        case .tunnel:
+            TunnelSettingsView(viewModel: viewModel)
         case .advanced:
             AdvancedSettingsView(viewModel: viewModel, onOpenLogs: { navigation.select(.logs) })
         case .logs:
@@ -281,20 +282,18 @@ private struct GeneralSettingsView: View {
 enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
     case general
     case portals
-    case splitTunneling
-    case geodata
+    case tunnel
     case advanced
     case logs
     case about
 
     var id: Self { self }
 
-    static var sidebarSections: [Self] { allCases.filter { $0 != .logs && $0 != .geodata } }
+    static var sidebarSections: [Self] { allCases.filter { $0 != .logs } }
 
     var sidebarSection: Self {
         switch self {
         case .logs: return .advanced
-        case .geodata: return .splitTunneling
         default: return self
         }
     }
@@ -305,10 +304,8 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
             return "General"
         case .portals:
             return "Portals"
-        case .splitTunneling:
-            return "Split Routing"
-        case .geodata:
-            return "Geodata"
+        case .tunnel:
+            return "Tunnel"
         case .advanced:
             return "Nerd Shit"
         case .logs:
@@ -324,10 +321,8 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
             return "gearshape"
         case .portals:
             return "oval.portrait"
-        case .splitTunneling:
+        case .tunnel:
             return "arrow.triangle.branch"
-        case .geodata:
-            return "globe"
         case .advanced:
             return "eyeglasses"
         case .logs:
@@ -352,7 +347,7 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
                 Color(red: 178.0 / 255, green: 50.0 / 255, blue: 232.0 / 255),
                 Color(red: 116.0 / 255, green: 52.0 / 255, blue: 200.0 / 255),
             ]
-        case .splitTunneling, .geodata:
+        case .tunnel:
             colors = [
                 Color(red: 103.0 / 255, green: 223.0 / 255, blue: 148.0 / 255),
                 iconColor,
@@ -380,7 +375,7 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
             return .gray
         case .portals:
             return Color(red: 143.0 / 255, green: 76.0 / 255, blue: 219.0 / 255)
-        case .splitTunneling, .geodata:
+        case .tunnel:
             return Color(red: 50.0 / 255, green: 184.0 / 255, blue: 83.0 / 255)
         case .advanced:
             return .orange

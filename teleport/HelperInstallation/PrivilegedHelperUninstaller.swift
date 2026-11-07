@@ -40,8 +40,10 @@ nonisolated struct PrivilegedHelperUninstaller: Sendable {
     func uninstall() async throws {
         do {
             try await shellRunner.runAdministratorShellScript(Self.uninstallScript(), prompt: administratorPrompt)
+        } catch PrivilegedShellError.approvalCancelled {
+            throw PrivilegedShellError.approvalCancelled
         } catch {
-            throw PrivilegedHelperUninstallerError.uninstallFailed((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+            throw PrivilegedHelperUninstallerError.uninstallFailed((error as? LocalizedError)?.failureReason ?? error.localizedDescription)
         }
     }
 
@@ -77,8 +79,13 @@ enum PrivilegedHelperUninstallerError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case let .uninstallFailed(message):
-            return message.isEmpty ? "Failed to remove Teleport's privileged helper" : message
+        case .uninstallFailed:
+            return "Teleport could not remove its privileged helper. Try Uninstall again and approve the administrator request. If files remain locked, restart your Mac before retrying."
         }
+    }
+
+    var failureReason: String? {
+        if case let .uninstallFailed(message) = self, !message.isEmpty { return message }
+        return nil
     }
 }

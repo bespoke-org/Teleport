@@ -318,22 +318,34 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
     /// is nothing in that log about it.
     private func diagnosticDetails(from error: Error, maxLines: Int = 40) async -> String {
         let errorText = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        let reason = (error as? LocalizedError)?.failureReason?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let diagnostics = [errorText, reason == errorText ? nil : reason].compactMap { $0 }.filter { !$0.isEmpty }
         switch error as? PrivilegedHelperClientError {
-        case .commandFailed, .inProgress, .indeterminate:
+        case .commandFailed:
             break
         default:
-            return errorText
+            return diagnostics.joined(separator: "\n\n")
         }
 
-        let controlLog = ((try? await helperClient.readLog(
-            logName: "xray-tun-control.log",
-            maxBytes: 64 * 1024
-        ).details) ?? "")
-            .split(separator: "\n")
-            .suffix(maxLines)
-            .joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return [errorText, controlLog].filter { !$0.isEmpty }.joined(separator: "\n")
+        let names = ["xray-tun-control.log", "xray-tun.log", "helper.log"]
+        let logs = await withTaskGroup(of: (String, String).self) { group in
+            for name in names {
+                group.addTask { [helperClient] in
+                    let text = (try? await helperClient.readLog(logName: name, maxBytes: 64 * 1024).details) ?? ""
+                    return (name, text)
+                }
+            }
+            var result: [String: String] = [:]
+            for await (name, text) in group { result[name] = text }
+            return result
+        }
+        var sections = diagnostics
+        for name in names {
+            let tail = (logs[name] ?? "").split(separator: "\n").suffix(maxLines).joined(separator: "\n")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !tail.isEmpty { sections.append("\(name):\n\(tail)") }
+        }
+        return sections.joined(separator: "\n\n")
     }
 }
 

@@ -13,7 +13,7 @@ final class GeodataSourceDraftTests: XCTestCase {
         }
     }
 
-    func testCustomDraftKeepsEditsSeparateAndRequiresBothURLs() {
+    func testCustomDraftKeepsEditsSeparateAndAllowsBundledFallbackForOneKind() {
         let settings = GeodataSourceSettings(geositeURLString: "https://example.com/old.dat")
         var draft = GeodataSourceDraft(settings: settings)
         XCTAssertEqual(draft.choice, .custom)
@@ -21,7 +21,7 @@ final class GeodataSourceDraftTests: XCTestCase {
         draft.geoipURL = "  "
         XCTAssertEqual(draft.urls.geosite, "https://example.com/new.dat")
         XCTAssertNil(draft.urls.geoip)
-        XCTAssertNotNil(draft.validationError(for: .geoip))
+        XCTAssertNil(draft.validationError(for: .geoip))
         draft.geoipURL = "https://example.com/geoip.dat"
         XCTAssertNil(draft.validationError(for: .geosite))
         XCTAssertNil(draft.validationError(for: .geoip))

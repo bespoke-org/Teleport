@@ -172,6 +172,45 @@ private final class LostStopReplyConnectionFactory: @unchecked Sendable {
 }
 
 final class PrivilegedHelperClientTests: XCTestCase {
+    func testEveryProtocolFailureHasAnActionableSummaryAndPreservesDetailsForUI() async throws {
+        for code in TUNHelperFailureCode.allCases {
+            let rawSummary = code == .commandFailed ? "Xray could not load the routing data. Check Tunnel settings." : "technical-\(code.rawValue)"
+            let transport = ScriptedTransport { _, data, _, _ in
+                let request: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(data)
+                return try TUNHelperCodec.encodeResponse(TUNHelperResponseEnvelope<StatusResponse>(
+                    revision: TUNHelperProtocol.revision, requestID: request.requestID, sessionID: nil, payload: nil,
+                    failure: TUNHelperProtocolFailure(code: code, summary: rawSummary,
+                        details: "diagnostic-\(code.rawValue)", retryDisposition: .never)))
+            }
+            do {
+                _ = try await PrivilegedHelperClient(transport: transport).status()
+                XCTFail("Expected \(code)")
+            } catch {
+                let presentation = ConnectionFailure(error: error)
+                XCTAssertFalse(presentation.summary.isEmpty, "\(code)")
+                if code != .commandFailed { XCTAssertFalse(presentation.summary.contains("technical-"), "\(code): \(presentation.summary)") }
+                XCTAssertTrue(presentation.details?.contains("diagnostic-\(code.rawValue)") == true, "\(code)")
+            }
+        }
+    }
+
+    func testEveryTransportFailureHasAnActionableSummaryAndDiagnosticDetails() async throws {
+        for transportError in [TUNHelperTransportError.unavailable("technical-unavailable"),
+                               .interrupted, .invalidated, .deadlineExceeded, .invalidResponse("technical-response")] {
+            let transport = ScriptedTransport { _, _, _, _ in throw transportError }
+            do {
+                _ = try await PrivilegedHelperClient(transport: transport).status()
+                XCTFail("Expected transport failure")
+            } catch {
+                let presentation = ConnectionFailure(error: error)
+                XCTAssertFalse(presentation.summary.contains("technical-"))
+                XCTAssertTrue(presentation.summary.contains("Try") || presentation.summary.contains("Reinstall"))
+                XCTAssertNotNil(presentation.details)
+                XCTAssertFalse(presentation.summary.contains("is not running"), "A timeout or interruption does not establish whether the helper is running")
+            }
+        }
+    }
+
     func testDeadlinesPayloadsAndNormalMapping() async throws {
         let sessionID = UUID()
         let transport = ScriptedTransport { command, data, _, _ in
@@ -509,7 +548,7 @@ final class PrivilegedHelperClientTests: XCTestCase {
                     failure: TUNHelperProtocolFailure(
                         code: .commandFailed,
                         summary: "start failed",
-                        details: nil,
+                        details: "specific protocol failure details",
                         retryDisposition: .never
                     )
                 ))
@@ -523,11 +562,10 @@ final class PrivilegedHelperClientTests: XCTestCase {
                 )
             case .readDiagnostics:
                 let request: TUNHelperRequestEnvelope<ReadDiagnosticsRequest> = try TUNHelperCodec.decodeRequest(data)
-                XCTAssert(request.payload.log == .control)
                 return try response(
                     requestID: request.requestID,
                     sessionID: nil,
-                    payload: DiagnosticsResponse(log: .control, text: "specific control failure", metadata: "test", wasTruncated: false)
+                    payload: DiagnosticsResponse(log: request.payload.log, text: "specific \(request.payload.log.rawValue) failure", metadata: "test", wasTruncated: false)
                 )
             default:
                 XCTFail("Unexpected command: \(command)")
@@ -547,10 +585,13 @@ final class PrivilegedHelperClientTests: XCTestCase {
             try await manager.start(session: launchSession())
             XCTFail("Expected start failure")
         } catch let XrayTunRuntimeError.startFailed(_, details) {
+            XCTAssert(details.contains("specific protocol failure details"))
             XCTAssert(details.contains("specific control failure"))
+            XCTAssert(details.contains("specific xray failure"))
+            XCTAssert(details.contains("specific helper failure"))
         }
 
-        XCTAssert(transport.calls.map(\.0) == [.startSession, .stopSession, .readDiagnostics])
+        XCTAssert(transport.calls.map(\.0) == [.startSession, .stopSession, .readDiagnostics, .readDiagnostics, .readDiagnostics])
         XCTAssert(!FileManager.default.fileExists(atPath: paths.sessionStateFileURL.path))
     }
 

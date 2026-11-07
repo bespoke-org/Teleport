@@ -53,7 +53,7 @@ struct GeodataSourceDraft {
 
     func validationError(for kind: GeodataKind) -> String? {
         guard choice != .bundled else { return nil }
-        guard let value = urls[kind] else { return "Enter an HTTPS URL." }
+        guard let value = urls[kind] else { return urls.usesDownloads ? nil : "Enter an HTTPS URL." }
         return GeodataUpdateService.validatedSourceURL(value) == nil ? "Enter a valid HTTPS URL." : nil
     }
 

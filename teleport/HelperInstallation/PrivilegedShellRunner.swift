@@ -33,7 +33,7 @@ nonisolated struct PrivilegedShellRunner: Sendable {
 
         guard status == 0 else {
             let output = String(decoding: errorPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-            throw PrivilegedShellError.commandFailed(Self.errorMessage(fromOSAScriptOutput: output))
+            throw Self.failure(fromOSAScriptOutput: output)
         }
     }
 
@@ -48,6 +48,11 @@ nonisolated struct PrivilegedShellRunner: Sendable {
             message.removeSubrange(range)
         }
         return message
+    }
+
+    nonisolated static func failure(fromOSAScriptOutput output: String) -> PrivilegedShellError {
+        if output.contains("(-128)") { return .approvalCancelled }
+        return .commandFailed(errorMessage(fromOSAScriptOutput: output))
     }
 
     /// Produces one POSIX-shell single-quoted argument, including embedded quotes.
@@ -65,11 +70,22 @@ nonisolated struct PrivilegedShellRunner: Sendable {
 
 enum PrivilegedShellError: LocalizedError {
     case commandFailed(String)
+    case approvalCancelled
 
     var errorDescription: String? {
         switch self {
         case let .commandFailed(message):
-            return message.isEmpty ? "Privileged command failed" : message
+            if message.lowercased().contains("user cancel") { return Self.cancelledSummary }
+            return "macOS could not complete the administrator command. Try again and approve the administrator request. If access is blocked by your organization's policy, contact its administrator."
+        case .approvalCancelled:
+            return Self.cancelledSummary
         }
+    }
+
+    private static let cancelledSummary = "Administrator approval was cancelled. Try again and approve the administrator request to use Teleport's privileged helper."
+
+    var failureReason: String? {
+        if case let .commandFailed(message) = self, !message.isEmpty { return message }
+        return nil
     }
 }

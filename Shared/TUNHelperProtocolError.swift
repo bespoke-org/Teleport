@@ -2,9 +2,14 @@ import Foundation
 
 nonisolated protocol TUNHelperClientPresentableError: Error, Sendable {
     var clientSummary: String { get }
+    var clientDetails: String? { get }
 }
 
-nonisolated enum TUNHelperFailureCode: String, Codable, Sendable {
+extension TUNHelperClientPresentableError {
+    nonisolated var clientDetails: String? { nil }
+}
+
+nonisolated enum TUNHelperFailureCode: String, Codable, Sendable, CaseIterable {
     case incompatibleService
     case malformedPayload
     case payloadTooLarge

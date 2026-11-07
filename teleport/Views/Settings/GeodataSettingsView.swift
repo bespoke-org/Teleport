@@ -4,11 +4,15 @@ struct GeodataSettingsView: View {
     @ObservedObject var viewModel: AppViewModel
     @State private var draft = GeodataSourceDraft(settings: GeodataSourceSettings())
     @State private var showsValidation = false
+    @State private var draftProfileID: UUID?
 
     private static let intervalOptions: [Int?] = [nil, 60, 360, 1440, 10080]
 
-    private var isUpdating: Bool { !viewModel.updatingGeodataKinds.isEmpty }
-    private var savedURLs: GeodataSourceDraft.URLs { GeodataSourceDraft.savedURLs(viewModel.geodataSettings) }
+    private var isUpdating: Bool { !viewModel.updatingGeodataKinds.isEmpty || viewModel.isOperationPending }
+    private var savedURLs: GeodataSourceDraft.URLs {
+        let sources = viewModel.selectedProfileGeodataSources
+        return .init(geosite: sources.geositeURLString, geoip: sources.geoipURLString)
+    }
     private var hasChanges: Bool {
         draft.urls != savedURLs || GeodataKind.allCases.contains {
             draft.urls[$0] == nil && viewModel.hasCustomGeodata(kind: $0)
@@ -21,8 +25,8 @@ struct GeodataSettingsView: View {
     }
 
     var body: some View {
-        Form {
-            Section {
+        Group {
+            Section("Geodata") {
                 Picker("Source", selection: Binding(
                     get: { draft.choice },
                     set: { choice in
@@ -42,6 +46,8 @@ struct GeodataSettingsView: View {
                 .disabled(isUpdating)
 
                 if draft.choice == .custom {
+                    Text("Leave a URL empty to use Teleport's bundled data for that kind.")
+                        .font(.caption).foregroundStyle(.secondary)
                     VStack(spacing: 12) {
                         urlField("Geosite URL", kind: .geosite, text: $draft.geositeURL)
                         urlField("GeoIP URL", kind: .geoip, text: $draft.geoipURL)
@@ -50,9 +56,9 @@ struct GeodataSettingsView: View {
 
             }
 
-            Section("Updates") {
+            Section("Geodata updates") {
                 Picker("Automatic updates", selection: Binding(
-                    get: { savedURLs.usesDownloads ? viewModel.geodataSettings.autoUpdateIntervalMinutes : nil },
+                    get: { savedURLs.usesDownloads ? viewModel.selectedSplitTunnelProfile?.geodataUpdateIntervalMinutes : nil },
                     set: { viewModel.setGeodataAutoUpdateIntervalMinutes($0) }
                 )) {
                     ForEach(Self.intervalOptions, id: \.self) { option in
@@ -78,10 +84,18 @@ struct GeodataSettingsView: View {
                 datasetRow(.geoip)
             }
         }
-        .formStyle(.grouped)
-        .padding(.top, -20)
-        .navigationTitle("Geodata")
-        .onAppear { draft = GeodataSourceDraft(settings: viewModel.geodataSettings) }
+        .onAppear {
+            if draftProfileID != viewModel.selectedSplitTunnelProfileID { syncDraft() }
+        }
+        .onChange(of: viewModel.selectedSplitTunnelProfileID) { _, _ in syncDraft() }
+        .onChange(of: viewModel.selectedProfileGeodataSources) { _, _ in syncDraft() }
+    }
+
+    private func syncDraft() {
+        draftProfileID = viewModel.selectedSplitTunnelProfileID
+        let sources = viewModel.selectedProfileGeodataSources
+        draft = GeodataSourceDraft(settings: GeodataSourceSettings(
+            geositeURLString: sources.geositeURLString, geoipURLString: sources.geoipURLString))
     }
 
     private func urlField(_ title: String, kind: GeodataKind, text: Binding<String>) -> some View {
@@ -104,12 +118,24 @@ struct GeodataSettingsView: View {
 
     private func datasetRow(_ kind: GeodataKind) -> some View {
         let settings = viewModel.geodataSettings
-        let lastError = kind == .geosite ? settings.geositeLastError : settings.geoipLastError
-        let lastUpdated = kind == .geosite ? settings.geositeLastUpdatedAt : settings.geoipLastUpdatedAt
-        let downloaded = viewModel.hasCustomGeodata(kind: kind)
-        let updating = viewModel.updatingGeodataKinds.contains(kind)
+        let sameAttempt = viewModel.geodataLastAttemptSources == viewModel.selectedProfileGeodataSources
+        let lastError = sameAttempt ? (kind == .geosite ? settings.geositeLastError : settings.geoipLastError) : nil
+        let activeSource = kind == .geosite ? settings.geositeURLString : settings.geoipURLString
+        let isActive = savedURLs[kind] == activeSource
+        let lastUpdated = isActive ? (kind == .geosite ? settings.geositeLastUpdatedAt : settings.geoipLastUpdatedAt) : nil
+        let downloaded = isActive && savedURLs[kind] != nil && viewModel.hasCustomGeodata(kind: kind)
+        let updating = sameAttempt && viewModel.updatingGeodataKinds.contains(kind)
 
-        return HStack(spacing: 8) {
+        return VStack(alignment: .leading, spacing: 6) {
+            datasetStatus(kind, lastUpdated: lastUpdated, downloaded: downloaded, updating: updating, lastError: lastError)
+            if let lastError, !updating {
+                Text(lastError).font(.caption).foregroundStyle(.red).textSelection(.enabled)
+            }
+        }
+    }
+
+    private func datasetStatus(_ kind: GeodataKind, lastUpdated: Date?, downloaded: Bool, updating: Bool, lastError: String?) -> some View {
+        HStack(spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(kind.displayName)
                 Text(kind == .geosite ? "Domains" : "IP ranges")
@@ -126,7 +152,7 @@ struct GeodataSettingsView: View {
                     Text("Updated \(Self.relativeFormatter.localizedString(for: lastUpdated, relativeTo: Date()))")
                         .foregroundStyle(.secondary)
                 } else {
-                    Text(downloaded ? "Updated previously" : "Bundled")
+                    Text(downloaded ? "Updated previously" : (savedURLs[kind] == nil ? "Bundled" : "Downloads before connecting"))
                         .foregroundStyle(.secondary)
                 }
                 if let lastError {
@@ -145,8 +171,12 @@ struct GeodataSettingsView: View {
         showsValidation = true
         guard GeodataKind.allCases.allSatisfy({ draft.validationError(for: $0) == nil }) else { return }
         let urls = draft.urls
-        viewModel.applyGeodataSources(geositeURLString: urls.geosite, geoipURLString: urls.geoip,
-                                     forceDownload: forceDownload)
+        if urls == savedURLs {
+            viewModel.downloadSelectedProfileGeodata(forceDownload: forceDownload)
+        } else {
+            viewModel.applyGeodataSources(geositeURLString: urls.geosite, geoipURLString: urls.geoip,
+                                         forceDownload: forceDownload)
+        }
         showsValidation = false
     }
 

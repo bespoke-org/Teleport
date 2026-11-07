@@ -39,6 +39,7 @@ struct XrayTunScriptBuilder: Sendable {
         INSTALL_IPV6_ROUTES=\(installsIPv6Routes ? 1 : 0)
         IPV6_ROUTES_INSTALLED=0
         pid=""
+        STEP=prepare-files
 
         # Every failure leaves through here, the explicit branches below and a
         # command `set -e` stopped on alike: the Xray this script started is gone
@@ -47,6 +48,7 @@ struct XrayTunScriptBuilder: Sendable {
         cleanup_on_failure() {
             status=$?
             [ "$status" -ne 0 ] || return 0
+            printf 'TELEPORT_FAILURE_STAGE=%s\\n' "$STEP" >&2
             if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
                 kill "$pid" 2>/dev/null || true
                 sleep 0.5
@@ -104,6 +106,7 @@ struct XrayTunScriptBuilder: Sendable {
         # Gateways are captured now, while the physical default routes are still
         # in place. Reading them back after the TUN exists would return the tunnel
         # itself and pin every proxy server inside the tunnel it carries.
+        STEP=protect-server-routes
         capture_host_gateways
         # Direct-route protection keeps following the first server's gateway, which
         # is the physical uplink's gateway in every ordinary topology.
@@ -113,6 +116,7 @@ struct XrayTunScriptBuilder: Sendable {
         protect_direct_routes "$gateway" "$direct_ipv6_gateway"
         protect_dns_routes
 
+        STEP=start-xray
         cd "$HELPER_STATE_DIR"
         (
             trap '' HUP
@@ -125,6 +129,7 @@ struct XrayTunScriptBuilder: Sendable {
         chmod 600 "$PID_FILE"
         printf '%s helper launched pid %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$pid" >> "$CONTROL_LOG_FILE"
 
+        STEP=wait-for-tun
         tun_interface=""
         readiness_attempt=0
         while [ -z "$tun_interface" ] && [ "$readiness_attempt" -lt 100 ]; do
@@ -178,6 +183,7 @@ struct XrayTunScriptBuilder: Sendable {
 
         route delete -net 0.0.0.0/1 >/dev/null 2>&1 || true
         route delete -net 128.0.0.0/1 >/dev/null 2>&1 || true
+        STEP=install-routes
         if ! route add -net 0.0.0.0/1 -interface "$tun_interface" >> "$CONTROL_LOG_FILE" 2>&1; then
             reason="Teleport TUN mode could not install the lower IPv4 default route through Teleport's TUN."
             printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$reason" >> "$CONTROL_LOG_FILE"
@@ -237,6 +243,7 @@ struct XrayTunScriptBuilder: Sendable {
         protect_dns_routes
         publish_tunnel_resolver
 
+        STEP=verify-routes
         public_interface_low=$(route -n get 1.1.1.1 2>/dev/null | awk '/interface:/{print $2; exit}' || true)
         public_interface_high=$(route -n get 129.0.0.1 2>/dev/null | awk '/interface:/{print $2; exit}' || true)
         tunneled_protected_host=$(first_tunneled_protected_host)

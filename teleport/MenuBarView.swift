@@ -14,7 +14,10 @@ struct MenuBarView: View {
             sectionDivider
             actionSection
 
-            if let error = viewModel.connectionError?.summary ?? viewModel.lastError {
+            if let error = viewModel.connectionError {
+                sectionDivider
+                ConnectionErrorPopover(error: error, onDismiss: viewModel.dismissConnectionError)
+            } else if let error = viewModel.lastError {
                 sectionDivider
                 Label(error, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)

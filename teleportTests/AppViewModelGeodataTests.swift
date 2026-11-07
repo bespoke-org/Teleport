@@ -34,7 +34,7 @@ final class AppViewModelGeodataTests: XCTestCase {
         await waitUntil { model.updatingGeodataKinds.isEmpty && fixture.provider.connectCount == 2 }
     }
 
-    func testPartialFailurePreservesFailedSourceAndAppliesSuccessOnce() async throws {
+    func testPartialFailurePreservesFailedSourceAndPreventsConnectingWithIncompleteProfile() async throws {
         let fixture = try await makeFixture()
         defer { fixture.cleanUp() }
         fixture.model.applyGeodataSources(geositeURLString: "https://new.example/geosite.dat",
@@ -44,10 +44,18 @@ final class AppViewModelGeodataTests: XCTestCase {
         await waitUntil { fixture.model.updatingGeodataKinds == [.geoip] }
         XCTAssertEqual(fixture.provider.connectCount, 0)
         await fixture.service.gate.fail(.geoip)
-        await waitUntil { fixture.model.updatingGeodataKinds.isEmpty && fixture.provider.connectCount == 1 }
+        await waitUntil { fixture.model.updatingGeodataKinds.isEmpty }
         XCTAssertEqual(fixture.model.geodataSettings.geoipURLString, "https://old.example/geoip.dat")
         XCTAssertNotNil(fixture.model.geodataSettings.geoipLastError)
-        XCTAssertEqual(fixture.service.activationCount, 1)
+        XCTAssertNotNil(fixture.model.geodataProfileError)
+        fixture.model.connect()
+        await waitUntil { await fixture.service.gate.count == 4 }
+        await fixture.service.gate.succeed(.geosite, occurrence: 1)
+        await fixture.service.gate.fail(.geoip, occurrence: 1)
+        await waitUntil { !fixture.model.isOperationPending }
+        XCTAssertTrue(fixture.model.lastError?.contains("GeoIP") == true)
+        XCTAssertEqual(fixture.provider.connectCount, 0)
+        XCTAssertEqual(fixture.service.activationCount, 2, "Only Geosite succeeded, once per attempt")
     }
 
     func testCancelAllDiscardsLateResultsWithoutPublishingOrReconnecting() async throws {
@@ -77,11 +85,12 @@ final class AppViewModelGeodataTests: XCTestCase {
         await fixture.service.gate.succeed(.geosite)
         await waitUntil { fixture.model.updatingGeodataKinds == [.geoip] }
         fixture.model.cancelGeodataUpdate(kind: .geoip)
-        await waitUntil { fixture.provider.connectCount == 1 }
+        await waitUntil { fixture.model.updatingGeodataKinds.isEmpty }
         await fixture.service.gate.succeed(.geoip)
         await waitUntil { fixture.service.discardCount == 2 }
         XCTAssertTrue(fixture.model.updatingGeodataKinds.isEmpty)
-        XCTAssertEqual(fixture.provider.connectCount, 1)
+        XCTAssertEqual(fixture.provider.connectCount, 0)
+        XCTAssertNotNil(fixture.model.geodataProfileError)
         XCTAssertEqual(fixture.model.geodataSettings.geoipURLString, "https://old.example/geoip.dat")
         XCTAssertNil(fixture.model.geodataSettings.geoipLastError)
     }
@@ -243,7 +252,7 @@ private actor PreparationGate {
         )))
     }
     func cancel(_ kind: GeodataKind) { complete(kind, occurrence: 0, result: .failure(CancellationError())) }
-    func fail(_ kind: GeodataKind) { complete(kind, occurrence: 0, result: .failure(GeodataUpdateError.invalidResponse)) }
+    func fail(_ kind: GeodataKind, occurrence: Int = 0) { complete(kind, occurrence: occurrence, result: .failure(GeodataUpdateError.invalidResponse)) }
     private func complete(_ kind: GeodataKind, occurrence: Int, result: Result<GeodataUpdateService.PreparedUpdate, Error>) {
         let indices = pending.indices.filter { pending[$0].kind == kind }
         guard indices.indices.contains(occurrence) else { XCTFail("Request did not start"); return }

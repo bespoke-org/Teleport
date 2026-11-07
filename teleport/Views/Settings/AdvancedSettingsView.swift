@@ -78,7 +78,9 @@ struct AdvancedSettingsView: View {
             } header: {
                 Text("Maintenance")
             } footer: {
-                if let message = viewModel.helperUninstallMessage {
+                if let failure = viewModel.helperUninstallFailure {
+                    ConnectionErrorPopover(error: failure, onDismiss: viewModel.dismissHelperUninstallFailure)
+                } else if let message = viewModel.helperUninstallMessage {
                     Text(message)
                 }
             }

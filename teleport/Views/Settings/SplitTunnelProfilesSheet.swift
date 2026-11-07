@@ -7,19 +7,19 @@ struct SplitTunnelProfilesSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Manage profiles")
+            Text("Personal tunnel profiles")
                 .font(.headline)
 
             ScrollView {
                 VStack(spacing: 8) {
-                    ForEach(viewModel.splitTunnelProfiles) { profile in
+                    ForEach(viewModel.personalTunnelProfiles) { profile in
                         profileRow(profile)
                             .frame(height: 28)
                     }
                 }
                 .padding(2)
             }
-            .frame(height: min(CGFloat(viewModel.splitTunnelProfiles.count) * 36, 252))
+            .frame(height: min(CGFloat(viewModel.personalTunnelProfiles.count) * 36, 252))
 
             HStack {
                 Button("Add profile", systemImage: "plus") {
@@ -77,7 +77,7 @@ struct SplitTunnelProfilesSheet: View {
             }
             .buttonStyle(.borderless)
             .accessibilityLabel("Remove \(profile.name)")
-            .disabled(viewModel.splitTunnelProfiles.count <= 1)
+            .disabled(viewModel.personalTunnelProfiles.count <= 1)
         }
     }
 

@@ -247,13 +247,15 @@ nonisolated final class XrayRuntimeManager: @unchecked Sendable {
         var errorDescription: String? {
             switch self {
             case .binaryNotFound:
-                return "Bundled Xray binary was not found in the app resources."
-            case .startupTimedOut(let detail):
-                if let detail, !detail.isEmpty {
-                    return "Xray did not become ready: \(detail)"
-                }
-                return "Xray did not become ready before enabling the system proxy."
+                return "Teleport's bundled Xray executable is missing. Reinstall Teleport from a fresh copy before connecting again."
+            case .startupTimedOut:
+                return "Xray did not become ready in time. Close other VPN or proxy apps and try again. If this repeats, refresh the subscription or reimport the portal."
             }
+        }
+
+        var failureReason: String? {
+            if case let .startupTimedOut(details) = self { return details }
+            return nil
         }
     }
 }

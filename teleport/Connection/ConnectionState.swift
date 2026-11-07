@@ -35,6 +35,19 @@ nonisolated struct ConnectionFailure: Sendable, Equatable {
     let summary: String
     let details: String?
 
+    /// Keep the compact notice to the cause. Recovery steps remain available in
+    /// the notice itself; copying the error still includes the complete message.
+    var briefSummary: String {
+        guard let boundary = summary.range(of: ". ") else { return summary }
+        return String(summary[...boundary.lowerBound])
+    }
+
+    var recoveryInstructions: String? {
+        guard let boundary = summary.range(of: ". ") else { return nil }
+        let instructions = summary[boundary.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines)
+        return instructions.isEmpty ? nil : instructions
+    }
+
     init(summary: String, details: String?) {
         self.summary = summary
         self.details = details

@@ -2,18 +2,10 @@ import XCTest
 
 @MainActor
 final class SettingsNavigationTests: XCTestCase {
-    func testGeodataIsASplitTunnelingDestinationWithBackAndForwardHistory() {
-        XCTAssertFalse(SettingsSection.sidebarSections.contains(.geodata))
-        var navigation = SettingsNavigation()
-        navigation.select(.splitTunneling)
-        navigation.select(.geodata)
-        XCTAssertEqual(navigation.section, .geodata)
-        XCTAssertEqual(navigation.section.sidebarSection, .splitTunneling)
-        navigation.goBack()
-        XCTAssertEqual(navigation.section, .splitTunneling)
-        navigation.goForward()
-        XCTAssertEqual(navigation.section, .geodata)
-        XCTAssertEqual(navigation.section.sidebarSection, .splitTunneling)
+    func testTunnelIsOneSidebarDestination() {
+        XCTAssertEqual(SettingsSection.tunnel.title, "Tunnel")
+        XCTAssertTrue(SettingsSection.sidebarSections.contains(.tunnel))
+        XCTAssertEqual(SettingsSection.tunnel.sidebarSection, .tunnel)
     }
 
     func testLogsIsAnAdvancedDestinationWithBackAndForwardHistory() {
@@ -37,11 +29,11 @@ final class SettingsNavigationTests: XCTestCase {
         XCTAssertFalse(navigation.canGoForward)
 
         navigation.select(.portals)
-        navigation.select(.splitTunneling)
-        navigation.select(.geodata)
+        navigation.select(.tunnel)
+        navigation.select(.advanced)
 
         navigation.goBack()
-        XCTAssertEqual(navigation.section, .splitTunneling)
+        XCTAssertEqual(navigation.section, .tunnel)
         navigation.goBack()
         XCTAssertEqual(navigation.section, .portals)
         navigation.goBack()
@@ -51,16 +43,16 @@ final class SettingsNavigationTests: XCTestCase {
         navigation.goForward()
         XCTAssertEqual(navigation.section, .portals)
         navigation.goForward()
-        XCTAssertEqual(navigation.section, .splitTunneling)
+        XCTAssertEqual(navigation.section, .tunnel)
         navigation.goForward()
-        XCTAssertEqual(navigation.section, .geodata)
+        XCTAssertEqual(navigation.section, .advanced)
         XCTAssertFalse(navigation.canGoForward)
     }
 
     func testNewDestinationAfterGoingBackClearsForwardHistory() {
         var navigation = SettingsNavigation()
         navigation.select(.portals)
-        navigation.select(.geodata)
+        navigation.select(.advanced)
         navigation.goBack()
         navigation.select(.logs)
 
@@ -87,7 +79,7 @@ final class SettingsNavigationTests: XCTestCase {
 
     func testNextSidebarSectionFollowsVisibleOrderAndWraps() {
         var navigation = SettingsNavigation()
-        for expected: SettingsSection in [.portals, .splitTunneling, .advanced, .about, .general] {
+        for expected: SettingsSection in [.portals, .tunnel, .advanced, .about, .general] {
             navigation.selectNextSidebarSection()
             XCTAssertEqual(navigation.section, expected)
         }
@@ -95,7 +87,7 @@ final class SettingsNavigationTests: XCTestCase {
 
     func testPreviousSidebarSectionFollowsVisibleOrderAndWraps() {
         var navigation = SettingsNavigation()
-        for expected: SettingsSection in [.about, .advanced, .splitTunneling, .portals, .general] {
+        for expected: SettingsSection in [.about, .advanced, .tunnel, .portals, .general] {
             navigation.selectPreviousSidebarSection()
             XCTAssertEqual(navigation.section, expected)
         }
@@ -103,10 +95,10 @@ final class SettingsNavigationTests: XCTestCase {
 
     func testSidebarCyclingFromNestedPagesUsesTheirParentSection() {
         var navigation = SettingsNavigation()
-        navigation.select(.geodata)
+        navigation.select(.tunnel)
         navigation.selectNextSidebarSection()
         XCTAssertEqual(navigation.section, .advanced)
-        navigation.select(.geodata)
+        navigation.select(.tunnel)
         navigation.selectPreviousSidebarSection()
         XCTAssertEqual(navigation.section, .portals)
 
@@ -115,7 +107,7 @@ final class SettingsNavigationTests: XCTestCase {
         XCTAssertEqual(navigation.section, .about)
         navigation.select(.logs)
         navigation.selectPreviousSidebarSection()
-        XCTAssertEqual(navigation.section, .splitTunneling)
+        XCTAssertEqual(navigation.section, .tunnel)
     }
 
     func testSidebarCyclingRecordsHistoryAndClearsForwardHistory() {
@@ -129,7 +121,7 @@ final class SettingsNavigationTests: XCTestCase {
 
         navigation.goBack()
         navigation.selectPreviousSidebarSection()
-        XCTAssertEqual(navigation.section, .splitTunneling)
+        XCTAssertEqual(navigation.section, .tunnel)
         XCTAssertFalse(navigation.canGoForward)
         navigation.goBack()
         XCTAssertEqual(navigation.section, .logs)

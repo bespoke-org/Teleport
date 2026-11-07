@@ -3,7 +3,9 @@ import Foundation
 import Security
 
 final class ConfigurationStore {
-    private let fileManager: FileManager
+    /// Settings and runtime geodata must use the same Application Support root,
+    /// including isolated stores used by tests.
+    let fileManager: FileManager
     private let legacyFileURL: URL
     private let keychainService: String
     private let keychainAccount: String
