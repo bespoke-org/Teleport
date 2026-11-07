@@ -63,6 +63,11 @@ final class SettingsErrorPresentationTests: XCTestCase {
     }
 
     private func containsText(_ text: String, in element: Any) -> Bool {
+        // NSWindow exposes legacy accessibility methods but does not conform to
+        // NSAccessibilityProtocol. Start traversal at its NSView content.
+        if let window = element as? NSWindow {
+            return window.contentView.map { containsText(text, in: $0) } ?? false
+        }
         guard let accessible = element as? NSAccessibilityProtocol else { return false }
         if accessible.accessibilityValue() as? String == text || accessible.accessibilityLabel() == text {
             return true
