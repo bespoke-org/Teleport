@@ -5,6 +5,14 @@ import Foundation
 /// before the helper mutates routes and are therefore best-effort snapshots,
 /// not reservations or guarantees about the later network topology.
 nonisolated struct XrayTunRouteInspector: Sendable {
+    private let runCommand: @Sendable (String, [String]) -> String?
+
+    init(runCommand: @escaping @Sendable (String, [String]) -> String? = {
+        Self.commandOutput(executable: $0, arguments: $1)
+    }) {
+        self.runCommand = runCommand
+    }
+
     func outboundInterface(for host: String) -> String? {
         routeInterface(for: host)
     }
@@ -15,9 +23,9 @@ nonisolated struct XrayTunRouteInspector: Sendable {
         var ipv6 = in6_addr()
         if host.withCString({ inet_pton(AF_INET6, $0, &ipv6) }) == 1 { return [host.lowercased()] }
 
-        guard let output = Self.commandOutput(
-            executable: "/usr/bin/dscacheutil",
-            arguments: ["-q", "host", "-a", "name", host]
+        guard let output = runCommand(
+            "/usr/bin/dscacheutil",
+            ["-q", "host", "-a", "name", host]
         ) else {
             return []
         }
@@ -54,9 +62,9 @@ nonisolated struct XrayTunRouteInspector: Sendable {
             (["-inet6"], "9000::1")
         ]
         let outputs = probes.compactMap { probe in
-            Self.commandOutput(
-                executable: "/sbin/route",
-                arguments: ["-n", "get"] + probe.familyArguments + [probe.address]
+            runCommand(
+                "/sbin/route",
+                ["-n", "get"] + probe.familyArguments + [probe.address]
             )
         }
         return Self.detectedVPNInterface(inRouteLookups: outputs)
@@ -82,7 +90,7 @@ nonisolated struct XrayTunRouteInspector: Sendable {
         // `-inet6` it reports "bad address" and the lookup silently fails.
         var ipv6 = in6_addr()
         let familyArguments = host.withCString({ inet_pton(AF_INET6, $0, &ipv6) }) == 1 ? ["-inet6"] : []
-        guard let output = Self.commandOutput(executable: "/sbin/route", arguments: ["-n", "get"] + familyArguments + [host]) else {
+        guard let output = runCommand("/sbin/route", ["-n", "get"] + familyArguments + [host]) else {
             return nil
         }
         return output

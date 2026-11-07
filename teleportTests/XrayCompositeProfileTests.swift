@@ -180,6 +180,64 @@ final class XrayCompositeProfileTests: XCTestCase {
         XCTAssertEqual(hosts, ["proxy-0.example.test", "proxy-1.example.test"])
     }
 
+    func testUnavailableFallbackDoesNotPreventUsingReachableGroupMember() throws {
+        let config = try parse()
+        let resolved = try RoutedProxyOutbound.resolve(connectionID: UUID(), configuration: config) { host in
+            if host == "proxy-1.example.test" { throw XrayTunConnectionError.proxyRouteUnavailable(host) }
+            return ("192.0.2.1", "en0")
+        }
+        XCTAssertEqual(resolved.outbound.configuration, config, "Network availability must not edit the saved profile")
+        XCTAssertEqual(resolved.outbound.memberAddresses, ["proxy-0.example.test": "192.0.2.1"])
+        let data = try XrayConfigurationWriter(proxyEndpoint: .default).tunnelConfigData(
+            for: [resolved.outbound], interfaceName: "utun99", outboundInterface: "en0")
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let proxies = (json["outbounds"] as? [[String: Any]])?.filter { $0["protocol"] as? String == "vless" }
+        XCTAssertEqual(proxies?.count, 1)
+        let routing = json["routing"] as? [String: Any]
+        let balancer = try XCTUnwrap((routing?["balancers"] as? [[String: Any]])?.first)
+        XCTAssertEqual(balancer["selector"] as? [String], ["proxy-member-0/"])
+        XCTAssertEqual(balancer["fallbackTag"] as? String, "proxy-member-0/")
+        XCTAssertEqual((json["burstObservatory"] as? [String: Any])?["subjectSelector"] as? [String], ["proxy-member-0/"])
+    }
+
+    func testAllUnavailableMembersAndStandaloneStillFail() throws {
+        let group = try parse()
+        for configuration in [group, try XCTUnwrap(group.composite?.members.first?.configuration)] {
+            XCTAssertThrowsError(try RoutedProxyOutbound.resolve(connectionID: UUID(), configuration: configuration) { host in
+                throw XrayTunConnectionError.proxyAddressResolutionFailed(host)
+            })
+        }
+    }
+
+    func testUnavailableSelectedMemberCanUseOnlyItsExplicitFallback() throws {
+        var profile = try fixture()
+        var routing = profile["routing"] as! [String: Any]
+        var balancers = routing["balancers"] as! [[String: Any]]
+        balancers[0]["selector"] = ["proxy-0"]
+        routing["balancers"] = balancers
+        profile["routing"] = routing
+        let config = try XraySubscriptionProfileParser().parseConfiguration(profile)
+        let resolved = try RoutedProxyOutbound.resolve(connectionID: UUID(), configuration: config) { host in
+            if host == "proxy-0.example.test" { throw XrayTunConnectionError.proxyAddressResolutionFailed(host) }
+            return ("192.0.2.2", "en0")
+        }
+        let data = try XrayConfigurationWriter(proxyEndpoint: .default).tunnelConfigData(for: [resolved.outbound], interfaceName: "utun99")
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let generated = (json["routing"] as? [String: Any])?["balancers"] as? [[String: Any]]
+        XCTAssertEqual(generated?.first?["selector"] as? [String], ["proxy-member-1/"])
+
+        // A reachable outbound outside both selector and fallback is not an
+        // authorized substitute for the provider's selected members.
+        balancers[0]["fallbackTag"] = "proxy-0"
+        routing["balancers"] = balancers
+        profile["routing"] = routing
+        let noFallback = try XraySubscriptionProfileParser().parseConfiguration(profile)
+        XCTAssertThrowsError(try RoutedProxyOutbound.resolve(connectionID: UUID(), configuration: noFallback) { host in
+            if host == "proxy-0.example.test" { throw XrayTunConnectionError.proxyAddressResolutionFailed(host) }
+            return ("192.0.2.2", "en0")
+        })
+    }
+
     func testLiteralRegexCostsAreExpandedWithoutChangingMatches() throws {
         var profile = try fixture()
         var routing = profile["routing"] as! [String: Any]
@@ -248,7 +306,13 @@ final class XrayCompositeProfileTests: XCTestCase {
             let config = try parse(name)
             let payload = try proxyPayload(config)
             let tunnel = try XrayConfigurationWriter(proxyEndpoint: .default).tunnelConfigData(for: [RoutedProxyOutbound(connectionID: UUID(), configuration: config), RoutedProxyOutbound(connectionID: UUID(), configuration: config)], interfaceName: "utun99")
-            for data in [try JSONSerialization.data(withJSONObject: payload), tunnel] {
+            let prepared = try RoutedProxyOutbound.resolve(connectionID: UUID(), configuration: config) { host in
+                if host == "proxy-1.example.test" { throw XrayTunConnectionError.proxyRouteUnavailable(host) }
+                return ("192.0.2.1", "en0")
+            }
+            let partialTunnel = try XrayConfigurationWriter(proxyEndpoint: .default).tunnelConfigData(
+                for: [prepared.outbound], interfaceName: "utun99", outboundInterface: "en0")
+            for data in [try JSONSerialization.data(withJSONObject: payload), tunnel, partialTunnel] {
                 let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
                 defer { try? FileManager.default.removeItem(at: url) }
                 try data.write(to: url)

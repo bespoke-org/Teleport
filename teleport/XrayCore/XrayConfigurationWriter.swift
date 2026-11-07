@@ -40,12 +40,15 @@ nonisolated struct RoutedProxyOutbound: Sendable, Equatable {
     /// the outbound dials the same endpoint the route was installed for.
     let serverAddress: String?
     let memberAddresses: [String: String]
+    /// Unavailable on this uplink for this attempt, never removed from storage.
+    let unavailableMemberHosts: Set<String>
 
-    init(connectionID: UUID, configuration: ConnectionConfiguration, serverAddress: String? = nil, memberAddresses: [String: String] = [:]) {
+    init(connectionID: UUID, configuration: ConnectionConfiguration, serverAddress: String? = nil, memberAddresses: [String: String] = [:], unavailableMemberHosts: Set<String> = []) {
         self.connectionID = connectionID
         self.configuration = configuration
         self.serverAddress = serverAddress
         self.memberAddresses = memberAddresses
+        self.unavailableMemberHosts = unavailableMemberHosts
     }
 
     /// Resolve all group members before installing the TUN. Every emitted dial
@@ -53,14 +56,34 @@ nonisolated struct RoutedProxyOutbound: Sendable, Equatable {
     static func resolve(connectionID: UUID, configuration: ConnectionConfiguration,
                         resolver: (String) throws -> (address: String, interface: String)) throws -> (outbound: Self, interface: String) {
         var addresses: [String: String] = [:]
+        var unavailable: Set<String> = []
+        var firstUnavailableError: XrayTunConnectionError?
         var interface = ""
-        for member in configuration.endpointConfigurations where addresses[member.host] == nil {
-            let route = try resolver(member.host)
-            if addresses.isEmpty { interface = route.interface }
-            addresses[member.host] = route.address
+        for member in configuration.endpointConfigurations where addresses[member.host] == nil && !unavailable.contains(member.host) {
+            do {
+                let route = try resolver(member.host)
+                if addresses.isEmpty { interface = route.interface }
+                addresses[member.host] = route.address
+            } catch let error as XrayTunConnectionError where configuration.composite != nil {
+                switch error {
+                case .proxyAddressResolutionFailed, .proxyRouteUnavailable:
+                    unavailable.insert(member.host)
+                    firstUnavailableError = firstUnavailableError ?? error
+                case .existingVPNDetected:
+                    throw error
+                }
+            }
+        }
+        if let group = configuration.composite, let firstUnavailableError {
+            let selectors = Set(group.balancer.object["selector"] as? [String] ?? [])
+            let fallback = group.balancer.object["fallbackTag"] as? String ?? group.members.first?.tag
+            guard group.members.contains(where: {
+                addresses[$0.configuration.host] != nil && (selectors.contains($0.tag) || $0.tag == fallback)
+            }) else { throw firstUnavailableError }
         }
         return (Self(connectionID: connectionID, configuration: configuration,
-                     serverAddress: addresses[configuration.host], memberAddresses: addresses), interface)
+                     serverAddress: addresses[configuration.host], memberAddresses: addresses,
+                     unavailableMemberHosts: unavailable), interface)
     }
 }
 
@@ -756,7 +779,7 @@ nonisolated struct XrayConfigurationWriter {
 private extension XrayConfigurationWriter {
     /// Replace group placeholders and translate all Teleport routing targets,
     /// including internal DNS and connection-specific split rules, to balancers.
-    func expandCompositeProfiles(in payload: inout [String: Any], outbounds: [RoutedProxyOutbound], outboundInterface: String?) throws {
+    nonisolated func expandCompositeProfiles(in payload: inout [String: Any], outbounds: [RoutedProxyOutbound], outboundInterface: String?) throws {
         var generated = payload["outbounds"] as? [[String: Any]] ?? []
         var routing = payload["routing"] as? [String: Any] ?? [:]
         var rules = routing["rules"] as? [[String: Any]] ?? []
@@ -766,10 +789,11 @@ private extension XrayConfigurationWriter {
         for (index, routed) in outbounds.enumerated() {
             guard let group = routed.configuration.composite else { continue }
             let tag = Self.proxyTag(at: index)
-            let tagMap = Dictionary(uniqueKeysWithValues: group.members.enumerated().map {
+            let available = group.members.enumerated().filter { !routed.unavailableMemberHosts.contains($0.element.configuration.host) }
+            let tagMap = Dictionary(uniqueKeysWithValues: available.map {
                 ($0.element.tag, "\(tag)-member-\($0.offset)/")
             })
-            var members = group.members.map { member -> [String: Any] in
+            var members = available.map { _, member -> [String: Any] in
                 var stream = makeStreamSettings(configuration: member.configuration)
                 if let outboundInterface, !outboundInterface.isEmpty, outboundInterface != "auto" {
                     stream["sockopt"] = ["interface": outboundInterface]
@@ -780,19 +804,25 @@ private extension XrayConfigurationWriter {
             }
             var balancer = group.balancer.object
             balancer["tag"] = tag
-            balancer["selector"] = (balancer["selector"] as? [String] ?? []).compactMap { tagMap[$0] }
+            var selected = (balancer["selector"] as? [String] ?? []).compactMap { tagMap[$0] }
             // An unobserved group must fall back inside itself, never to another
             // connection merely because that connection is first in the config.
-            let fallback = balancer["fallbackTag"] as? String ?? group.members[0].tag
-            balancer["fallbackTag"] = tagMap[fallback]
-            if let fallbackIndex = members.firstIndex(where: { $0["tag"] as? String == tagMap[fallback] }) {
+            let preferredFallback = balancer["fallbackTag"] as? String ?? group.members[0].tag
+            guard let fallback = tagMap[preferredFallback] ?? selected.first else {
+                throw XrayTunConnectionError.proxyRouteUnavailable(routed.configuration.host)
+            }
+            if selected.isEmpty { selected = [fallback] }
+            balancer["selector"] = selected
+            balancer["fallbackTag"] = fallback
+            if let fallbackIndex = members.firstIndex(where: { $0["tag"] as? String == fallback }) {
                 members.insert(members.remove(at: fallbackIndex), at: 0)
             }
             if var strategy = balancer["strategy"] as? [String: Any], var settings = strategy["settings"] as? [String: Any],
                let costs = settings["costs"] as? [[String: Any]] {
-                settings["costs"] = costs.map { cost -> [String: Any] in
+                settings["costs"] = costs.compactMap { cost -> [String: Any]? in
+                    guard let match = (cost["match"] as? String).flatMap({ tagMap[$0] }) else { return nil }
                     var cost = cost
-                    cost["match"] = (cost["match"] as? String).flatMap { tagMap[$0] }
+                    cost["match"] = match
                     return cost
                 }
                 strategy["settings"] = settings
@@ -812,7 +842,8 @@ private extension XrayConfigurationWriter {
                 throw XraySubscriptionProfileError(reason: "These auto-selection portals use different probe settings and cannot share one tunnel. Choose portals with matching probe settings.")
             }
             pingConfig = currentPing
-            let subjects = (currentObserver["subjectSelector"] as? [String] ?? []).compactMap { tagMap[$0] }
+            var subjects = (currentObserver["subjectSelector"] as? [String] ?? []).compactMap { tagMap[$0] }
+            for member in selected where !subjects.contains(member) { subjects.append(member) }
             currentObserver["subjectSelector"] = (observer?["subjectSelector"] as? [String] ?? []) + subjects
             observer = currentObserver
         }

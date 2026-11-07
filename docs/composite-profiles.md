@@ -38,9 +38,14 @@ portal when filtering is enabled.
 
 ## TUN and health checks
 
-Before installing TUN routes, Teleport resolves every member and pins its dial
-address to a protected physical route. A member that cannot be resolved fails
-the connection attempt. Health checks open temporary leak-guard exemptions for
+Before installing TUN routes, Teleport resolves every member and pins each usable
+dial address to a protected physical route. Members that cannot resolve or have
+no route on the current uplink are excluded from that session, with a warning in
+the log. The saved profile stays intact and all members are reconsidered on the
+next connection. If the configured fallback is unavailable, a reachable selected
+member becomes the session's fallback. If no selected member or configured
+fallback is reachable, the connection fails. Standalone portals still require a
+reachable endpoint. Health checks open temporary leak-guard exemptions for
 all members. If the helper's shared address budget is full, the check reports an
 unknown result and releases any exemptions already opened.
 

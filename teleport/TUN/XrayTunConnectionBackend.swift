@@ -23,8 +23,8 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
 
     /// The reachable numeric address of one server and the physical interface
     /// that reaches it.
-    private func protectedRoute(for host: String) throws -> (address: String, interface: String) {
-        let resolvedAddresses = routeInspector.resolvedAddresses(for: host)
+    private func protectedRoute(for host: String, resolvedAddresses: [String]? = nil) throws -> (address: String, interface: String) {
+        let resolvedAddresses = resolvedAddresses ?? routeInspector.resolvedAddresses(for: host)
         guard !resolvedAddresses.isEmpty else {
             throw XrayTunConnectionError.proxyAddressResolutionFailed(host)
         }
@@ -46,6 +46,11 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
     func restorePreviousState() throws {}
 
     func start(_ request: ConnectionRequest, reportPhase: @escaping @Sendable (ConnectionState) -> Void) async throws {
+        try await start(request, resolvedEndpoints: [:], reportPhase: reportPhase)
+    }
+
+    private func start(_ request: ConnectionRequest, resolvedEndpoints: [String: [String]],
+                       reportPhase: @escaping @Sendable (ConnectionState) -> Void) async throws {
         // The pre-flight below reads routes and resolves names but changes nothing
         // on the machine, so a disconnect or quit that arrives meanwhile may cancel
         // it. The blocking work runs on a dispatch queue where task cancellation is
@@ -70,10 +75,13 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
                 for connection in [request.defaultConnection] + request.additionalConnections {
                     let prepared = try RoutedProxyOutbound.resolve(connectionID: connection.id, configuration: connection.configuration) { host in
                         try cancellation.check()
-                        return try self.protectedRoute(for: host)
+                        return try self.protectedRoute(for: host, resolvedAddresses: resolvedEndpoints[host])
                     }
                     if outbounds.isEmpty { outboundInterface = prepared.interface }
                     outbounds.append(prepared.outbound)
+                    if !prepared.outbound.unavailableMemberHosts.isEmpty {
+                        TeleportLog.shared.warn("tun", "auto-selection portal: \(prepared.outbound.unavailableMemberHosts.count) member hosts unavailable on this uplink; using \(prepared.outbound.memberAddresses.count) reachable hosts for this session")
+                    }
                     for address in prepared.outbound.memberAddresses.values.sorted() where !protectedHosts.contains(address) {
                         protectedHosts.append(address)
                     }
@@ -152,9 +160,37 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
     }
 
     func reconnect(_ request: ConnectionRequest, reportPhase: @escaping @Sendable (ConnectionState) -> Void) async throws {
+        // The running tunnel owns the system's preferred resolver. Resolve the
+        // next endpoints while that resolver can still answer, then retain those
+        // answers for this attempt. macOS may keep querying the old resolver
+        // briefly after the helper removes it. Routes must still be inspected
+        // after teardown so none of the old tunnel's routes are reused.
+        let cancellation = CancellationFlag()
+        let resolvedEndpoints = await withTaskCancellationHandler {
+            await BlockingWork.run { [routeInspector] in
+                var answers: [String: [String]] = [:]
+                var seen: Set<String> = []
+                // A broken old tunnel must not add one DNS timeout per member
+                // before we can stop it. Missing answers retry after teardown.
+                let deadline = ContinuousClock.now + .seconds(5)
+                for connection in request.connections {
+                    for endpoint in connection.configuration.endpointConfigurations where seen.insert(endpoint.host).inserted {
+                        do { try cancellation.check() } catch { return answers }
+                        guard ContinuousClock.now < deadline else { return answers }
+                        let addresses = routeInspector.resolvedAddresses(for: endpoint.host)
+                        if !addresses.isEmpty { answers[endpoint.host] = addresses }
+                    }
+                }
+                return answers
+            }
+        } onCancel: {
+            cancellation.cancel()
+        }
+        // Cancellation still tears down the old session before the provider
+        // reports idle. start() observes cancellation before any new mutation.
         try await runtimeManager.stop()
         do {
-            try await start(request, reportPhase: reportPhase)
+            try await start(request, resolvedEndpoints: resolvedEndpoints, reportPhase: reportPhase)
         } catch is CancellationError {
             // The old tunnel is already gone and its proxy snapshot still held, so
             // a cancelled pre-flight here has something to put back after all.
