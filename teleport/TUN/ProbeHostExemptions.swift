@@ -33,6 +33,18 @@ nonisolated struct ProbeHostExemptions: Equatable, Sendable {
         retainCounts.keys.sorted()
     }
 
+    func canRetain(_ addresses: [String], protectedHosts: [String]) -> Bool {
+        Set(self.addresses + protectedHosts + addresses).count <= TUNHelperProtocol.maximumProtectedHosts
+    }
+
+    /// A newly connected group takes priority over diagnostics. Trim only probe
+    /// addresses so a larger session cannot prevent lease renewal.
+    func hostsForGuard(protectedHosts: [String]) -> [String] {
+        let protected = Array(Set(protectedHosts)).sorted()
+        let additional = addresses.filter { !protected.contains($0) }
+        return protected + additional.prefix(max(0, TUNHelperProtocol.maximumProtectedHosts - protected.count))
+    }
+
     /// Returns whether the set of open addresses changed, which is the caller's
     /// signal that the guard has to be re-engaged. Opening an address that is
     /// already open changes nothing but its count.

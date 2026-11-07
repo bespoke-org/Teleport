@@ -11,6 +11,8 @@ nonisolated enum ProbeUplinkExemptionOutcome: Sendable {
     /// is no address to open. The probe cannot ask, and must not report silence as
     /// an answer.
     case couldNotResolve
+    /// The helper could not open the path, or its address budget is full.
+    case unavailable
 }
 
 /// Lets a health probe reach the server it is questioning while the leak guard is

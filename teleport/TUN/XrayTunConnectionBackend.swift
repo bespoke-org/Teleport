@@ -23,16 +23,16 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
 
     /// The reachable numeric address of one server and the physical interface
     /// that reaches it.
-    private func protectedRoute(for configuration: ConnectionConfiguration) throws -> (address: String, interface: String) {
-        let resolvedAddresses = routeInspector.resolvedAddresses(for: configuration.host)
+    private func protectedRoute(for host: String) throws -> (address: String, interface: String) {
+        let resolvedAddresses = routeInspector.resolvedAddresses(for: host)
         guard !resolvedAddresses.isEmpty else {
-            throw XrayTunConnectionError.proxyAddressResolutionFailed(configuration.host)
+            throw XrayTunConnectionError.proxyAddressResolutionFailed(host)
         }
         guard let route = resolvedAddresses.lazy.compactMap({ address -> (String, String)? in
             guard let interface = self.routeInspector.outboundInterface(for: address) else { return nil }
             return (address, interface)
         }).first else {
-            throw XrayTunConnectionError.proxyRouteUnavailable(configuration.host)
+            throw XrayTunConnectionError.proxyRouteUnavailable(host)
         }
         return route
     }
@@ -64,29 +64,21 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
                 // avoids a second DNS answer selecting a different address after the
                 // TUN defaults have been installed. The uplink comes from the default
                 // connection's route, as it did when a session had only one server.
-                let (defaultAddress, outboundInterface) = try self.protectedRoute(for: request.defaultConnection.configuration)
-                try cancellation.check()
-                var outbounds = [RoutedProxyOutbound(
-                    connectionID: request.defaultConnection.id,
-                    configuration: request.defaultConnection.configuration,
-                    serverAddress: defaultAddress
-                )]
-                var protectedHosts = [defaultAddress]
-                // An additional connection that cannot be routed fails the whole start:
-                // its rules would otherwise fall back to the default outbound without
-                // the user being told their traffic went somewhere else.
-                for connection in request.additionalConnections {
-                    let (address, _) = try self.protectedRoute(for: connection.configuration)
-                    try cancellation.check()
-                    outbounds.append(RoutedProxyOutbound(
-                        connectionID: connection.id,
-                        configuration: connection.configuration,
-                        serverAddress: address
-                    ))
-                    if !protectedHosts.contains(address) {
+                var outbounds: [RoutedProxyOutbound] = []
+                var protectedHosts: [String] = []
+                var outboundInterface = ""
+                for connection in [request.defaultConnection] + request.additionalConnections {
+                    let prepared = try RoutedProxyOutbound.resolve(connectionID: connection.id, configuration: connection.configuration) { host in
+                        try cancellation.check()
+                        return try self.protectedRoute(for: host)
+                    }
+                    if outbounds.isEmpty { outboundInterface = prepared.interface }
+                    outbounds.append(prepared.outbound)
+                    for address in prepared.outbound.memberAddresses.values.sorted() where !protectedHosts.contains(address) {
                         protectedHosts.append(address)
                     }
                 }
+                try cancellation.check()
 
                 let directSendThrough = routeInspector.ipv4Address(for: outboundInterface)
                 let tunnelInterfaceName = routeInspector.nextAvailableTunnelInterfaceName()

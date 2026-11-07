@@ -17,8 +17,11 @@ nonisolated struct XraySubscriptionProfileParser {
 
     func parseConfiguration(_ value: Any) throws -> ConnectionConfiguration {
         let profile = try object(value)
-        if profile["observatory"] != nil || profile["burstObservatory"] != nil {
-            throw unsupported("Balancer/observatory profiles are not supported")
+        if profile["burstObservatory"] != nil || ((profile["routing"] as? [String: Any])?["balancers"] as? [Any])?.isEmpty == false {
+            return try XrayCompositeProfileParser().parse(profile)
+        }
+        if profile["observatory"] != nil {
+            throw unsupported("Only burstObservatory profiles are supported")
         }
         try checkKeys(profile, allowed: ["remarks", "outbounds", "inbounds", "dns", "log", "routing", "policy", "stats", "api"], section: "profile")
         // These configure the source client's runtime, not the remote endpoint.
@@ -46,15 +49,16 @@ nonisolated struct XraySubscriptionProfileParser {
         }
         try validateRouting(routing, outbounds: outbounds)
         try checkKeys(outbound, allowed: ["tag", "protocol", "settings", "streamSettings", "mux"], section: "outbound (including chaining)")
+        var outboundMux: XrayJSONObject?
         if outbound["mux"] != nil {
             let mux = try optionalObject(outbound, "mux")
-            guard try boolean(mux, "enabled") != true else {
-                throw unsupported("Outbound multiplexing is not supported")
+            if try boolean(mux, "enabled") == true {
+                outboundMux = try XrayProfileValidation.mux(mux)
             }
-            // Xray defaults enabled to false when it is omitted.
         }
 
         if proto == "hysteria" {
+            guard outboundMux == nil else { throw unsupported("Hysteria multiplexing is not supported") }
             return try HysteriaConfigurationParser().parseOutbound(outbound, remarks: string(profile, "remarks"))
         }
 
@@ -105,6 +109,7 @@ nonisolated struct XraySubscriptionProfileParser {
         query["type"] = network
         query["security"] = security
         let transport = try optionalObject(stream, transportKey)
+        var xhttpExtra: XrayJSONObject?
         switch network {
         case "tcp", "raw":
             try checkKeys(transport, allowed: ["header"], section: "TCP transport")
@@ -123,10 +128,13 @@ nonisolated struct XraySubscriptionProfileParser {
             try checkKeys(transport, allowed: ["serviceName"], section: "gRPC transport")
             query["serviceName"] = try string(transport, "serviceName", required: true)
         case "xhttp":
-            try checkKeys(transport, allowed: ["path", "host", "mode"], section: "XHTTP transport (including extra)")
+            try checkKeys(transport, allowed: ["path", "host", "mode", "extra"], section: "XHTTP transport (including extra)")
             query["path"] = try string(transport, "path")
             query["host"] = try string(transport, "host")
             query["mode"] = try string(transport, "mode")
+            if let extra = transport["extra"] {
+                xhttpExtra = try XrayProfileValidation.xhttpExtra(extra, mode: query["mode"])
+            }
         default: break
         }
         let tls = try optionalObject(stream, securityKey)
@@ -159,7 +167,18 @@ nonisolated struct XraySubscriptionProfileParser {
         components.queryItems = query.keys.sorted().map { URLQueryItem(name: $0, value: query[$0]) }
         components.percentEncodedFragment = try string(profile, "remarks")?.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed)
         guard let link = components.string else { throw invalid() }
-        return try ConnectionLinkParser().parse(link)
+        var configuration = try ConnectionLinkParser().parse(link)
+        guard outboundMux == nil || (configuration.vlessFlow ?? "").isEmpty else {
+            throw unsupported("Multiplexing with VLESS flow is not supported")
+        }
+        configuration.outboundMux = outboundMux
+        configuration.xhttpExtra = xhttpExtra
+        if configuration.xhttpExtra != nil || outboundMux != nil {
+            var saved: [String: Any] = ["outbounds": [outbound]]
+            saved["remarks"] = try string(profile, "remarks")
+            configuration.rawLink = String(decoding: try JSONSerialization.data(withJSONObject: saved, options: [.sortedKeys, .withoutEscapingSlashes]), as: UTF8.self)
+        }
+        return configuration
     }
 
     private func validateRouting(_ routing: [String: Any], outbounds: [[String: Any]]) throws {

@@ -39,11 +39,28 @@ nonisolated struct RoutedProxyOutbound: Sendable, Equatable {
     /// The numeric address that receives the protected physical host route, so
     /// the outbound dials the same endpoint the route was installed for.
     let serverAddress: String?
+    let memberAddresses: [String: String]
 
-    init(connectionID: UUID, configuration: ConnectionConfiguration, serverAddress: String? = nil) {
+    init(connectionID: UUID, configuration: ConnectionConfiguration, serverAddress: String? = nil, memberAddresses: [String: String] = [:]) {
         self.connectionID = connectionID
         self.configuration = configuration
         self.serverAddress = serverAddress
+        self.memberAddresses = memberAddresses
+    }
+
+    /// Resolve all group members before installing the TUN. Every emitted dial
+    /// address must also be present in the helper's protected host routes.
+    static func resolve(connectionID: UUID, configuration: ConnectionConfiguration,
+                        resolver: (String) throws -> (address: String, interface: String)) throws -> (outbound: Self, interface: String) {
+        var addresses: [String: String] = [:]
+        var interface = ""
+        for member in configuration.endpointConfigurations where addresses[member.host] == nil {
+            let route = try resolver(member.host)
+            if addresses.isEmpty { interface = route.interface }
+            addresses[member.host] = route.address
+        }
+        return (Self(connectionID: connectionID, configuration: configuration,
+                     serverAddress: addresses[configuration.host], memberAddresses: addresses), interface)
     }
 }
 
@@ -70,7 +87,7 @@ nonisolated struct XrayConfigurationWriter {
     /// probe travels through that tunnel and measures it instead of the server.
     func writeConfig(for configuration: ConnectionConfiguration, to outputURL: URL, logLevel: String = "warning", outboundInterface: String? = nil) throws -> URL {
         try writePayload(
-            makePayload(configuration: configuration, logLevel: logLevel, outboundInterface: outboundInterface),
+            try makePayload(configuration: configuration, logLevel: logLevel, outboundInterface: outboundInterface),
             to: outputURL
         )
     }
@@ -92,7 +109,7 @@ nonisolated struct XrayConfigurationWriter {
     }
 
     func writeTunnelConfig(for configuration: ConnectionConfiguration, interfaceName: String, outboundInterface: String = "auto", directSendThrough: String? = nil, splitTunnelRules: [SplitTunnelRule] = [], defaultAction: SplitTunnelRuleAction = .proxy, to outputURL: URL) throws -> URL {
-        try writePayload(makeTunnelPayload(outbounds: [RoutedProxyOutbound(connectionID: UUID(), configuration: configuration)], interfaceName: interfaceName, outboundInterface: outboundInterface, directSendThrough: directSendThrough, splitTunnelRules: splitTunnelRules, defaultAction: defaultAction), to: outputURL)
+        try writePayload(try makeTunnelPayload(outbounds: [RoutedProxyOutbound(connectionID: UUID(), configuration: configuration)], interfaceName: interfaceName, outboundInterface: outboundInterface, directSendThrough: directSendThrough, splitTunnelRules: splitTunnelRules, defaultAction: defaultAction), to: outputURL)
     }
 
     func tunnelConfigData(for configuration: ConnectionConfiguration, interfaceName: String, outboundInterface: String = "auto", directSendThrough: String? = nil, proxyServerAddress: String? = nil, splitTunnelRules: [SplitTunnelRule] = [], defaultAction: SplitTunnelRuleAction = .proxy, dnsPolicy: TunnelDNSPolicy? = nil) throws -> Data {
@@ -110,7 +127,7 @@ nonisolated struct XrayConfigurationWriter {
     /// The first outbound is the session's default: it keeps the `proxy` tag that
     /// the catch-all rule, the local inbounds and DNS resolution point at.
     func tunnelConfigData(for outbounds: [RoutedProxyOutbound], interfaceName: String, outboundInterface: String = "auto", directSendThrough: String? = nil, splitTunnelRules: [SplitTunnelRule] = [], defaultAction: SplitTunnelRuleAction = .proxy, dnsPolicy: TunnelDNSPolicy? = nil) throws -> Data {
-        try encodePayload(makeTunnelPayload(outbounds: outbounds, interfaceName: interfaceName, outboundInterface: outboundInterface, directSendThrough: directSendThrough, splitTunnelRules: splitTunnelRules, defaultAction: defaultAction, dnsPolicy: dnsPolicy))
+        try encodePayload(try makeTunnelPayload(outbounds: outbounds, interfaceName: interfaceName, outboundInterface: outboundInterface, directSendThrough: directSendThrough, splitTunnelRules: splitTunnelRules, defaultAction: defaultAction, dnsPolicy: dnsPolicy))
     }
 
     /// Tags are positional: `proxy` for the default connection, `proxy-1`, `proxy-2`
@@ -142,7 +159,7 @@ nonisolated struct XrayConfigurationWriter {
         try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
     }
 
-    private func makePayload(configuration: ConnectionConfiguration, logLevel: String = "warning", outboundInterface: String? = nil) -> [String: Any] {
+    private func makePayload(configuration: ConnectionConfiguration, logLevel: String = "warning", outboundInterface: String? = nil) throws -> [String: Any] {
         var proxyOutbound: [String: Any] = [
             "tag": "proxy",
             "protocol": configuration.protocolType.rawValue,
@@ -156,7 +173,9 @@ nonisolated struct XrayConfigurationWriter {
             proxyOutbound["streamSettings"] = streamSettings
         }
 
-        return [
+        proxyOutbound["mux"] = configuration.outboundMux?.object
+
+        var payload: [String: Any] = [
             "log": [
                 "loglevel": logLevel
             ],
@@ -195,9 +214,11 @@ nonisolated struct XrayConfigurationWriter {
                 ]
             ]
         ]
+        try expandCompositeProfiles(in: &payload, outbounds: [RoutedProxyOutbound(connectionID: UUID(), configuration: configuration)], outboundInterface: outboundInterface)
+        return payload
     }
 
-    private func makeTunnelPayload(outbounds: [RoutedProxyOutbound], interfaceName: String, outboundInterface: String, directSendThrough: String? = nil, splitTunnelRules: [SplitTunnelRule] = [], defaultAction: SplitTunnelRuleAction = .proxy, dnsPolicy: TunnelDNSPolicy? = nil) -> [String: Any] {
+    private func makeTunnelPayload(outbounds: [RoutedProxyOutbound], interfaceName: String, outboundInterface: String, directSendThrough: String? = nil, splitTunnelRules: [SplitTunnelRule] = [], defaultAction: SplitTunnelRuleAction = .proxy, dnsPolicy: TunnelDNSPolicy? = nil) throws -> [String: Any] {
         // Every proxy outbound is bound to the physical uplink: their transports
         // must leave outside the TUN they feed.
         let proxyOutbounds = outbounds.enumerated().map { index, outbound -> [String: Any] in
@@ -378,8 +399,7 @@ nonisolated struct XrayConfigurationWriter {
                     "settings": [:]
                 ]
             ],
-            // Deliberately no "mux" on the proxy outbound: multiplexing defeats
-            // Vision's traffic shaping and is itself a recognizable pattern.
+            // Mux is only emitted when the imported endpoint explicitly enables it.
             "outbounds": proxyOutbounds + [
                 directOutbound,
                 [
@@ -448,6 +468,7 @@ nonisolated struct XrayConfigurationWriter {
             payload["dns"] = dnsSection
         }
 
+        try expandCompositeProfiles(in: &payload, outbounds: outbounds, outboundInterface: outboundInterface)
         return payload
     }
 
@@ -537,6 +558,7 @@ nonisolated struct XrayConfigurationWriter {
         if !streamSettings.isEmpty {
             outbound["streamSettings"] = streamSettings
         }
+        outbound["mux"] = configuration.outboundMux?.object
         return outbound
     }
 
@@ -693,6 +715,7 @@ nonisolated struct XrayConfigurationWriter {
                 xhttpSettings["mode"] = mode
             }
 
+            xhttpSettings["extra"] = configuration.xhttpExtra?.object
             streamSettings["xhttpSettings"] = xhttpSettings
         }
 
@@ -727,5 +750,77 @@ nonisolated struct XrayConfigurationWriter {
         }
 
         return streamSettings
+    }
+}
+
+private extension XrayConfigurationWriter {
+    /// Replace group placeholders and translate all Teleport routing targets,
+    /// including internal DNS and connection-specific split rules, to balancers.
+    func expandCompositeProfiles(in payload: inout [String: Any], outbounds: [RoutedProxyOutbound], outboundInterface: String?) throws {
+        var generated = payload["outbounds"] as? [[String: Any]] ?? []
+        var routing = payload["routing"] as? [String: Any] ?? [:]
+        var rules = routing["rules"] as? [[String: Any]] ?? []
+        var balancers: [[String: Any]] = []
+        var observer: [String: Any]?
+        var pingConfig: XrayJSONObject?
+        for (index, routed) in outbounds.enumerated() {
+            guard let group = routed.configuration.composite else { continue }
+            let tag = Self.proxyTag(at: index)
+            let tagMap = Dictionary(uniqueKeysWithValues: group.members.enumerated().map {
+                ($0.element.tag, "\(tag)-member-\($0.offset)/")
+            })
+            var members = group.members.map { member -> [String: Any] in
+                var stream = makeStreamSettings(configuration: member.configuration)
+                if let outboundInterface, !outboundInterface.isEmpty, outboundInterface != "auto" {
+                    stream["sockopt"] = ["interface": outboundInterface]
+                }
+                return makeTunnelProxyOutbound(tag: tagMap[member.tag]!, configuration: member.configuration,
+                    streamSettings: stream, addressOverride: routed.memberAddresses[member.configuration.host]
+                        ?? (member.configuration.host == routed.configuration.host ? routed.serverAddress : nil))
+            }
+            var balancer = group.balancer.object
+            balancer["tag"] = tag
+            balancer["selector"] = (balancer["selector"] as? [String] ?? []).compactMap { tagMap[$0] }
+            // An unobserved group must fall back inside itself, never to another
+            // connection merely because that connection is first in the config.
+            let fallback = balancer["fallbackTag"] as? String ?? group.members[0].tag
+            balancer["fallbackTag"] = tagMap[fallback]
+            if let fallbackIndex = members.firstIndex(where: { $0["tag"] as? String == tagMap[fallback] }) {
+                members.insert(members.remove(at: fallbackIndex), at: 0)
+            }
+            if var strategy = balancer["strategy"] as? [String: Any], var settings = strategy["settings"] as? [String: Any],
+               let costs = settings["costs"] as? [[String: Any]] {
+                settings["costs"] = costs.map { cost -> [String: Any] in
+                    var cost = cost
+                    cost["match"] = (cost["match"] as? String).flatMap { tagMap[$0] }
+                    return cost
+                }
+                strategy["settings"] = settings
+                balancer["strategy"] = strategy
+            }
+            balancers.append(balancer)
+            if let position = generated.firstIndex(where: { $0["tag"] as? String == tag }) {
+                generated.replaceSubrange(position...position, with: members)
+            }
+            for i in rules.indices where rules[i]["outboundTag"] as? String == tag {
+                rules[i].removeValue(forKey: "outboundTag")
+                rules[i]["balancerTag"] = tag
+            }
+            var currentObserver = group.burstObservatory.object
+            let currentPing = try XrayJSONObject(currentObserver["pingConfig"] as? [String: Any] ?? [:])
+            if let pingConfig, pingConfig != currentPing {
+                throw XraySubscriptionProfileError(reason: "These auto-selection portals use different probe settings and cannot share one tunnel. Choose portals with matching probe settings.")
+            }
+            pingConfig = currentPing
+            let subjects = (currentObserver["subjectSelector"] as? [String] ?? []).compactMap { tagMap[$0] }
+            currentObserver["subjectSelector"] = (observer?["subjectSelector"] as? [String] ?? []) + subjects
+            observer = currentObserver
+        }
+        guard !balancers.isEmpty else { return }
+        routing["rules"] = rules
+        routing["balancers"] = balancers
+        payload["routing"] = routing
+        payload["outbounds"] = generated
+        payload["burstObservatory"] = observer
     }
 }

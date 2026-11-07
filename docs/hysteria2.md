@@ -54,7 +54,7 @@ to that core behavior. The restart integration check allows up to 60 seconds
 for the previous QUIC session to expire.
 
 Unknown fields and unsupported combinations are rejected with a reason. This
-includes protocol chaining, balancers, multiple proxy outbounds, alternate
+includes protocol chaining, unsupported [composite profiles](composite-profiles.md), alternate
 transports, other masks, server-side masquerade options, ECH, unrecognized TLS
 fingerprint values, and QUIC debug logging. Legacy `up`, `down`, `congestion`, or `udphop`
 inside `hysteriaSettings` are rejected. Bandwidth and congestion belong under

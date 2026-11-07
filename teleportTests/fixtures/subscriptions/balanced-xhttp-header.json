@@ -1,0 +1,157 @@
+{
+  "outbounds": [
+    {
+      "tag": "proxy-0",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "proxy-0.example.test",
+            "port": 443,
+            "users": [
+              {
+                "id": "11111111-1111-4111-8111-111111111111",
+                "encryption": "none",
+                "flow": "xtls-rprx-vision"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "tcpSettings": {},
+        "security": "reality",
+        "realitySettings": {
+          "serverName": "cdn.example.test",
+          "publicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "shortId": "0123456789abcdef",
+          "fingerprint": "firefox"
+        }
+      }
+    },
+    {
+      "tag": "proxy-1",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "proxy-1.example.test",
+            "port": 443,
+            "users": [
+              {
+                "id": "11111111-1111-4111-8111-111111111111",
+                "encryption": "none",
+                "flow": ""
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "xhttp",
+        "xhttpSettings": {
+          "mode": "packet-up",
+          "host": "cdn.example.test",
+          "path": "/transport",
+          "extra": {
+            "seqKey": "",
+            "sessionKey": "",
+            "noSSEHeader": false,
+            "xPaddingKey": "",
+            "seqPlacement": "",
+            "uplinkDataKey": "",
+            "xPaddingBytes": "0-0",
+            "xPaddingHeader": "",
+            "xPaddingMethod": "",
+            "uplinkChunkSize": 0,
+            "sessionPlacement": "",
+            "uplinkHTTPMethod": "GET",
+            "xPaddingObfsMode": false,
+            "xPaddingPlacement": "",
+            "scMaxBufferedPosts": 30,
+            "scMaxEachPostBytes": "1000000",
+            "uplinkDataPlacement": "header",
+            "scStreamUpServerSecs": "20-80"
+          }
+        },
+        "security": "tls",
+        "tlsSettings": {
+          "serverName": "cdn.example.test",
+          "fingerprint": "chrome",
+          "alpn": [
+            "h2",
+            "http/1.1"
+          ]
+        }
+      }
+    },
+    {
+      "protocol": "freedom",
+      "settings": {
+        "domainStrategy": "UseIP"
+      },
+      "tag": "direct"
+    },
+    {
+      "protocol": "blackhole",
+      "settings": {
+        "response": {
+          "type": "http"
+        }
+      },
+      "tag": "block"
+    }
+  ],
+  "remarks": "balanced-xhttp-header",
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "domainMatcher": "hybrid",
+    "rules": [
+      {
+        "type": "field",
+        "network": "tcp,udp",
+        "balancerTag": "auto"
+      }
+    ],
+    "balancers": [
+      {
+        "tag": "auto",
+        "selector": [
+          "proxy"
+        ],
+        "strategy": {
+          "type": "leastLoad",
+          "settings": {
+            "maxRTT": "5s",
+            "expected": 1,
+            "baselines": [
+              "500ms",
+              "1000ms"
+            ],
+            "tolerance": 0,
+            "costs": [
+              {
+                "match": "proxy-1",
+                "value": 10
+              }
+            ]
+          }
+        },
+        "fallbackTag": "proxy-1"
+      }
+    ]
+  },
+  "burstObservatory": {
+    "pingConfig": {
+      "timeout": "7s",
+      "interval": "5m",
+      "sampling": 1,
+      "destination": "https://probe.example.test/generate_204",
+      "connectivity": ""
+    },
+    "subjectSelector": [
+      "proxy"
+    ]
+  }
+}

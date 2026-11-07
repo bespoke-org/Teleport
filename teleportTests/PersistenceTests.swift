@@ -369,6 +369,22 @@ final class PersistenceTests: XCTestCase {
         XCTAssertFalse(hidden.showsInDock)
     }
 
+    func testCompositeProfilesSaveAndLoad() throws {
+        try withIsolatedStore(name: "composite") { store, _ in
+            let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("fixtures/subscriptions")
+            let connections = try ["balanced-ws", "balanced-xhttp", "balanced-xhttp-header"].map { name in
+                SavedConnection(id: UUID(), configuration: try ConnectionLinkParser().parse(String(contentsOf: root.appendingPathComponent(name + ".json"), encoding: .utf8)), savedAt: Date())
+            }
+            try store.save(AppSnapshot(savedConnections: connections, subscriptionSources: [], selectedConnectionID: connections[0].id, proxyEndpoint: .default))
+            let loaded = store.load()
+            XCTAssertNil(store.lastLoadError)
+            XCTAssertEqual(loaded.savedConnections, connections)
+            for connection in loaded.savedConnections {
+                XCTAssertEqual(try ConnectionLinkParser().parse(connection.configuration.rawLink), connection.configuration)
+            }
+        }
+    }
+
     func testHysteriaSaveAndLoad() throws {
         try withIsolatedStore(name: "hysteria") { store, _ in
             let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("fixtures/subscriptions/hysteria2.json")

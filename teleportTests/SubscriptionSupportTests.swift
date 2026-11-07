@@ -209,7 +209,7 @@ final class SubscriptionSupportTests: XCTestCase {
         var balanced = valid
         balanced["routing"] = ["balancers": [["tag": "auto", "strategy": ["type": "leastLoad"]]]]
         let xhttp = try changingProxy {
-            $0["streamSettings"] = ["network": "xhttp", "security": "tls", "xhttpSettings": ["extra": ["xPaddingBytes": "100-200"]]]
+            $0["streamSettings"] = ["network": "xhttp", "security": "tls", "xhttpSettings": ["extra": ["downloadSettings": ["address": "other.example.test"]]]]
         }
         let result = try importJSON([valid, hysteria, shadowsocks, balanced, xhttp, 42] as [Any])
         XCTAssert(result.importedEntries.count == 1)
@@ -217,7 +217,7 @@ final class SubscriptionSupportTests: XCTestCase {
         XCTAssert(result.skippedReasons.keys.contains { $0.contains("Hysteria") })
         XCTAssert(result.skippedReasons["Shadowsocks is not supported"] == 1)
         XCTAssert(result.statusMessage!.contains("Imported 1, skipped 5"))
-        XCTAssert(result.statusMessage!.contains("Balancer/observatory"))
+        XCTAssert(result.statusMessage!.localizedCaseInsensitiveContains("balancer/observatory"))
         XCTAssert(result.statusMessage!.contains("XHTTP"))
         do {
             _ = try importJSON([hysteria, shadowsocks])

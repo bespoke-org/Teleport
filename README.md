@@ -16,6 +16,7 @@ Teleport is a macOS menu bar client for the [Xray](https://github.com/XTLS/Xray-
 
 - Connections from `vless://`, `trojan://`, `hysteria2://` (`hy2://`) and `wireguard://` links and from WireGuard `[Interface]` configuration files. Hysteria 2 details are in [docs/hysteria2.md](docs/hysteria2.md).
 - Subscriptions from `http://` and `https://` URLs, with periodic refresh and duplicate filtering.
+- Composite Xray portals with automatic server selection, XHTTP extra settings and explicit Mux. Supported settings and limits are in [docs/composite-profiles.md](docs/composite-profiles.md).
 - Two connection modes: **System Proxy** (no administrator rights) and **TUN** (the whole machine is routed through a tunnel interface; needs a root helper).
 - Split routing: rules by domain, IP range, geosite category or geoip country, grouped in named profiles. A rule can send its traffic through a different saved connection, so one session can dial several servers.
 - Geodata (`geoip.dat`, `geosite.dat`) bundled, with optional downloads from a source of your choice.
