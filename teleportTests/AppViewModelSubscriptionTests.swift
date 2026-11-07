@@ -39,14 +39,16 @@ final class AppViewModelSubscriptionTests: XCTestCase {
         XCTAssertEqual(fixture.model.lastError, URLError(.timedOut).localizedDescription)
     }
 
-    func testScheduledRefreshOfActiveSubscriptionIsSilent() async throws {
+    func testScheduledRefreshOfActiveSubscriptionKeepsFailuresLocal() async throws {
         let fixture = try Fixture(activeSubscription: true)
         defer { fixture.cleanUp() }
         await waitUntil { fixture.model.isConnected }
         fixture.model.performScheduledSubscriptionRefreshes()
+        await waitUntil { fixture.client.pending != nil }
+        fixture.client.complete(throwing: URLError(.timedOut))
+        await waitUntil { fixture.model.refreshingSubscriptionIDs.isEmpty }
         XCTAssertNil(fixture.model.lastError)
-        XCTAssertTrue(fixture.model.refreshingSubscriptionIDs.isEmpty)
-        XCTAssertNil(fixture.client.pending)
+        XCTAssertEqual(fixture.model.subscriptionSources.first?.lastError, URLError(.timedOut).localizedDescription)
     }
 
     func testAutomaticResultAfterSubscriptionBecomesActiveIsSilent() async throws {
@@ -60,7 +62,7 @@ final class AppViewModelSubscriptionTests: XCTestCase {
         fixture.client.complete()
         await waitUntil { fixture.model.refreshingSubscriptionIDs.isEmpty }
         XCTAssertNil(fixture.model.subscriptionSources.first?.lastError)
-        XCTAssertEqual(fixture.model.subscriptionSources.first?.lastRefreshedAt, fixture.source.lastRefreshedAt)
+        XCTAssertNotEqual(fixture.model.subscriptionSources.first?.lastRefreshedAt, fixture.source.lastRefreshedAt)
         XCTAssertEqual(fixture.model.savedConnections.count, 1)
         XCTAssertNil(fixture.model.lastError)
     }
@@ -112,7 +114,7 @@ final class AppViewModelSubscriptionTests: XCTestCase {
 @MainActor
 private final class ControlledSubscriptionClient: SubscriptionFetching {
     var pending: CheckedContinuation<SubscriptionFetchResult, Error>?
-    func fetch(from url: URL) async throws -> SubscriptionFetchResult {
+    @MainActor func fetch(from url: URL) async throws -> SubscriptionFetchResult {
         try await withCheckedThrowingContinuation { pending = $0 }
     }
     func complete(throwing error: Error? = nil) {
