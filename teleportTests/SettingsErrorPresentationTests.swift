@@ -25,28 +25,32 @@ final class SettingsErrorPresentationTests: XCTestCase {
         window.isReleasedWhenClosed = false
         defer { window.close() }
         window.makeKeyAndOrderFront(nil)
-        try await Task.sleep(for: .milliseconds(250))
+        await awaitUIUpdate("Error indicator is presented") { window.isVisible && host.view.window != nil }
         let existing = Set(NSApp.windows.map(\.windowNumber))
         try click(in: window)
-        try await Task.sleep(for: .milliseconds(250))
+        await awaitUIUpdate("Error details finish layout") {
+            NSApp.windows.contains { !existing.contains($0.windowNumber) && $0.isVisible && $0.frame.height > 100 }
+        }
         let popover = try XCTUnwrap(NSApp.windows.first { !existing.contains($0.windowNumber) && $0.isVisible })
         XCTAssertGreaterThan(popover.frame.height, 100)
         XCTAssertLessThan(popover.frame.height, 300, "Short errors must not leave a large empty panel")
         try key("\u{1b}", code: 53, in: popover)
-        try await Task.sleep(for: .milliseconds(200))
+        await awaitUIUpdate("Escape closes error details") { !popover.isVisible }
         XCTAssertFalse(popover.isVisible)
         XCTAssertNotNil(model.issue, "Closing details must keep the error discoverable")
         XCTAssertTrue(model.dismissed.isEmpty)
 
         window.makeKeyAndOrderFront(nil)
         try click(in: window)
-        try await Task.sleep(for: .milliseconds(250))
+        await awaitUIUpdate("Error details reopen") {
+            NSApp.windows.contains { !existing.contains($0.windowNumber) && $0.isVisible && $0.frame.height > 100 }
+        }
         model.issue = SettingsIssue(kind: .action, failure: ConnectionFailure(summary: "New failure", details: "Fresh details"))
-        try await Task.sleep(for: .milliseconds(250))
+        await awaitUIUpdate("Updated error details are rendered")
         let latest = try XCTUnwrap(NSApp.windows.first { !existing.contains($0.windowNumber) && $0.isVisible })
         // The footer is fixed within the popover: Dismiss is its trailing button.
         try click(in: latest, at: NSPoint(x: latest.frame.width - 55, y: 38))
-        try await Task.sleep(for: .milliseconds(200))
+        await awaitUIUpdate("Dismiss acknowledges the new error and closes details") { model.issue == nil && !latest.isVisible }
         XCTAssertEqual(model.dismissed.map(\.failure.summary), ["New failure"])
         XCTAssertNil(model.issue)
         XCTAssertFalse(latest.isVisible)

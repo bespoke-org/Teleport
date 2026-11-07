@@ -25,18 +25,20 @@ final class SettingsSelectionTests: XCTestCase {
         window.isReleasedWhenClosed = false
         defer { window.close() }
         window.makeKeyAndOrderFront(nil)
-        try await Task.sleep(for: .milliseconds(300))
+        await awaitUIUpdate("Picker window is presented") { window.isVisible && host.view.window != nil }
         let existing = Set(NSApp.windows.map(\.windowNumber))
 
         try click(in: window)
-        try await Task.sleep(for: .milliseconds(300))
+        await awaitUIUpdate("First selection popover has laid out its rows") {
+            NSApp.windows.contains { !existing.contains($0.windowNumber) && $0.isVisible && $0.frame.height > 100 }
+        }
         let first = try XCTUnwrap(NSApp.windows.first { !existing.contains($0.windowNumber) && $0.isVisible })
         XCTAssertGreaterThan(first.frame.height, 100, "The first click must show rows, not an empty glass strip")
         XCTAssertEqual(opens, 1)
         try key("\u{F701}", code: 125, in: first)
-        try await Task.sleep(for: .milliseconds(50))
+        await awaitUIUpdate("Keyboard highlight is applied")
         try key("\r", code: 36, in: first)
-        try await Task.sleep(for: .milliseconds(200))
+        await awaitUIUpdate("First selection closes the popover") { selected == "direct" && !first.isVisible }
         XCTAssertEqual(selected, "direct")
         XCTAssertFalse(first.isVisible)
 
@@ -47,23 +49,27 @@ final class SettingsSelectionTests: XCTestCase {
         ]
         window.makeKeyAndOrderFront(nil)
         try click(in: window)
-        try await Task.sleep(for: .milliseconds(300))
+        await awaitUIUpdate("Selection popover is presented") {
+            NSApp.windows.contains { !existing.contains($0.windowNumber) && $0.isVisible && $0.frame.height > 100 }
+        }
         let second = try XCTUnwrap(NSApp.windows.first { !existing.contains($0.windowNumber) && $0.isVisible })
         XCTAssertEqual(opens, 2, "Each open must refresh the snapshot")
         XCTAssertGreaterThan(second.frame.height, 100)
         try key("\u{F701}", code: 125, in: second)
-        try await Task.sleep(for: .milliseconds(50))
+        await awaitUIUpdate("Keyboard highlight is applied")
         try key("\r", code: 36, in: second)
-        try await Task.sleep(for: .milliseconds(200))
+        await awaitUIUpdate("Fresh selection closes the popover") { selected == "last" && !second.isVisible }
         XCTAssertEqual(selected, "last", "Keyboard navigation skips unavailable options")
         XCTAssertFalse(second.isVisible)
 
         window.makeKeyAndOrderFront(nil)
         try click(in: window)
-        try await Task.sleep(for: .milliseconds(300))
+        await awaitUIUpdate("Selection popover is presented") {
+            NSApp.windows.contains { !existing.contains($0.windowNumber) && $0.isVisible && $0.frame.height > 100 }
+        }
         let third = try XCTUnwrap(NSApp.windows.first { !existing.contains($0.windowNumber) && $0.isVisible })
         try key("\u{1b}", code: 53, in: third)
-        try await Task.sleep(for: .milliseconds(200))
+        await awaitUIUpdate("Escape closes the popover") { !third.isVisible }
         XCTAssertFalse(third.isVisible)
         XCTAssertEqual(selected, "last", "Escape dismisses without changing selection")
     }
@@ -84,7 +90,7 @@ final class SettingsSelectionTests: XCTestCase {
         window.isReleasedWhenClosed = false
         defer { window.close() }
         window.makeKeyAndOrderFront(nil)
-        try await Task.sleep(for: .milliseconds(200))
+        await awaitUIUpdate("Segmented controls are laid out") { window.isVisible && host.view.window != nil }
         func controls(_ view: NSView) -> [NSSegmentedControl] {
             if let control = view as? NSSegmentedControl { return [control] }
             return view.subviews.flatMap(controls)
