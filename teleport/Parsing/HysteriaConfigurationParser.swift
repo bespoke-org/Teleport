@@ -108,7 +108,7 @@ nonisolated extension ConnectionConfiguration {
     }
 
     var hysteriaShareLink: String? {
-        guard let hysteria, hysteria.udpIdleTimeout == nil, fingerprint == nil,
+        guard composite == nil, let hysteria, hysteria.udpIdleTimeout == nil, fingerprint == nil,
             hysteria.obfuscation?.packetSize == nil || hysteria.obfuscation?.packetSize == HysteriaObfuscation.geckoDefaultPacketSize,
             alpn == ["h3"]
         else { return nil }
@@ -157,6 +157,9 @@ nonisolated extension ConnectionConfiguration {
     }
 
     var shareExportNote: String? {
+        if composite != nil || xhttpExtra != nil || outboundMux != nil {
+            return "Copy the Xray configuration to preserve all servers and transport settings."
+        }
         guard protocolType == .hysteria, hysteriaShareLink == nil else { return nil }
         return "These settings cannot be preserved in a Hysteria 2 share link. Copy the Xray configuration instead."
     }

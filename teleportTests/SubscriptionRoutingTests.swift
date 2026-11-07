@@ -365,7 +365,7 @@ final class SubscriptionRoutingTests: XCTestCase {
     @MainActor
     func testImportDuringTUNStartupWaitsUntilNextConnection() async throws {
         for header in [try link(["Name": "Imported", "DirectSites": ["example.com"]]), "off"] {
-            let fixture = try ViewModelFixture()
+            let fixture = try ViewModelFixture(activeSubscriptionPortal: true)
             defer { fixture.cleanUp() }
             let viewModel = fixture.viewModel
             await waitUntil { viewModel.canConnect }
@@ -390,6 +390,41 @@ final class SubscriptionRoutingTests: XCTestCase {
             viewModel.disconnect()
             await waitUntil { viewModel.connectionState == .idle && !viewModel.isOperationPending }
         }
+    }
+
+    @MainActor
+    func testActiveSubscriptionRulesAndGeodataWaitForNextConnection() async throws {
+        let fixture = try ViewModelFixture(activeSubscriptionPortal: true)
+        defer { fixture.cleanUp() }
+        let model = fixture.viewModel
+        await waitUntil { model.canConnect }
+        model.connect()
+        await waitUntil { model.isConnected && !model.isOperationPending }
+        let initial = await fixture.provider.requests
+        XCTAssertEqual(initial.count, 1)
+        model.refreshSubscription(id: fixture.source.id)
+        await waitUntil { await fixture.loader.requestCount == 1 }
+        await fixture.loader.complete(index: 0, header: try link([
+            "Name": "Updated provider", "DirectSites": ["new.example"],
+            "Geositeurl": "https://provider.example/new-geosite.dat",
+            "Geoipurl": "https://provider.example/new-geoip.dat"
+        ]))
+        await waitUntil { !model.isRefreshingSubscription(fixture.source.id) }
+        try await Task.sleep(for: .milliseconds(800))
+        let afterRefresh = await fixture.provider.requests
+        XCTAssertEqual(afterRefresh, initial, "Refreshing the catalog must not rebuild the running session")
+        XCTAssertTrue(fixture.geodata.requestedKinds.isEmpty)
+        XCTAssertNil(model.lastError)
+        XCTAssertTrue(model.isConnected)
+        XCTAssertEqual(model.selectedConnectionID, initial[0].defaultConnection.id)
+        model.connect()
+        await waitUntil { model.isConnected && !model.isOperationPending }
+        let requests = await fixture.provider.requests
+        XCTAssertEqual(requests.count, 2)
+        XCTAssertEqual(requests.last?.splitTunnelPolicy.rules.first?.value, "new.example")
+        XCTAssertEqual(model.geodataSettings.geositeURLString, "https://provider.example/new-geosite.dat")
+        model.disconnect()
+        await waitUntil { model.connectionState == .idle && !model.isOperationPending }
     }
 
     @MainActor
@@ -443,7 +478,7 @@ final class SubscriptionRoutingTests: XCTestCase {
         let geodata = SubscriptionGeodataService()
         let viewModel: AppViewModel
 
-        init() throws {
+        init(activeSubscriptionPortal: Bool = false) throws {
             root = FileManager.default.temporaryDirectory.appendingPathComponent("teleport-routing-\(UUID().uuidString)")
             let fileManager = TempFileManager(root: root)
             let log = TeleportLog(directoryURL: root, fileName: "test.log")
@@ -451,7 +486,10 @@ final class SubscriptionRoutingTests: XCTestCase {
                                        keychainAccount: UUID().uuidString, log: log)
             let connection = SavedConnection(id: UUID(), configuration: try ConnectionLinkParser().parse(
                 "vless://123e4567-e89b-12d3-a456-426614174000@server.invalid:443?security=tls#Manual"
-            ), savedAt: Date())
+            ), savedAt: Date(), source: activeSubscriptionPortal
+                ? ConnectionSourceMetadata(subscriptionSourceID: source.id,
+                    subscriptionEntryID: "vless://123e4567-e89b-12d3-a456-426614174000@server.invalid:443?security=tls#Manual")
+                : nil)
             let profile = SplitTunnelProfile(name: "Manual", rules: [
                 SplitTunnelRule(value: "original.example", kind: .domain, action: .direct)
             ])

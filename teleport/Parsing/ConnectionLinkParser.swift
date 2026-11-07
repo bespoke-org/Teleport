@@ -1,6 +1,6 @@
 import Foundation
 
-struct ConnectionLinkParser {
+nonisolated struct ConnectionLinkParser {
     private let wireGuardParser = WireGuardConfigurationParser()
 
     nonisolated func parse(_ rawLink: String) throws -> ConnectionConfiguration {

@@ -16,6 +16,7 @@ Teleport is a macOS menu bar client for the [Xray](https://github.com/XTLS/Xray-
 
 - Connections from `vless://`, `trojan://`, `hysteria2://` (`hy2://`) and `wireguard://` links and from WireGuard `[Interface]` configuration files. Hysteria 2 details are in [docs/hysteria2.md](docs/hysteria2.md).
 - Subscriptions from `http://` and `https://` URLs, with periodic refresh and duplicate filtering.
+- Composite Xray portals with automatic server selection, XHTTP extra settings and explicit Mux. Supported settings and limits are in [docs/composite-profiles.md](docs/composite-profiles.md).
 - Two connection modes: **System Proxy** (no administrator rights) and **TUN** (the whole machine is routed through a tunnel interface; needs a root helper).
 - Split routing: rules by domain, IP range, geosite category or geoip country, grouped in named profiles. A rule can send its traffic through a different saved connection, so one session can dial several servers.
 - Geodata (`geoip.dat`, `geosite.dat`) bundled, with optional downloads from a source of your choice.
@@ -44,6 +45,15 @@ Without a `DEVELOPMENT_TEAM` the build is signed ad hoc. Both System Proxy and T
 On first launch the app has no connections. Add a link or a subscription URL in Settings > Connections. The same page can add two community subscription lists that ship with the app (`packaging/bundled-connections.json`, from [igareck/vpn-configs-for-russia](https://github.com/igareck/vpn-configs-for-russia)). They are not added on their own: the servers in those lists are run by people nobody here knows, and everything sent through them can be read or altered by whoever operates them.
 
 ## Subscription routing
+
+Portal order defaults to **Original**, matching each subscription's entry order.
+Name and Latency remain available in General settings. Previously saved sort
+choices are preserved; select Original and refresh an existing subscription
+once to restore the provider's order.
+
+Subscriptions can refresh while connected. Portal lists update immediately;
+the running connection keeps its configuration until the next connection.
+Imported routing rules and geodata changes also wait until then.
 
 Subscription responses can deliver a Happ/INCY routing profile in the HTTP `routing`
 header. Teleport imports it into Settings > Split Tunneling as soon as the
@@ -159,6 +169,15 @@ just test
 ```
 
 Checks are XCTest cases in `teleportTests/` (app and shared code) and `TeleportPrivilegedHelperTests/` (helper code); both bundles compile the sources they test, so no app or helper process runs. Run one class or method with `just test-case <Class>[/<method>]`, e.g. `just test-case CoreTests`, or press Cmd-U in Xcode. `just coverage` prints line coverage. Connecting, helper installation and the leak guard on a real network are tested by hand.
+
+For UI responsiveness regressions, match the app's default main-actor isolation:
+
+```sh
+XCODE_XCCONFIG_FILE="$PWD/Config/AppActorIsolationTests.xcconfig" just test-case AppViewModelSubscriptionRefreshTests
+XCODE_XCCONFIG_FILE="$PWD/Config/AppActorIsolationTests.xcconfig" just test-case ConnectionHealthTests
+```
+
+These cover subscription processing, asynchronous persistence, and probe runtime setup/cleanup. Without the override, the hostless tests can miss work that hops onto the main actor only in the app build.
 
 ## Buy us some tokens
 

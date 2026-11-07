@@ -2,6 +2,25 @@ import Foundation
 import XCTest
 
 final class ConnectionHealthTests: XCTestCase {
+    @MainActor
+    func testProbePerformsRuntimeWorkOffMainThread() async throws {
+        let manager = ProbeThreadFileManager()
+        let emptyBundleURL = FileManager.default.temporaryDirectory.appendingPathComponent("empty-probe-\(UUID()).bundle")
+        try FileManager.default.createDirectory(at: emptyBundleURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: emptyBundleURL) }
+        let bundle = try XCTUnwrap(Bundle(url: emptyBundleURL))
+        // An empty bundle has no Xray runtime, so the probe exercises setup and
+        // failure cleanup without contacting a server or spawning a process.
+        let service = ConnectionHealthProbeService(bundle: bundle, fileManager: manager)
+        let configuration = try ConnectionLinkParser().parse(
+            "vless://123e4567-e89b-12d3-a456-426614174000@127.0.0.1:9?security=none&type=tcp#Test"
+        )
+        let connection = SavedConnection(id: UUID(), configuration: configuration, savedAt: Date())
+        _ = await Task.detached { await service.probe(connection) }.value
+        XCTAssertFalse(manager.threads.isEmpty)
+        XCTAssertFalse(manager.threads.contains(true), "Probe runtime setup and cleanup must stay off the UI thread")
+    }
+
     /// A WireGuard peer that carries only a few subnets cannot deliver a request
     /// to a public address, so probing it that way measured the peer's scope and
     /// reported a healthy peer as failed. Such a peer is judged by its handshake.
@@ -198,5 +217,19 @@ final class ConnectionHealthTests: XCTestCase {
 
     private func sampleVLESSLink() -> String {
         "vless://123e4567-e89b-12d3-a456-426614174000@example.com:443?security=tls&type=tcp&sni=example.com#Alpha"
+    }
+}
+
+private nonisolated final class ProbeThreadFileManager: FileManager {
+    private let lock = NSLock()
+    private var recordedThreads: [Bool] = []
+    var threads: [Bool] { lock.withLock { recordedThreads } }
+    override var temporaryDirectory: URL {
+        lock.withLock { recordedThreads.append(Thread.isMainThread) }
+        return super.temporaryDirectory
+    }
+    override func removeItem(at URL: URL) throws {
+        lock.withLock { recordedThreads.append(Thread.isMainThread) }
+        try super.removeItem(at: URL)
     }
 }

@@ -47,6 +47,8 @@ struct SubscriptionConnectionReconciler {
             next.id == selectedConnectionID ? next : first
         })
 
+        // Keep the provider's order in storage; name/latency sorting belongs to
+        // presentation so switching back to Original can recover this order.
         let replacementConnections = importedEntries.map { entry in
             SavedConnection(
                 id: existingByEntry[entry.sourceEntryID]?.id ?? UUID(),
@@ -56,9 +58,6 @@ struct SubscriptionConnectionReconciler {
                 healthCheck: existingByEntry[entry.sourceEntryID]?.healthCheck,
                 customName: existingByEntry[entry.sourceEntryID]?.customName
             )
-        }
-        .sorted { lhs, rhs in
-            lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending
         }
 
         var updatedConnections = existingConnections.filter { $0.source?.subscriptionSourceID != sourceID }
@@ -107,7 +106,7 @@ struct SubscriptionConnectionReconciler {
     }
 }
 
-struct SubscriptionFetchResult {
+nonisolated struct SubscriptionFetchResult {
     let candidates: [SubscriptionCandidate]
     let routing: SubscriptionRoutingImport?
     let routingWarning: String?
@@ -120,7 +119,7 @@ struct SubscriptionFetchResult {
     }
 }
 
-struct SubscriptionClient {
+nonisolated struct SubscriptionClient {
     private let loadResponse: @Sendable (URLRequest) async throws -> (Data, URLResponse)
 
     init(loadResponse: @escaping @Sendable (URLRequest) async throws -> (Data, URLResponse) = { request in

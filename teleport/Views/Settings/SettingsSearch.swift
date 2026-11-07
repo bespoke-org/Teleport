@@ -27,7 +27,7 @@ enum SettingsSearch {
             entry(.general, "Show Teleport in Dock", "app switcher cmd tab"),
             entry(.general, "Animate menu bar icon", "animation"),
             entry(.general, "Show portal latency", "ping speed menu bar"),
-            entry(.general, "Portal order", "sort subscription"),
+            entry(.general, "Portal order", "sort subscription original name latency"),
             entry(.general, "Launch at login", "startup automatic start"),
             entry(.general, "Connect on launch", "startup automatic connection"),
             entry(.general, "App icon", "appearance color palette graphite purple teal orange"),

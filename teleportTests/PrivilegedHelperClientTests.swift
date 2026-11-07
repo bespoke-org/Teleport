@@ -172,6 +172,75 @@ private final class LostStopReplyConnectionFactory: @unchecked Sendable {
 }
 
 final class PrivilegedHelperClientTests: XCTestCase {
+    @MainActor
+    func testReconnectResolvesNewEndpointBeforeStoppingTunnelDNS() async throws {
+        try await assertReconnectResolution(availableBeforeStop: true)
+    }
+
+    @MainActor
+    func testReconnectRetriesResolutionAfterStoppingBrokenTunnel() async throws {
+        try await assertReconnectResolution(availableBeforeStop: false)
+    }
+
+    @MainActor
+    func testCancelledReconnectStillStopsPreviousSession() async throws {
+        try await assertReconnectResolution(availableBeforeStop: true, cancelBeforeReconnect: true)
+    }
+
+    @MainActor
+    private func assertReconnectResolution(availableBeforeStop: Bool, cancelBeforeReconnect: Bool = false) async throws {
+        let paths = try temporaryRuntimePaths(named: "reconnect-dns")
+        defer { removeTemporaryRuntimePaths(paths) }
+        let sessionID = UUID()
+        let state = XrayTunSessionState(sessionID: sessionID, pid: nil, protectedHosts: ["192.0.2.1"],
+                                        tunnelInterfaceName: "utun10", outboundInterface: "en0",
+                                        configPath: paths.configFileURL.path, startedAt: Date())
+        try JSONEncoder().encode(state).write(to: paths.sessionStateFileURL)
+        let network = ReconnectDNSProbe(availableBeforeStop: availableBeforeStop)
+        let transport = ScriptedTransport { command, data, _, _ in
+            XCTAssertEqual(command, .stopSession)
+            let request: TUNHelperRequestEnvelope<StopSessionRequest> = try TUNHelperCodec.decodeRequest(data)
+            network.stopTunnel()
+            return try response(requestID: request.requestID, sessionID: sessionID,
+                                payload: StopSessionResponse(phase: .idle, summary: nil, details: nil))
+        }
+        let manager = PrivilegedXrayRuntimeManager(
+            helperClient: PrivilegedHelperClient(transport: transport), paths: paths,
+            runtimeURLProvider: { URL(fileURLWithPath: "/tmp/test-xray") },
+            // End at the helper preparation boundary, before changing any real
+            // proxy settings, firewall rules, routes or processes.
+            ensureHelperInstalled: { _, _ in throw ReconnectDNSProbe.Reached.helperPreparation }
+        )
+        let backend = XrayTunConnectionBackend(
+            runtimeManager: manager,
+            routeInspector: XrayTunRouteInspector(runCommand: { network.command($0, $1) }),
+            systemProxyService: SystemProxyService(fileManager: ReconnectFileManager(root: paths.sessionStateFileURL.deletingLastPathComponent())),
+            leakGuard: LeakGuardService(isEnabled: false)
+        )
+        let configuration = try ConnectionLinkParser().parse(
+            "vless://123e4567-e89b-12d3-a456-426614174000@next.example.test:443?security=none&type=tcp"
+        )
+        let request = ConnectionRequest(defaultConnection: .init(id: UUID(), configuration: configuration),
+                                        localProxy: .default, splitTunnelPolicy: .init(rules: [], defaultAction: .proxy))
+        do {
+            let task = Task { try await backend.reconnect(request, reportPhase: { _ in }) }
+            if cancelBeforeReconnect { task.cancel() }
+            try await task.value
+            XCTFail("Expected to stop at helper preparation")
+        } catch ReconnectDNSProbe.Reached.helperPreparation {
+            XCTAssertFalse(cancelBeforeReconnect)
+            // Success: the next session was prepared despite DNS disappearing
+            // with the previous tunnel, as it can during resolver reconfiguration.
+        } catch is CancellationError {
+            XCTAssertTrue(cancelBeforeReconnect)
+        } catch {
+            XCTFail("Reconnect lost DNS before resolving its next endpoint: \(error)")
+        }
+        XCTAssertEqual(network.events.first, cancelBeforeReconnect ? "stop" : "resolve")
+        XCTAssertTrue(network.events.contains("stop"))
+        XCTAssertEqual(network.events.filter { $0 == "resolve" }.count, cancelBeforeReconnect ? 0 : (availableBeforeStop ? 1 : 2))
+    }
+
     func testEveryProtocolFailureHasAnActionableSummaryAndPreservesDetailsForUI() async throws {
         for code in TUNHelperFailureCode.allCases {
             let rawSummary = code == .commandFailed ? "Xray could not load the routing data. Check Tunnel settings." : "technical-\(code.rawValue)"
@@ -893,6 +962,34 @@ final class PrivilegedHelperClientTests: XCTestCase {
             tunnelInterfaceName: "utun9",
             outboundInterface: "en0"
         )
+    }
+}
+
+private final class ReconnectFileManager: FileManager {
+    let root: URL
+    init(root: URL) { self.root = root; super.init() }
+    override func urls(for directory: SearchPathDirectory, in domainMask: SearchPathDomainMask) -> [URL] {
+        directory == .applicationSupportDirectory ? [root] : super.urls(for: directory, in: domainMask)
+    }
+}
+
+private nonisolated final class ReconnectDNSProbe: @unchecked Sendable {
+    enum Reached: Error { case helperPreparation }
+    private let lock = NSLock()
+    private var stopped = false
+    private var recordedEvents: [String] = []
+    private let availableBeforeStop: Bool
+    init(availableBeforeStop: Bool) { self.availableBeforeStop = availableBeforeStop }
+    var events: [String] { lock.withLock { recordedEvents } }
+    func stopTunnel() { lock.withLock { stopped = true; recordedEvents.append("stop") } }
+    func command(_ executable: String, _ arguments: [String]) -> String? {
+        lock.withLock {
+            if executable.hasSuffix("dscacheutil") {
+                recordedEvents.append("resolve")
+                return (stopped != availableBeforeStop) ? "ip_address: 192.0.2.2\n" : nil
+            }
+            return "interface: en0\n"
+        }
     }
 }
 

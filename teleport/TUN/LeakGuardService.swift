@@ -92,9 +92,18 @@ actor LeakGuardService {
     /// fail the app over a path it could not open. A path that could not be closed
     /// is bounded by the helper's lease, which the renewal loop re-establishes from
     /// the set held here.
-    func retainProbeHosts(_ addresses: [String]) async {
-        guard probeExemptions.retain(addresses) else { return }
-        await reengageForProbeHosts()
+    func retainProbeHosts(_ addresses: [String]) async -> Bool {
+        guard probeExemptions.canRetain(addresses, protectedHosts: protectedHosts) else { return false }
+        guard probeExemptions.retain(addresses) else { return true }
+        guard isEnabled, stage != nil else { return true }
+        do {
+            try await engage()
+            return true
+        } catch {
+            _ = probeExemptions.release(addresses)
+            log.warn(Self.subsystem, "could not open a path for a health check: \(LogFormat.error(error))")
+            return false
+        }
     }
 
     func releaseProbeHosts(_ addresses: [String]) async {
@@ -141,7 +150,7 @@ actor LeakGuardService {
         }
         try await client.engageLeakGuard(
             tunnelInterfaceName: tunnelInterfaceName,
-            protectedHosts: protectedHosts + probeExemptions.addresses,
+            protectedHosts: probeExemptions.hostsForGuard(protectedHosts: protectedHosts),
             leaseSeconds: Self.leaseSeconds
         )
         startRenewing()

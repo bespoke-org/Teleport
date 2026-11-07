@@ -156,9 +156,13 @@ final class AppViewModel: ObservableObject {
     /// policy can be recorded once the provider reports `.connected`. Not a queue.
     private var inFlightConnectionRequest: (operationID: UUID, request: ConnectionRequest, sources: GeodataSources)?
     private var appliedSplitTunnelRules: [SplitTunnelRule]?
+    private var appliedConnectionIDs: Set<UUID> = []
     private var appliedSplitTunnelDefaultAction: SplitTunnelRuleAction?
     private var appliedGeodataSources: GeodataSources?
     private let geodataUpdateCoordinator: GeodataUpdateCoordinator
+    // Removed subscription entries remain available only to the running session's
+    // selection. They are never written back into the refreshed subscription.
+    private var removedSessionConnections: [UUID: SavedConnection] = [:]
     private var savedConnectionsByID: [UUID: SavedConnection] = [:]
     private var importedConnectionsBySourceID: [UUID: [SavedConnection]] = [:]
     private var importedConnectionCountsBySourceID: [UUID: Int] = [:]
@@ -285,7 +289,7 @@ final class AppViewModel: ObservableObject {
 
     var selectedConnection: SavedConnection? {
         guard let selectedConnectionID else { return savedConnections.first }
-        return savedConnectionsByID[selectedConnectionID] ?? savedConnections.first
+        return savedConnectionsByID[selectedConnectionID] ?? removedSessionConnections[selectedConnectionID] ?? savedConnections.first
     }
 
     var selectedConfiguration: ConnectionConfiguration? {
@@ -363,6 +367,8 @@ final class AppViewModel: ObservableObject {
     func isConnectionInUse(id: UUID) -> Bool {
         guard hasActiveConnectionSession else { return false }
         return selectedConnectionID == id
+            || appliedConnectionIDs.contains(id)
+            || removedSessionConnections[id] != nil
             || connectingSelection?.connectionID == id
             || routedConnections.contains { $0.id == id }
             || inFlightConnectionRequest?.request.additionalConnections.contains { $0.id == id } == true
@@ -370,6 +376,7 @@ final class AppViewModel: ObservableObject {
 
     private func isSubscriptionInUse(id: UUID) -> Bool {
         importedConnections(for: id).contains { isConnectionInUse(id: $0.id) }
+            || (hasActiveConnectionSession && removedSessionConnections.values.contains { $0.source?.subscriptionSourceID == id })
     }
 
     var isConnected: Bool {
@@ -797,6 +804,7 @@ final class AppViewModel: ObservableObject {
         connectionState = .idle
         hasObservedInitialConnectionState = false
         inFlightConnectionRequest = nil
+        appliedConnectionIDs = []
         appliedSplitTunnelRules = nil
         appliedSplitTunnelDefaultAction = nil
         appliedGeodataSources = nil
@@ -1375,6 +1383,7 @@ final class AppViewModel: ObservableObject {
 
     func connect() {
         isLaunchConnectionPending = false
+        discardRemovedSessionConnections()
         guard let selectedConfiguration else {
             setStoredError("Add and select a portal first")
             return
@@ -1743,12 +1752,14 @@ final class AppViewModel: ObservableObject {
             // no establishment time at all, and the wake that follows rebuilds it.
             sessionEstablishedAt = isAsleep ? nil : Date()
             if let inFlightConnectionRequest {
+                appliedConnectionIDs = Set(inFlightConnectionRequest.request.connections.map(\.id))
                 appliedSplitTunnelRules = inFlightConnectionRequest.request.splitTunnelPolicy.rules
                 appliedSplitTunnelDefaultAction = inFlightConnectionRequest.request.splitTunnelPolicy.defaultAction
                 appliedGeodataSources = inFlightConnectionRequest.sources
                 self.inFlightConnectionRequest = nil
                 setStoredError(nil)
             } else if appliedSplitTunnelRules == nil {
+                appliedConnectionIDs = Set(routedConnections.map(\.id))
                 appliedSplitTunnelRules = activeSplitTunnelRules
                 appliedSplitTunnelDefaultAction = activeSplitTunnelDefaultAction
                 appliedGeodataSources = connectionTunnelProfile?.geodataSources ?? GeodataSources()
@@ -1760,6 +1771,7 @@ final class AppViewModel: ObservableObject {
         case .idle:
             sessionEstablishedAt = nil
             inFlightConnectionRequest = nil
+            appliedConnectionIDs = []
             appliedSplitTunnelRules = nil
             appliedSplitTunnelDefaultAction = nil
             appliedGeodataSources = nil
@@ -1767,8 +1779,30 @@ final class AppViewModel: ObservableObject {
         case .preparing, .awaitingUserApproval, .connecting, .disconnecting:
             break
         }
+        if case .idle = state, !isOperationPending { discardRemovedSessionConnections() }
         updateMenuBarAnimation()
         connectOnLaunchIfNeeded()
+    }
+
+    private func discardRemovedSessionConnections() {
+        guard !removedSessionConnections.isEmpty else { return }
+        let nextSelectionID = selectionForNextConnectionID
+        removedSessionConnections.removeAll()
+        selectedConnectionID = nextSelectionID
+        normalizeTunnelTarget()
+        schedulePersist()
+    }
+
+    /// If the current portal disappeared, prefer its refreshed subscription over
+    /// an unrelated manual portal when saving or starting the next connection.
+    private var selectionForNextConnectionID: UUID? {
+        if let selectedConnectionID, savedConnectionsByID[selectedConnectionID] != nil { return selectedConnectionID }
+        if let selectedConnectionID,
+           let sourceID = removedSessionConnections[selectedConnectionID]?.source?.subscriptionSourceID,
+           let replacement = savedConnections.first(where: { $0.source?.subscriptionSourceID == sourceID }) {
+            return replacement.id
+        }
+        return savedConnections.first?.id
     }
 
     private func connectOnLaunchIfNeeded() {
@@ -1794,6 +1828,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private func reconnectToSelectedConnection(afterUplinkChange: Bool = false) {
+        discardRemovedSessionConnections()
         guard let selectedConfiguration else {
             setStoredError("Add and select a portal first")
             return
@@ -1862,7 +1897,7 @@ final class AppViewModel: ObservableObject {
                 self?.finishConnectionOperation(operationID, discardPendingRequest: true)
                 if afterUplinkChange && !hasPendingSelection {
                     switch error as? XrayTunConnectionError {
-                    case .proxyAddressResolutionFailed, .proxyRouteUnavailable:
+                    case .proxyAddressResolutionFailed, .proxyRouteUnavailable, .proxyIPv6RouteUnavailable, .noReachableGroupMembers:
                         self?.retryReconnectAfterUplinkChange()
                     default:
                         break
@@ -1890,6 +1925,7 @@ final class AppViewModel: ObservableObject {
         }
         pendingOperationCount = max(0, pendingOperationCount - 1)
         isOperationPending = pendingOperationCount > 0
+        if !isOperationPending, case .idle = connectionState { discardRemovedSessionConnections() }
         guard !isOperationPending, !isTerminating, let pendingID = pendingConnectionSelectionID else { return }
         pendingConnectionSelectionID = nil
         guard pendingID == selectedConnectionID, savedConnectionsByID[pendingID] != nil else { return }
@@ -2010,12 +2046,6 @@ final class AppViewModel: ObservableObject {
         origin: SubscriptionRefreshOrigin = .userInitiated
     ) {
         guard let source = subscriptionSources.first(where: { $0.id == id }) else { return }
-        if isSubscriptionInUse(id: id) {
-            if origin == .userInitiated {
-                setStoredError("Disconnect before refreshing the active subscription")
-            }
-            return
-        }
 
         startSubscriptionRefresh(for: source, autoSelectFirstImported: autoSelectFirstImported, origin: origin)
     }
@@ -2032,7 +2062,7 @@ final class AppViewModel: ObservableObject {
             $0.lastError = nil
         }
         if origin == .userInitiated { setStoredError(nil) }
-        persistSettingError()
+        schedulePersist()
 
         let parser = parser
         let subscriptionClient = subscriptionClient
@@ -2049,16 +2079,21 @@ final class AppViewModel: ObservableObject {
                     throw SubscriptionError.invalidURL
                 }
 
-                let fetched = try await subscriptionClient.fetch(from: url)
+                // Download decoding, JSON/link parsing and deduplication can be
+                // expensive. An ordinary Task here inherits the main actor.
+                let (fetched, importResult) = try await Task.detached(priority: .utility) {
+                    let fetched = try await subscriptionClient.fetch(from: url)
+                    let result = try SubscriptionImportProcessor.importEntries(
+                        candidates: fetched.candidates,
+                        parser: parser,
+                        sourceID: source.id,
+                        filterDuplicateImports: source.filterDuplicateImports
+                    )
+                    return (fetched, result)
+                }.value
                 // A newer refresh (or source deletion) invalidates this request.
                 // Cosmetic URL edits do not invalidate a pending import.
                 guard self?.subscriptionRefreshTokens[source.id] == refreshToken else { return }
-                let importResult = try SubscriptionImportProcessor.importEntries(
-                    candidates: fetched.candidates,
-                    parser: parser,
-                    sourceID: source.id,
-                    filterDuplicateImports: source.filterDuplicateImports
-                )
                 let importStatus = [importResult.statusMessage, fetched.routingWarning]
                     .compactMap { $0 }.joined(separator: " ")
 
@@ -2078,7 +2113,7 @@ final class AppViewModel: ObservableObject {
                     $0.lastError = error.localizedDescription
                 }
                 if origin == .userInitiated { self?.applyStoredError(error) }
-                self?.persistSettingError()
+                self?.schedulePersist()
             }
         }
     }
@@ -2107,19 +2142,16 @@ final class AppViewModel: ObservableObject {
         autoSelectFirstImported: Bool,
         origin: SubscriptionRefreshOrigin
     ) {
+        // The provider already owns an immutable connection request. Catalog
+        // updates can be saved immediately without rebuilding that session.
         if isSubscriptionInUse(id: sourceID) {
-            refreshingSubscriptionIDs.remove(sourceID)
-            // A connection can start while the download is in flight. Keep the
-            // active configs and refresh timestamp so the next timer can retry.
-            if origin == .userInitiated {
-                updateSubscriptionSource(sourceID) {
-                    $0.lastError = "Disconnect before refreshing the active subscription"
-                }
-                setStoredError("Disconnect before refreshing the active subscription")
-                persistSettingError()
-            }
-            return
+            hasDeferredSubscriptionRoutingChanges = true
+            splitTunnelApplyWorkItem?.cancel()
+            splitTunnelApplyWorkItem = nil
+            pendingSplitTunnelLiveApply = false
         }
+        let previousSelectionID = selectedConnectionID
+        let inUseConnections = savedConnections.filter { isConnectionInUse(id: $0.id) }
 
         let existingConnectionsForReconcile = savedConnections.map { connection in
             var connection = connection
@@ -2135,11 +2167,21 @@ final class AppViewModel: ObservableObject {
             autoSelectFirstImported: autoSelectFirstImported
         )
 
+        let replacementIDs = Set(replacementResult.savedConnections.map(\.id))
+        for connection in inUseConnections where !replacementIDs.contains(connection.id) {
+            removedSessionConnections[connection.id] = connection
+        }
+        let removedIDs = Set(savedConnections.map(\.id)).subtracting(replacementIDs)
+        cancelHealthProbes(ids: removedIDs)
         savedConnections = replacementResult.savedConnections
         syncHealthChecksFromSavedConnections()
         invalidateHealthChecksForImportedConnections(from: sourceID)
         rebuildSavedConnectionIndexes()
-        selectedConnectionID = replacementResult.selectedConnectionID
+        if let previousSelectionID, removedSessionConnections[previousSelectionID] != nil {
+            selectedConnectionID = previousSelectionID
+        } else {
+            selectedConnectionID = replacementResult.selectedConnectionID
+        }
 
         if let routing { importTunnelProfile(routing, sourceID: sourceID) }
         normalizeTunnelTarget()
@@ -2153,7 +2195,7 @@ final class AppViewModel: ObservableObject {
         refreshingSubscriptionIDs.remove(sourceID)
         if origin == .userInitiated { setStoredError(nil) }
         updateMenuBarAnimation()
-        persistSettingError()
+        schedulePersist()
         refreshSubscriptionHealth(id: sourceID, force: true)
     }
 
@@ -2301,11 +2343,13 @@ final class AppViewModel: ObservableObject {
     }
 
     private func sortedImportedConnections(_ connections: [SavedConnection]) -> [SavedConnection] {
-        connections.sorted { lhs, rhs in
-            switch subscriptionConnectionSort {
-            case .name:
-                return compareByName(lhs, rhs)
-            case .latency:
+        switch subscriptionConnectionSort {
+        case .original:
+            return connections
+        case .name:
+            return connections.sorted(by: compareByName)
+        case .latency:
+            return connections.sorted { lhs, rhs in
                 let lhsKey = latencySortKey(for: lhs)
                 let rhsKey = latencySortKey(for: rhs)
                 if lhsKey != rhsKey {
@@ -2350,7 +2394,7 @@ final class AppViewModel: ObservableObject {
 
     private func normalizeSelection() {
         if let selectedConnectionID,
-           savedConnections.contains(where: { $0.id == selectedConnectionID }) {
+           (savedConnections.contains(where: { $0.id == selectedConnectionID }) || removedSessionConnections[selectedConnectionID] != nil) {
             return
         }
 
@@ -2400,7 +2444,7 @@ final class AppViewModel: ObservableObject {
         return AppSnapshot(
             savedConnections: persistedConnections,
             subscriptionSources: subscriptionSources,
-            selectedConnectionID: selectedConnectionID ?? savedConnections.first?.id,
+            selectedConnectionID: selectionForNextConnectionID,
             proxyEndpoint: proxyEndpoint,
             connectionMode: connectionMode,
             subscriptionConnectionSort: subscriptionConnectionSort,
@@ -2418,7 +2462,12 @@ final class AppViewModel: ObservableObject {
     }
 
     private func persist() throws {
-        try store.save(makeSnapshot())
+        // A synchronous edit must supersede a queued refresh snapshot. Serialize
+        // it after any save already running so older state cannot win on disk.
+        persistWorkItem?.cancel()
+        persistWorkItem = nil
+        let snapshot = makeSnapshot()
+        try persistenceQueue.sync { try store.save(snapshot) }
     }
 }
 

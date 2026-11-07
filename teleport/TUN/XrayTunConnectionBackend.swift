@@ -21,22 +21,6 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
         self.leakGuard = leakGuard
     }
 
-    /// The reachable numeric address of one server and the physical interface
-    /// that reaches it.
-    private func protectedRoute(for configuration: ConnectionConfiguration) throws -> (address: String, interface: String) {
-        let resolvedAddresses = routeInspector.resolvedAddresses(for: configuration.host)
-        guard !resolvedAddresses.isEmpty else {
-            throw XrayTunConnectionError.proxyAddressResolutionFailed(configuration.host)
-        }
-        guard let route = resolvedAddresses.lazy.compactMap({ address -> (String, String)? in
-            guard let interface = self.routeInspector.outboundInterface(for: address) else { return nil }
-            return (address, interface)
-        }).first else {
-            throw XrayTunConnectionError.proxyRouteUnavailable(configuration.host)
-        }
-        return route
-    }
-
     func hasRestorableState() -> Bool { false }
 
     func hasActiveRuntimeSession() async -> Bool {
@@ -46,6 +30,11 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
     func restorePreviousState() throws {}
 
     func start(_ request: ConnectionRequest, reportPhase: @escaping @Sendable (ConnectionState) -> Void) async throws {
+        try await start(request, resolvedEndpoints: [:], reportPhase: reportPhase)
+    }
+
+    private func start(_ request: ConnectionRequest, resolvedEndpoints: [String: [String]],
+                       reportPhase: @escaping @Sendable (ConnectionState) -> Void) async throws {
         // The pre-flight below reads routes and resolves names but changes nothing
         // on the machine, so a disconnect or quit that arrives meanwhile may cancel
         // it. The blocking work runs on a dispatch queue where task cancellation is
@@ -64,29 +53,24 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
                 // avoids a second DNS answer selecting a different address after the
                 // TUN defaults have been installed. The uplink comes from the default
                 // connection's route, as it did when a session had only one server.
-                let (defaultAddress, outboundInterface) = try self.protectedRoute(for: request.defaultConnection.configuration)
-                try cancellation.check()
-                var outbounds = [RoutedProxyOutbound(
-                    connectionID: request.defaultConnection.id,
-                    configuration: request.defaultConnection.configuration,
-                    serverAddress: defaultAddress
-                )]
-                var protectedHosts = [defaultAddress]
-                // An additional connection that cannot be routed fails the whole start:
-                // its rules would otherwise fall back to the default outbound without
-                // the user being told their traffic went somewhere else.
-                for connection in request.additionalConnections {
-                    let (address, _) = try self.protectedRoute(for: connection.configuration)
-                    try cancellation.check()
-                    outbounds.append(RoutedProxyOutbound(
-                        connectionID: connection.id,
-                        configuration: connection.configuration,
-                        serverAddress: address
-                    ))
-                    if !protectedHosts.contains(address) {
+                var outbounds: [RoutedProxyOutbound] = []
+                var protectedHosts: [String] = []
+                var outboundInterface = ""
+                for connection in [request.defaultConnection] + request.additionalConnections {
+                    let prepared = try RoutedProxyOutbound.resolve(connectionID: connection.id, configuration: connection.configuration) { host in
+                        try cancellation.check()
+                        return try self.routeInspector.protectedRoute(for: host, resolvedAddresses: resolvedEndpoints[host])
+                    }
+                    if outbounds.isEmpty { outboundInterface = prepared.interface }
+                    outbounds.append(prepared.outbound)
+                    if !prepared.outbound.unavailableMemberHosts.isEmpty {
+                        TeleportLog.shared.warn("tun", "auto-selection portal: \(prepared.outbound.unavailableMemberHosts.count) member hosts unavailable on this uplink; using \(prepared.outbound.memberAddresses.count) reachable hosts for this session")
+                    }
+                    for address in prepared.outbound.memberAddresses.values.sorted() where !protectedHosts.contains(address) {
                         protectedHosts.append(address)
                     }
                 }
+                try cancellation.check()
 
                 let directSendThrough = routeInspector.ipv4Address(for: outboundInterface)
                 let tunnelInterfaceName = routeInspector.nextAvailableTunnelInterfaceName()
@@ -160,9 +144,37 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
     }
 
     func reconnect(_ request: ConnectionRequest, reportPhase: @escaping @Sendable (ConnectionState) -> Void) async throws {
+        // The running tunnel owns the system's preferred resolver. Resolve the
+        // next endpoints while that resolver can still answer, then retain those
+        // answers for this attempt. macOS may keep querying the old resolver
+        // briefly after the helper removes it. Routes must still be inspected
+        // after teardown so none of the old tunnel's routes are reused.
+        let cancellation = CancellationFlag()
+        let resolvedEndpoints = await withTaskCancellationHandler {
+            await BlockingWork.run { [routeInspector] in
+                var answers: [String: [String]] = [:]
+                var seen: Set<String> = []
+                // A broken old tunnel must not add one DNS timeout per member
+                // before we can stop it. Missing answers retry after teardown.
+                let deadline = ContinuousClock.now + .seconds(5)
+                for connection in request.connections {
+                    for endpoint in connection.configuration.endpointConfigurations where seen.insert(endpoint.host).inserted {
+                        do { try cancellation.check() } catch { return answers }
+                        guard ContinuousClock.now < deadline else { return answers }
+                        let addresses = routeInspector.resolvedAddresses(for: endpoint.host)
+                        if !addresses.isEmpty { answers[endpoint.host] = addresses }
+                    }
+                }
+                return answers
+            }
+        } onCancel: {
+            cancellation.cancel()
+        }
+        // Cancellation still tears down the old session before the provider
+        // reports idle. start() observes cancellation before any new mutation.
         try await runtimeManager.stop()
         do {
-            try await start(request, reportPhase: reportPhase)
+            try await start(request, resolvedEndpoints: resolvedEndpoints, reportPhase: reportPhase)
         } catch is CancellationError {
             // The old tunnel is already gone and its proxy snapshot still held, so
             // a cancelled pre-flight here has something to put back after all.
@@ -196,19 +208,38 @@ nonisolated private final class CancellationFlag: @unchecked Sendable {
     }
 }
 
-enum XrayTunConnectionError: LocalizedError {
+nonisolated enum XrayTunConnectionError: LocalizedError {
     case existingVPNDetected(String)
     case proxyAddressResolutionFailed(String)
     case proxyRouteUnavailable(String)
+    case proxyIPv6RouteUnavailable(String)
+    case noReachableGroupMembers(dnsFailures: Int, ipv6RouteFailures: Int, routeFailures: Int)
 
     var errorDescription: String? {
         switch self {
         case let .existingVPNDetected(interface):
             return "Another VPN appears to be active on \(interface). Disconnect it before using Teleport TUN mode, or use System Proxy mode."
         case let .proxyAddressResolutionFailed(host):
-            return "Teleport could not resolve the proxy server \(host) before installing TUN routes. Check the network and try again."
+            return "DNS lookup failed for proxy server \(host). Check the network and try again."
+        case let .proxyIPv6RouteUnavailable(host):
+            return "IPv6 route unavailable for proxy server \(host). The available server addresses are IPv6-only, but this network has no route to them. Use a network with IPv6 connectivity or choose another portal."
+        case .noReachableGroupMembers:
+            return "No eligible server in this group is reachable on the current network. Check the network or choose another portal."
         case let .proxyRouteUnavailable(host):
-            return "Teleport could not find a reachable physical route to the proxy server \(host). Reconnect to the network and try again."
+            return "No physical route to proxy server \(host). Reconnect to the network and try again."
         }
+    }
+}
+
+// Counts describe only members eligible for selection or fallback, excluding
+// unused provider outbounds. Keep endpoints out of the aggregate diagnosis.
+extension XrayTunConnectionError {
+    var failureReason: String? {
+        guard case let .noReachableGroupMembers(dns, ipv6, route) = self else { return nil }
+        return [
+            dns > 0 ? "DNS lookup failures: \(dns)." : nil,
+            ipv6 > 0 ? "IPv6 route failures: \(ipv6)." : nil,
+            route > 0 ? "Physical route failures: \(route)." : nil
+        ].compactMap { $0 }.joined(separator: " ")
     }
 }

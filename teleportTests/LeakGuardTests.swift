@@ -132,6 +132,28 @@ final class LeakGuardTests: XCTestCase {
         )
     }
 
+    func testCompositeProbeAdmissionRespectsSharedAddressBudget() {
+        var exemptions = ProbeHostExemptions()
+        let session = (1...20).map { "192.0.2.\($0)" }
+        let group = (1...44).map { "198.51.100.\($0)" }
+        XCTAssertTrue(exemptions.canRetain(group, protectedHosts: session))
+        _ = exemptions.retain(group)
+        XCTAssertTrue(exemptions.canRetain(group, protectedHosts: session), "Shared members need no extra budget")
+        XCTAssertFalse(exemptions.canRetain(["203.0.113.1"], protectedHosts: session))
+        XCTAssertEqual(exemptions.hostsForGuard(protectedHosts: session).count, 64)
+        _ = exemptions.release(group)
+        XCTAssertTrue(exemptions.canRetain(["203.0.113.1"], protectedHosts: session))
+    }
+
+    func testLargerSessionCannotPreventGuardRenewalDuringProbes() {
+        var exemptions = ProbeHostExemptions()
+        _ = exemptions.retain((1...50).map { "198.51.100.\($0)" })
+        let session = (1...30).map { "192.0.2.\($0)" }
+        let hosts = exemptions.hostsForGuard(protectedHosts: session)
+        XCTAssertEqual(hosts.count, TUNHelperProtocol.maximumProtectedHosts)
+        XCTAssertTrue(Set(session).isSubset(of: Set(hosts)))
+    }
+
     /// `ConnectionHealthProbeQueue`'s fan-out, which cannot be imported here without
     /// the whole view model behind it. Raising it there without raising what the
     /// helper accepts is exactly what this check exists to catch.

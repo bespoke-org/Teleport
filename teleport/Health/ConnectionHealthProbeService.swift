@@ -9,7 +9,9 @@ struct ConnectionHealthProbeResult {
     let failureSummary: String?
 }
 
-final class ConnectionHealthProbeService: @unchecked Sendable {
+// Runtime launch/teardown and config I/O must not inherit the app's default
+// MainActor isolation. The queue runs probes in detached utility tasks.
+nonisolated final class ConnectionHealthProbeService: @unchecked Sendable {
     private let tcpTimeoutSeconds: Int
     private let tunnelProbeTimeoutSeconds: Int
     private let tunnelProbeURL: URL
@@ -52,20 +54,29 @@ final class ConnectionHealthProbeService: @unchecked Sendable {
         // servers, and drops it silently — so a server outside the session has to
         // be let out to before it can be asked anything. Opened once for both
         // attempts below, and closed as soon as there is an answer.
-        let openedAddresses: [String]
-        switch await uplinkExemption?.open(host: connection.configuration.host) ?? .notNeeded {
-        case .notNeeded:
-            openedAddresses = []
-        case let .opened(addresses):
-            openedAddresses = addresses
-        case .couldNotResolve:
-            return ConnectionHealthProbeResult(
-                state: .unknown,
-                checkedAt: checkedAt,
-                latencyMilliseconds: nil,
-                latencyKind: nil,
-                failureSummary: "This server's address could not be resolved, so the probe could not be let past the leak guard"
-            )
+        var openedAddresses: [String] = []
+        var seenHosts = Set<String>()
+        for endpoint in connection.configuration.endpointConfigurations where seenHosts.insert(endpoint.host).inserted {
+            switch await uplinkExemption?.open(host: endpoint.host) ?? .notNeeded {
+            case .notNeeded:
+                break
+            case let .opened(addresses):
+                openedAddresses.append(contentsOf: addresses)
+            case .couldNotResolve:
+                if !openedAddresses.isEmpty { await uplinkExemption?.close(openedAddresses) }
+                return ConnectionHealthProbeResult(
+                    state: .unknown,
+                    checkedAt: checkedAt,
+                    latencyMilliseconds: nil,
+                    latencyKind: nil,
+                    failureSummary: "A server address could not be resolved, so the probe could not be let past the leak guard"
+                )
+            case .unavailable:
+                if !openedAddresses.isEmpty { await uplinkExemption?.close(openedAddresses) }
+                return ConnectionHealthProbeResult(state: .unknown, checkedAt: checkedAt,
+                    latencyMilliseconds: nil, latencyKind: nil,
+                    failureSummary: "The leak guard could not open a path for this probe")
+            }
         }
 
         var outcome = await proxyLatencyCheck(connection)

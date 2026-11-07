@@ -32,7 +32,7 @@ nonisolated struct LeakGuardProbeExemption: ProbeUplinkExemption {
             routeInspector.resolvedAddresses(for: host).prefix(ProbeHostExemptions.maximumAddressesPerProbe)
         )
         guard !addresses.isEmpty else { return .couldNotResolve }
-        await leakGuard.retainProbeHosts(addresses)
+        guard await leakGuard.retainProbeHosts(addresses) else { return .unavailable }
         return .opened(addresses)
     }
 

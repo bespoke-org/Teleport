@@ -15,7 +15,7 @@ enum SplitTunnelRuleValidationError: LocalizedError, Equatable {
     }
 }
 
-enum SplitTunnelRuleClassifier {
+nonisolated enum SplitTunnelRuleClassifier {
     static func classify(_ rawValue: String) -> Result<(kind: SplitTunnelRuleKind, value: String), SplitTunnelRuleValidationError> {
         let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .failure(.emptyValue) }

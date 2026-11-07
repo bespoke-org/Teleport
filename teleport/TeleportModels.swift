@@ -45,6 +45,7 @@ enum ConnectionMode: String, Codable, CaseIterable, Identifiable {
 }
 
 enum SubscriptionConnectionSort: String, Codable, CaseIterable, Identifiable {
+    case original
     case name
     case latency
 
@@ -52,6 +53,8 @@ enum SubscriptionConnectionSort: String, Codable, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
+        case .original:
+            return "Original"
         case .name:
             return "Name"
         case .latency:
@@ -229,7 +232,7 @@ nonisolated enum ConnectionSecurity: String, Codable, CaseIterable {
 }
 
 nonisolated struct ConnectionConfiguration: Codable, Equatable {
-    let rawLink: String
+    var rawLink: String
     let protocolType: ConnectionProtocolType
     let host: String
     let port: Int
@@ -254,6 +257,14 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
     /// fields above are unused placeholders for that protocol.
     let wireguard: WireGuardParameters?
     let hysteria: HysteriaParameters?
+    var outboundMux: XrayJSONObject?
+    var xhttpExtra: XrayJSONObject?
+    var composite: XrayCompositeProfile?
+
+    /// Every remote endpoint that must bypass the TUN and leak guard.
+    var endpointConfigurations: [ConnectionConfiguration] {
+        composite?.members.map(\.configuration) ?? [self]
+    }
 
     nonisolated var displayName: String {
         if let remarks, !remarks.isEmpty {
@@ -263,10 +274,12 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
     }
 
     var endpointSummary: String {
-        "\(host):\(port)"
+        if let composite { return "\(composite.members.count) servers" }
+        return "\(host):\(port)"
     }
 
     var descriptiveSummary: String {
+        if let composite { return "Auto • \(composite.members.count) servers • \(composite.strategy)" }
         // WireGuard carries its own transport and encryption, so the stream-layer
         // summary would only describe unused placeholder fields.
         if protocolType == .wireguard {
@@ -288,6 +301,9 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
     }
 
     var securityWarningText: String? {
+        if let composite {
+            return composite.members.compactMap { $0.configuration.securityWarningText }.first
+        }
         // WireGuard always encrypts; its `.none` security is a placeholder for the
         // stream layer Xray does not use for this outbound.
         if protocolType == .wireguard {
@@ -317,7 +333,7 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
     }
 
     nonisolated var duplicateFilterIdentity: String {
-        if protocolType == .hysteria {
+        if protocolType == .hysteria || composite != nil || xhttpExtra != nil || outboundMux != nil {
             // Canonical JSON includes every supported setting, without the name.
             return withDisplayName("").rawLink
         }
@@ -383,7 +399,10 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
             grpcServiceName: grpcServiceName,
             transportMode: transportMode,
             wireguard: wireguard,
-            hysteria: hysteria
+            hysteria: hysteria,
+            outboundMux: outboundMux,
+            xhttpExtra: xhttpExtra,
+            composite: composite
         )
     }
 
@@ -428,6 +447,9 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
         case transportMode
         case wireguard
         case hysteria
+        case outboundMux
+        case xhttpExtra
+        case composite
     }
 
     nonisolated init(
@@ -453,7 +475,10 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
         grpcServiceName: String? = nil,
         transportMode: String? = nil,
         wireguard: WireGuardParameters? = nil,
-        hysteria: HysteriaParameters? = nil
+        hysteria: HysteriaParameters? = nil,
+        outboundMux: XrayJSONObject? = nil,
+        xhttpExtra: XrayJSONObject? = nil,
+        composite: XrayCompositeProfile? = nil
     ) {
         self.rawLink = rawLink
         self.protocolType = protocolType
@@ -478,6 +503,9 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
         self.transportMode = transportMode
         self.wireguard = wireguard
         self.hysteria = hysteria
+        self.outboundMux = outboundMux
+        self.xhttpExtra = xhttpExtra
+        self.composite = composite
     }
 
     init(from decoder: Decoder) throws {
@@ -505,6 +533,9 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
         transportMode = try container.decodeIfPresent(String.self, forKey: .transportMode)
         wireguard = try container.decodeIfPresent(WireGuardParameters.self, forKey: .wireguard)
         hysteria = try container.decodeIfPresent(HysteriaParameters.self, forKey: .hysteria)
+        outboundMux = try container.decodeIfPresent(XrayJSONObject.self, forKey: .outboundMux)
+        xhttpExtra = try container.decodeIfPresent(XrayJSONObject.self, forKey: .xhttpExtra)
+        composite = try container.decodeIfPresent(XrayCompositeProfile.self, forKey: .composite)
     }
 }
 
@@ -719,7 +750,7 @@ enum SplitTunnelRuleAction: String, Codable, CaseIterable, Identifiable, Equatab
     }
 }
 
-struct SplitTunnelRule: Codable, Equatable, Identifiable {
+nonisolated struct SplitTunnelRule: Codable, Equatable, Identifiable {
     let id: UUID
     var value: String
     var kind: SplitTunnelRuleKind
@@ -771,7 +802,7 @@ nonisolated struct GeodataSources: Codable, Equatable, Sendable {
     var geoipURLString: String?
 }
 
-struct SplitTunnelProfile: Codable, Equatable, Identifiable {
+nonisolated struct SplitTunnelProfile: Codable, Equatable, Identifiable {
     let id: UUID
     var name: String
     var rules: [SplitTunnelRule]
@@ -899,7 +930,7 @@ struct AppSnapshot: Codable, Equatable {
         selectedConnectionID: UUID?,
         proxyEndpoint: ProxyEndpoint,
         connectionMode: ConnectionMode = .tun,
-        subscriptionConnectionSort: SubscriptionConnectionSort = .name,
+        subscriptionConnectionSort: SubscriptionConnectionSort = .original,
         showsLatencyInMenuBarPicker: Bool = true,
         animatesMenuBarIcon: Bool = true,
         showsInDock: Bool = true,
@@ -962,7 +993,7 @@ struct AppSnapshot: Codable, Equatable {
         selectedConnectionID = try container.decodeIfPresent(UUID.self, forKey: .selectedConnectionID)
         proxyEndpoint = try container.decodeIfPresent(ProxyEndpoint.self, forKey: .proxyEndpoint) ?? .default
         connectionMode = try container.decodeIfPresent(ConnectionMode.self, forKey: .connectionMode) ?? .tun
-        subscriptionConnectionSort = try container.decodeIfPresent(SubscriptionConnectionSort.self, forKey: .subscriptionConnectionSort) ?? .name
+        subscriptionConnectionSort = try container.decodeIfPresent(SubscriptionConnectionSort.self, forKey: .subscriptionConnectionSort) ?? .original
         showsLatencyInMenuBarPicker = try container.decodeIfPresent(Bool.self, forKey: .showsLatencyInMenuBarPicker) ?? true
         animatesMenuBarIcon = try container.decodeIfPresent(Bool.self, forKey: .animatesMenuBarIcon) ?? true
         showsInDock = try container.decodeIfPresent(Bool.self, forKey: .showsInDock) ?? true

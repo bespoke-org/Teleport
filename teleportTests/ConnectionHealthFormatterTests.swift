@@ -51,6 +51,21 @@ final class ConnectionHealthFormatterTests: XCTestCase {
         }
     }
 
+    func testLocalRouteFailuresHaveSpecificLabelsWithoutClaimingServerFailure() {
+        for (reason, expected) in [
+            ("DNS lookup failed for proxy server proxy.example.test. Check the network and try again.", "DNS lookup failed"),
+            ("IPv6 route unavailable for proxy server proxy.example.test. The resolved addresses are IPv6-only.", "IPv6 unavailable"),
+            ("No physical route to proxy server proxy.example.test. Check the network.", "No route"),
+            ("No eligible server in this group is reachable on the current network. Try another portal.", "No reachable members"),
+            ("Teleport could not find a reachable physical route to the proxy server proxy.example.test.", "No route"),
+            ("A server address could not be resolved, so the probe could not be let past the leak guard", "DNS lookup failed")
+        ] {
+            let result = check(.unknown, reason: reason)
+            XCTAssertEqual(ConnectionHealthFormatter.label(for: result), expected)
+            XCTAssertEqual(result.state, .unknown)
+        }
+    }
+
     private func check(_ state: ConnectionHealthState, reason: String? = nil) -> ConnectionHealthCheck {
         ConnectionHealthCheck(state: state, checkedAt: nil, latencyMilliseconds: nil,
                               latencyKind: nil, failureSummary: reason)

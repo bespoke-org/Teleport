@@ -16,10 +16,31 @@ nonisolated enum ConnectionHealthFormatter {
         case .unknown:
             // A failed local check says nothing about the server's availability.
             if let reason = check.failureSummary, !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return "Check failed"
+                return localRouteFailureLabel(reason) ?? "Check failed"
             }
             return check.checkedAt == nil ? "Not checked" : "Unknown"
         }
+    }
+
+    /// Persisted summaries from connection checks include hostnames and recovery
+    /// text. Map only known local failure messages to bounded labels; preserve
+    /// the full diagnostic for the tooltip and keep the health state unknown.
+    private static func localRouteFailureLabel(_ summary: String) -> String? {
+        let text = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.hasPrefix("DNS lookup failed for proxy server ") ||
+            text.hasPrefix("Teleport could not resolve the proxy server ") ||
+            text == "A server address could not be resolved, so the probe could not be let past the leak guard" {
+            return "DNS lookup failed"
+        }
+        if text.hasPrefix("IPv6 route unavailable for proxy server ") { return "IPv6 unavailable" }
+        if text.hasPrefix("No physical route to proxy server ") ||
+            text.hasPrefix("Teleport could not find a reachable physical route to the proxy server ") {
+            return "No route"
+        }
+        if text.hasPrefix("No eligible server in this group is reachable on the current network.") {
+            return "No reachable members"
+        }
+        return nil
     }
 
     private static func failureLabel(_ summary: String?) -> String {
