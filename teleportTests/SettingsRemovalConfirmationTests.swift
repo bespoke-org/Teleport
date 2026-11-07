@@ -4,6 +4,26 @@ import XCTest
 
 @MainActor
 final class SettingsRemovalConfirmationTests: XCTestCase {
+    private var registeredApplicationIcon: NSImage?
+
+    override func setUp() {
+        super.setUp()
+        // NSAlert's nib resolves this named image during init, before its icon can
+        // be set. Avoid asking the runner's IconServices agent for xctest's icon:
+        // that synchronous lookup can hang when the agent has crashed.
+        let icon = NSImage(size: NSSize(width: 32, height: 32))
+        if icon.setName(NSImage.applicationIconName) {
+            registeredApplicationIcon = icon
+        }
+    }
+
+    override func tearDown() {
+        // Only remove our registration; a pre-existing cached icon is left alone.
+        registeredApplicationIcon?.setName(nil)
+        registeredApplicationIcon = nil
+        super.tearDown()
+    }
+
     func testRemovalAlertsAllowTerminationAndOnlyRemoveAfterConfirmation() async throws {
         _ = NSApplication.shared
         let state = RemovalState()
