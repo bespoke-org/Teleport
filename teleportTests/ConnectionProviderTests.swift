@@ -4,6 +4,154 @@ import XCTest
 
 final class ConnectionProviderTests: XCTestCase {
     @MainActor
+    func testConnectStartsWhileMenuRunLoopIsTracking() async throws {
+        let root = try makeIsolatedRoot("menu-tracking")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let backend = RecordingConnectionBackend()
+        let (model, store) = try makeLaunchFixture(root: root, mode: .tun, enabled: false, backend: backend)
+        defer { store.deleteStoredDataForTesting() }
+        await waitUntil("ready") { await MainActor.run { model.canConnect } }
+        model.connect()
+        // AppKit keeps dispatch-main actor jobs pending during menu tracking.
+        // A common-mode source must still submit work and deliver its state.
+        trackMenu(until: { model.isConnected })
+        XCTAssertEqual(backend.recordedCalls(), ["start"], "Connect must start before the menu closes or Quit is clicked")
+        XCTAssertTrue(model.isConnected, "Connection state must reach the open menu")
+        model.disconnect()
+        XCTAssertTrue(model.isDisconnecting)
+        XCTAssertFalse(model.canDisconnect)
+        trackMenu(until: { model.connectionState == .idle && !model.isOperationPending })
+        XCTAssertEqual(backend.recordedCalls(), ["start", "stop"])
+        XCTAssertFalse(model.isDisconnecting)
+        XCTAssertTrue(model.canChangeSelection, "The picker must become available while the menu stays open")
+    }
+
+    @MainActor
+    private func trackMenu(until completed: () -> Bool) {
+        // Do not add tracking to the common modes: menu tracking must work even
+        // when AppKit keeps the dispatch-main source out of its nested loop.
+        let timer = Timer(timeInterval: 0.005, repeats: true) { _ in }
+        RunLoop.main.add(timer, forMode: .eventTracking)
+        defer { timer.invalidate() }
+        let deadline = Date().addingTimeInterval(1)
+        while !completed() && Date() < deadline {
+            RunLoop.main.run(mode: .eventTracking, before: Date().addingTimeInterval(0.01))
+        }
+    }
+
+    @MainActor
+    func testImmediateDisconnectCancelsPendingConnectAndCoalescesClicks() async throws {
+        let root = try makeIsolatedRoot("immediate-disconnect")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let backend = RecordingConnectionBackend()
+        backend.startObservesCancellation = true
+        let (model, store) = try makeLaunchFixture(root: root, mode: .tun, enabled: false, backend: backend)
+        defer { store.deleteStoredDataForTesting() }
+        await waitUntil("ready") { await MainActor.run { model.canConnect } }
+        model.connect()
+        model.disconnect()
+        model.disconnect()
+        model.disconnect()
+        XCTAssertFalse(model.canDisconnect, "A queued disconnect must disable repeated teardown")
+        await waitUntil("cancelled") { await MainActor.run { !model.isOperationPending && model.connectionState == .idle } }
+        XCTAssertTrue(backend.recordedCalls().allSatisfy { $0 == "start" }, "A cancelled preflight must never commit or restart")
+        XCTAssertEqual(model.connectionState, .idle)
+        XCTAssertTrue(model.canChangeSelection)
+    }
+
+    @MainActor
+    func testImmediateQuitCancelsPendingConnect() async throws {
+        let root = try makeIsolatedRoot("immediate-quit")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let backend = RecordingConnectionBackend()
+        backend.startObservesCancellation = true
+        let (model, store) = try makeLaunchFixture(root: root, mode: .tun, enabled: false, backend: backend)
+        defer { store.deleteStoredDataForTesting() }
+        await waitUntil("ready") { await MainActor.run { model.canConnect } }
+        model.connect()
+        let completed = Flag()
+        model.handleAppTermination { completed.set() }
+        await waitUntil("quit completes") { completed.isSet }
+        XCTAssertTrue(backend.recordedCalls().allSatisfy { $0 == "start" }, "Quit must cancel preflight without committing or restarting")
+    }
+
+    @MainActor
+    func testUplinkReturningDuringTeardownReconnectsAfterItFinishes() async throws {
+        let root = try makeIsolatedRoot("uplink-during-stop")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let backend = RecordingConnectionBackend()
+        var uplink: SystemUplinkInventory.Uplink? = .init(interfaceName: "en0", routerAddress: "192.0.2.1")
+        let (model, store) = try makeLaunchFixture(root: root, mode: .tun, enabled: false, backend: backend,
+                                                  currentUplink: { uplink })
+        defer { store.deleteStoredDataForTesting() }
+        await waitUntil("ready") { await MainActor.run { model.canConnect } }
+        model.connect()
+        await waitUntil("connected") { await MainActor.run { model.isConnected && !model.isOperationPending } }
+        await backend.stopGate.enableBlocking()
+        uplink = nil
+        model.reconcileSessionWithUplink()
+        await backend.stopGate.waitUntilEntered()
+        uplink = .init(interfaceName: "en5", routerAddress: "192.0.2.2")
+        model.reconcileSessionWithUplink()
+        await backend.stopGate.open()
+        await waitUntil("reconnected without another path event") {
+            let ready = await MainActor.run { model.isConnected && !model.isOperationPending }
+            return ready && backend.recordedCalls() == ["start", "stop", "start"]
+        }
+        model.disconnect()
+        await waitUntil("cleanup") { await MainActor.run { !model.isOperationPending } }
+    }
+
+    @MainActor
+    func testDisconnectReleasesLeakGuardWhileMenuIsTracking() async throws {
+        let root = try makeIsolatedRoot("guard-menu-tracking")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let backend = RecordingConnectionBackend()
+        let transport = GuardTransport()
+        let guardService = LeakGuardService(client: PrivilegedHelperClient(transport: transport), isEnabled: true,
+                                            log: TeleportLog(directoryURL: root, fileName: "guard.log"))
+        let (model, store) = try makeLaunchFixture(root: root, mode: .tun, enabled: false, backend: backend,
+                                                  leakGuard: guardService)
+        defer { store.deleteStoredDataForTesting() }
+        await waitUntil("ready") { await MainActor.run { model.canConnect } }
+        model.connect()
+        await waitUntil("connected") { await MainActor.run { model.isConnected && !model.isOperationPending } }
+        try await guardService.armForSession(tunnelInterface: "utun123", protectedHosts: ["192.0.2.10"])
+        model.disconnect()
+        trackMenu(until: { model.connectionState == .idle && !model.isOperationPending })
+        XCTAssertTrue(transport.released.isSet, "Disconnected must mean the guard was released before the menu closes")
+        await guardService.disarm()
+    }
+
+    @MainActor
+    func testDisconnectReleasesGuardArmedByAConnectPastItsCommitPoint() async throws {
+        let root = try makeIsolatedRoot("guard-late-commit")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let backend = RecordingConnectionBackend()
+        let transport = GuardTransport()
+        let guardService = LeakGuardService(client: PrivilegedHelperClient(transport: transport), isEnabled: true,
+                                            log: TeleportLog(directoryURL: root, fileName: "guard.log"))
+        // This committed start ignores cancellation, like the real TUN backend.
+        await backend.startGate.enableBlocking()
+        backend.onCommittedStart = {
+            try? await guardService.armForSession(tunnelInterface: "utun123", protectedHosts: ["192.0.2.10"])
+        }
+        let (model, store) = try makeLaunchFixture(root: root, mode: .tun, enabled: false, backend: backend,
+                                                  leakGuard: guardService)
+        defer { store.deleteStoredDataForTesting() }
+        await waitUntil("ready") { await MainActor.run { model.canConnect } }
+        model.connect()
+        await backend.startGate.waitUntilEntered()
+        model.disconnect()
+        await backend.startGate.open()
+        await waitUntil("teardown completes") { await MainActor.run { !model.isOperationPending } }
+        let holdingUplink = await guardService.isHoldingUplink
+        XCTAssertFalse(holdingUplink, "A committed start must not leave the guard armed after manual teardown")
+        XCTAssertTrue(transport.released.isSet)
+        await guardService.disarm()
+    }
+
+    @MainActor
     func testUnconfirmedGuardReleaseRemainsActionable() async throws {
         let root = try makeIsolatedRoot("guard-release-failure")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -478,6 +626,7 @@ final class ConnectionProviderTests: XCTestCase {
     private func makeLaunchFixture(
         root: URL, mode: ConnectionMode, enabled: Bool,
         backend: RecordingConnectionBackend, hasConnections: Bool = true,
+        currentUplink: @escaping () -> SystemUplinkInventory.Uplink? = SystemUplinkInventory.current,
         leakGuard: LeakGuardService? = nil, supervisionInterval: TimeInterval = 60,
         verifyConnection: (@Sendable (ConnectionRequest) async throws -> Void)? = nil
     ) throws -> (AppViewModel, ConfigurationStore) {
@@ -505,7 +654,7 @@ final class ConnectionProviderTests: XCTestCase {
             connectionProviderFactory: ConnectionProviderFactory(systemProxyProvider: { provider }, tunProvider: { provider }),
             leakGuard: leakGuard ?? LeakGuardService(isEnabled: false, log: log),
             subscriptionClient: SubscriptionClient(), healthProbeService: ConnectionHealthProbeService(),
-            systemProxyService: SystemProxyService(fileManager: fileManager, log: log), log: log
+            systemProxyService: SystemProxyService(fileManager: fileManager, log: log), currentUplink: currentUplink, log: log
         )
         return (model, store)
     }
@@ -1332,6 +1481,7 @@ final class ConnectionProviderTests: XCTestCase {
         private var recordedCommands: [TUNHelperCommand] = []
         private var releaseFails = false
         let releaseGate = Gate()
+        let released = Flag()
 
         var commands: [TUNHelperCommand] { lock.withLock { recordedCommands } }
 
@@ -1349,6 +1499,7 @@ final class ConnectionProviderTests: XCTestCase {
                 requestID = request.requestID
                 await releaseGate.enter()
                 if lock.withLock({ releaseFails }) { throw TestError.stopFailed }
+                released.set()
             default:
                 XCTFail("Unexpected guard command: \(command)")
                 throw TestError.startFailed
@@ -1375,6 +1526,7 @@ final class ConnectionProviderTests: XCTestCase {
         private var inactiveChecks = 0
         /// Stands in for a pre-flight that polls for cancellation.
         var startObservesCancellation = false
+        var onCommittedStart: (@Sendable () async -> Void)?
         let startGate = Gate()
         let reconnectGate = Gate()
         let restoreGate = Gate()
@@ -1425,6 +1577,7 @@ final class ConnectionProviderTests: XCTestCase {
                 throw CancellationError()
             }
             await startGate.enter()
+            await onCommittedStart?()
             if let startError { throw startError }
             if request.defaultConnection.id == failingConnectionID { throw TestError.startFailed }
         }

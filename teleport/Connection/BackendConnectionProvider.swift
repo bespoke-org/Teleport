@@ -18,7 +18,7 @@ nonisolated final class BackendConnectionProvider: ConnectionProvider, @unchecke
     /// Cancellation only reaches the backend's pre-flight; once a connect has
     /// started changing the machine it ignores the cancellation and finishes.
     private let connectLock = NSLock()
-    private var connectTask: Task<Void, Error>?
+    private var connectAttempts: [UUID: ConnectionAttempt] = [:]
 
     /// `supervisionInterval` is how often a connected session is checked against
     /// the backend's runtime. Overridable so a check can drive it quickly.
@@ -66,22 +66,9 @@ nonisolated final class BackendConnectionProvider: ConnectionProvider, @unchecke
         stateStore.current()
     }
 
-    private func setConnectTask(_ task: Task<Void, Error>) {
-        connectLock.lock()
-        connectTask = task
-        connectLock.unlock()
-    }
-
-    private func clearConnectTask(_ task: Task<Void, Error>) {
-        connectLock.lock()
-        if connectTask == task { connectTask = nil }
-        connectLock.unlock()
-    }
-
-    private func cancelConnectTask() {
-        connectLock.lock()
-        connectTask?.cancel()
-        connectLock.unlock()
+    private func cancelConnectAttempts() {
+        let attempts = connectLock.withLock { Array(connectAttempts.values) }
+        attempts.forEach { $0.cancel() }
     }
 
     // MARK: - Supervision
@@ -155,83 +142,87 @@ nonisolated final class BackendConnectionProvider: ConnectionProvider, @unchecke
     }
 
     func connect(_ request: ConnectionRequest) async throws {
+        try Task.checkCancellation()
         stopSupervising()
-        let task = await operationQueue.register { [weak self, backend, stateStore, mode, verifyConnection] in
-            let previousState = stateStore.current()
-            stateStore.update(.preparing)
-            stateStore.update(.connecting)
-
-            // A backend may say it is waiting on the user, and that it is back to
-            // connecting; it may not declare the session connected or failed, which
-            // only this operation does below.
-            let reportPhase: @Sendable (ConnectionState) -> Void = { phase in
-                guard phase == .awaitingUserApproval || phase == .connecting else { return }
-                stateStore.update(phase)
-            }
-            var startedSession = false
-            do {
-                if case .connected = previousState {
-                    try await backend.reconnect(request, reportPhase: reportPhase)
-                } else {
-                    try await backend.start(request, reportPhase: reportPhase)
-                }
-                startedSession = true
-                try await verifyConnection?(request)
-                stateStore.update(
-                    .connected(ConnectionSession(id: UUID(), mode: mode, connectedAt: Date()))
-                )
-                self?.superviseRuntime()
-            } catch {
-                // Start/reconnect own rollback. A completed rollback is a
-                // disconnected session with an error to display, not a session
-                // requiring an extra Disconnect click before another attempt.
-                // Do not stop blindly here: a preflight may have rejected another
-                // VPN before this attempt changed anything on the machine.
-                var failure = ConnectionFailure(error: error)
-                var cleanupError: Error?
-                if startedSession {
-                    // This attempt owns a started session. A failed or cancelled
-                    // traffic check must tear it down before allowing a retry.
-                    do { try await backend.stop() }
-                    catch { cleanupError = error }
-                }
-                var disconnected = !(await backend.hasActiveRuntimeSession()) && cleanupError == nil
-                if disconnected, await backend.hasRestorableState() {
-                    do {
-                        try await backend.restorePreviousState()
-                    } catch {
-                        disconnected = false
-                        cleanupError = error
-                    }
-                }
-                if let cleanupError {
-                    failure = ConnectionFailure(summary: failure.summary, details: [
-                        failure.details,
-                        "Teleport could not finish disconnecting: \(cleanupError.localizedDescription)"
-                    ].compactMap { $0 }.joined(separator: "\n"))
-                }
-                // Subscribers retain the diagnostic when idle clears the session.
-                if !(error is CancellationError) || !disconnected {
-                    stateStore.update(.failed(failure))
-                }
-                if disconnected { stateStore.update(.idle) }
-                throw error
-            }
-        }
-        setConnectTask(task)
-        defer { clearConnectTask(task) }
+        // Register cancellation ownership before the queue's first suspension.
+        let id = UUID()
+        let attempt = ConnectionAttempt()
+        connectLock.withLock { connectAttempts[id] = attempt }
+        defer { _ = connectLock.withLock { connectAttempts.removeValue(forKey: id) } }
         try await withTaskCancellationHandler {
+            let task = await operationQueue.register { [weak self, backend, stateStore, mode, verifyConnection] in
+                try attempt.checkCancellation()
+                let previousState = stateStore.current()
+                stateStore.update(.preparing)
+                stateStore.update(.connecting)
+
+                // A backend may say it is waiting on the user, and that it is back to
+                // connecting; it may not declare the session connected or failed, which
+                // only this operation does below.
+                let reportPhase: @Sendable (ConnectionState) -> Void = { phase in
+                    guard phase == .awaitingUserApproval || phase == .connecting else { return }
+                    stateStore.update(phase)
+                }
+                var startedSession = false
+                do {
+                    if case .connected = previousState {
+                        try await backend.reconnect(request, reportPhase: reportPhase)
+                    } else {
+                        try await backend.start(request, reportPhase: reportPhase)
+                    }
+                    startedSession = true
+                    try await verifyConnection?(request)
+                    stateStore.update(
+                        .connected(ConnectionSession(id: UUID(), mode: mode, connectedAt: Date()))
+                    )
+                    self?.superviseRuntime()
+                } catch {
+                    // Start/reconnect own rollback. A completed rollback is a
+                    // disconnected session with an error to display, not a session
+                    // requiring an extra Disconnect click before another attempt.
+                    // Do not stop blindly here: a preflight may have rejected another
+                    // VPN before this attempt changed anything on the machine.
+                    var failure = ConnectionFailure(error: error)
+                    var cleanupError: Error?
+                    if startedSession {
+                        // This attempt owns a started session. A failed or cancelled
+                        // traffic check must tear it down before allowing a retry.
+                        do { try await backend.stop() }
+                        catch { cleanupError = error }
+                    }
+                    var disconnected = !(await backend.hasActiveRuntimeSession()) && cleanupError == nil
+                    if disconnected, await backend.hasRestorableState() {
+                        do {
+                            try await backend.restorePreviousState()
+                        } catch {
+                            disconnected = false
+                            cleanupError = error
+                        }
+                    }
+                    if let cleanupError {
+                        failure = ConnectionFailure(summary: failure.summary, details: [
+                            failure.details,
+                            "Teleport could not finish disconnecting: \(cleanupError.localizedDescription)"
+                        ].compactMap { $0 }.joined(separator: "\n"))
+                    }
+                    // Subscribers retain the diagnostic when idle clears the session.
+                    if !(error is CancellationError) || !disconnected {
+                        stateStore.update(.failed(failure))
+                    }
+                    if disconnected { stateStore.update(.idle) }
+                    throw error
+                }
+            }
+            attempt.setTask(task)
             try await task.value
         } onCancel: {
-            // Backends cancel pre-flight work or roll back their partial start;
-            // committed TUN operations still finish before the queue advances.
-            task.cancel()
+            attempt.cancel()
         }
     }
 
     func disconnect() async throws {
         stopSupervising()
-        cancelConnectTask()
+        cancelConnectAttempts()
         try await operationQueue.enqueue { [backend, stateStore] in
             if case .idle = stateStore.current() {
                 return
@@ -250,9 +241,37 @@ nonisolated final class BackendConnectionProvider: ConnectionProvider, @unchecke
 
 }
 
+/// Cancellation can precede the queue returning its registered task handle.
+nonisolated private final class ConnectionAttempt: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+    private var task: Task<Void, Error>?
+
+    func setTask(_ task: Task<Void, Error>) {
+        let shouldCancel = lock.withLock {
+            self.task = task
+            return cancelled
+        }
+        if shouldCancel { task.cancel() }
+    }
+
+    func cancel() {
+        let pending = lock.withLock {
+            cancelled = true
+            return task
+        }
+        pending?.cancel()
+    }
+
+    func checkCancellation() throws {
+        if lock.withLock({ cancelled }) { throw CancellationError() }
+        try Task.checkCancellation()
+    }
+}
+
 /// Not generic: Swift 6.3.3 (Xcode 26.6) crashes in EarlyPerfInliner on the
 /// deinit of a generic version of this class in Release builds.
-private final class WeakProviderBox: @unchecked Sendable {
+nonisolated private final class WeakProviderBox: @unchecked Sendable {
     private let lock = NSLock()
     private weak var stored: BackendConnectionProvider?
     var value: BackendConnectionProvider? {

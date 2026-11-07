@@ -46,7 +46,7 @@ final class GeodataUpdateCoordinator {
         let task: Task<Void, Never>
     }
 
-    private let service: any GeodataUpdateServicing
+    nonisolated private let service: any GeodataUpdateServicing
     private var jobs: [GeodataKind: Job] = [:]
     private var batch: Batch?
 
@@ -72,7 +72,7 @@ final class GeodataUpdateCoordinator {
             jobs[request.kind]?.task.cancel()
             batch?.outcomes[request.kind] = nil
             let token = UUID()
-            let task = Task { @MainActor [weak self, service] in
+            let task = Task.detached { [weak self, service] in
                 do {
                     try await BlockingWork.run {
                         try service.cacheCurrentDownload(for: request.kind, source: request.previousSource,
@@ -83,24 +83,30 @@ final class GeodataUpdateCoordinator {
                         let prepared = try await service.prepareUpdate(kind: request.kind, from: source,
                                                                        useCache: request.useCache)
                         defer { service.discard(prepared) }
-                        guard let self, self.isCurrent(request.kind, token: token), !Task.isCancelled else { return }
-                        // No suspension between ownership validation and publication.
-                        try service.activate(prepared, for: request.kind)
-                        self.finish(request.kind, token: token, outcome: .applied(Change(
-                            source: source, updatedAt: prepared.updatedAt, changed: prepared.changed
-                        )))
+                        let cancelled = Task.isCancelled
+                        await MainRunLoopWork.run { [weak self] in
+                            guard let self, self.isCurrent(request.kind, token: token), !cancelled else { return }
+                            do {
+                                try service.activate(prepared, for: request.kind)
+                                self.finish(request.kind, token: token, outcome: .applied(Change(
+                                    source: source, updatedAt: prepared.updatedAt, changed: prepared.changed)))
+                            } catch { self.finish(request.kind, token: token, outcome: .failed(error)) }
+                        }
                     } else {
-                        guard let self, self.isCurrent(request.kind, token: token), !Task.isCancelled else { return }
-                        let changed = service.hasCustomGeodata(for: request.kind)
-                        try service.removeCustomGeodata(for: request.kind)
-                        self.finish(request.kind, token: token, outcome: .applied(Change(
-                            source: nil, updatedAt: nil, changed: changed
-                        )))
+                        let cancelled = Task.isCancelled
+                        await MainRunLoopWork.run { [weak self] in
+                            guard let self, self.isCurrent(request.kind, token: token), !cancelled else { return }
+                            do {
+                                let changed = service.hasCustomGeodata(for: request.kind)
+                                try service.removeCustomGeodata(for: request.kind)
+                                self.finish(request.kind, token: token, outcome: .applied(Change(source: nil, updatedAt: nil, changed: changed)))
+                            } catch { self.finish(request.kind, token: token, outcome: .failed(error)) }
+                        }
                     }
                 } catch is CancellationError {
-                    self?.finish(request.kind, token: token, outcome: .cancelled)
+                    await MainRunLoopWork.run { [weak self] in self?.finish(request.kind, token: token, outcome: .cancelled) }
                 } catch {
-                    self?.finish(request.kind, token: token, outcome: .failed(error))
+                    await MainRunLoopWork.run { [weak self] in self?.finish(request.kind, token: token, outcome: .failed(error)) }
                 }
             }
             jobs[request.kind] = Job(token: token, request: request, task: task)
