@@ -59,7 +59,9 @@ final class AppViewModelSubscriptionTests: XCTestCase {
         await waitUntil { fixture.model.isConnected }
         fixture.client.complete()
         await waitUntil { fixture.model.refreshingSubscriptionIDs.isEmpty }
-        XCTAssertEqual(fixture.model.subscriptionSources.first?.lastError, "Disconnect before refreshing the active subscription")
+        XCTAssertNil(fixture.model.subscriptionSources.first?.lastError)
+        XCTAssertEqual(fixture.model.subscriptionSources.first?.lastRefreshedAt, fixture.source.lastRefreshedAt)
+        XCTAssertEqual(fixture.model.savedConnections.count, 1)
         XCTAssertNil(fixture.model.lastError)
     }
 

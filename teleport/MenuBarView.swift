@@ -109,7 +109,7 @@ struct MenuBarView: View {
         if viewModel.isConnected || viewModel.proxyPhase == .enabled {
             return .green
         }
-        if viewModel.isInstallingHelper {
+        if viewModel.isAwaitingApproval {
             return .orange
         }
         switch viewModel.connectionPhase {
