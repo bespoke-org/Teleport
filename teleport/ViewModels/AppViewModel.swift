@@ -344,7 +344,7 @@ final class AppViewModel: ObservableObject {
         for rule in activeSplitTunnelRules where rule.action == .proxy {
             guard let connectionID = rule.connectionID,
                   seen.insert(connectionID).inserted,
-                  let connection = savedConnectionsByID[connectionID] else { continue }
+                  let connection = savedConnectionsByID[connectionID] ?? removedSessionConnections[connectionID] else { continue }
             connections.append(connection)
         }
         return connections
