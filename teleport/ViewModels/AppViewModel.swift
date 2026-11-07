@@ -2301,11 +2301,13 @@ final class AppViewModel: ObservableObject {
     }
 
     private func sortedImportedConnections(_ connections: [SavedConnection]) -> [SavedConnection] {
-        connections.sorted { lhs, rhs in
-            switch subscriptionConnectionSort {
-            case .name:
-                return compareByName(lhs, rhs)
-            case .latency:
+        switch subscriptionConnectionSort {
+        case .original:
+            return connections
+        case .name:
+            return connections.sorted(by: compareByName)
+        case .latency:
+            return connections.sorted { lhs, rhs in
                 let lhsKey = latencySortKey(for: lhs)
                 let rhsKey = latencySortKey(for: rhs)
                 if lhsKey != rhsKey {

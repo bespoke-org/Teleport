@@ -4,6 +4,46 @@ import XCTest
 
 @MainActor
 final class AppViewModelSubscriptionRefreshTests: XCTestCase {
+    func testOriginalOrderSurvivesSortChangesRefreshAndPersistence() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        await waitUntil { fixture.model.canConnect }
+        XCTAssertEqual(fixture.model.subscriptionConnectionSort, .original)
+        let links = ["Zulu", "Alpha", "Bravo"].enumerated().map { index, name in
+            "vless://123e4567-e89b-12d3-a456-426614174000@127.0.0.1:\(10 + index)?security=none&type=tcp#\(name)"
+        }
+        fixture.model.refreshSubscription(id: fixture.sourceID)
+        await waitUntil { await fixture.client.requestCount == 1 }
+        await fixture.client.succeed(links: links)
+        await waitUntil { fixture.model.refreshingSubscriptionIDs.isEmpty }
+
+        let original = fixture.model.importedConnections(for: fixture.sourceID)
+        XCTAssertEqual(original.map(\.displayName), ["Zulu", "Alpha", "Bravo"])
+        XCTAssertEqual(fixture.model.selectedConnectionID, original[0].id)
+        XCTAssertEqual(fixture.model.importedConnectionPickerItems(for: fixture.sourceID).map(\.id), original.map(\.id))
+        fixture.model.selectSubscriptionConnectionSort(.name)
+        XCTAssertEqual(fixture.model.importedConnections(for: fixture.sourceID).map(\.displayName), ["Alpha", "Bravo", "Zulu"])
+        fixture.model.selectSubscriptionConnectionSort(.latency)
+        fixture.model.selectSubscriptionConnectionSort(.original)
+        XCTAssertEqual(fixture.model.importedConnections(for: fixture.sourceID).map(\.id), original.map(\.id))
+
+        fixture.model.renameConnection(id: original[0].id, to: "My portal")
+        fixture.model.refreshSubscription(id: fixture.sourceID)
+        await waitUntil { await fixture.client.requestCount == 2 }
+        await fixture.client.succeed(links: [links[2], links[0], links[1]])
+        await waitUntil { fixture.model.refreshingSubscriptionIDs.isEmpty }
+
+        let reorderedIDs = [original[2].id, original[0].id, original[1].id]
+        XCTAssertEqual(fixture.model.importedConnections(for: fixture.sourceID).map(\.id), reorderedIDs)
+        XCTAssertEqual(fixture.model.importedConnectionPickerItemsBySourceID[fixture.sourceID]?.map(\.id), reorderedIDs)
+        XCTAssertEqual(fixture.model.selectedConnectionID, original[0].id)
+        XCTAssertEqual(fixture.model.importedConnections(for: fixture.sourceID)[1].customName, "My portal")
+        await waitUntil {
+            let snapshot = fixture.store.load()
+            return snapshot.subscriptionConnectionSort == .original && snapshot.savedConnections.map(\.id) == reorderedIDs
+        }
+    }
+
     func testScheduledRefreshSkipsActiveSubscriptionWithoutError() async throws {
         let fixture = try Fixture(connected: true)
         defer { fixture.cleanUp() }
@@ -211,10 +251,10 @@ private actor ControlledSubscriptionClient {
         requestCount += 1
         return try await withCheckedThrowingContinuation { continuation = $0 }
     }
-    func succeed() {
+    func succeed(links: [String] = [ControlledSubscriptionClient.link]) {
         let response = HTTPURLResponse(url: URL(string: "https://subscription.example/test")!,
                                        statusCode: 200, httpVersion: nil, headerFields: nil)!
-        continuation?.resume(returning: (Data(Self.link.utf8), response))
+        continuation?.resume(returning: (Data(links.joined(separator: "\n").utf8), response))
         continuation = nil
     }
     func fail() {

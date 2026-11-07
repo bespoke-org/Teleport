@@ -369,6 +369,18 @@ final class PersistenceTests: XCTestCase {
         XCTAssertFalse(hidden.showsInDock)
     }
 
+    func testPortalOrderDefaultsToOriginalAndPreservesSavedChoices() throws {
+        let fresh = AppSnapshot(savedConnections: [], selectedConnectionID: nil, proxyEndpoint: .default)
+        XCTAssertEqual(fresh.subscriptionConnectionSort, .original)
+        XCTAssertEqual(try JSONDecoder().decode(AppSnapshot.self, from: Data("{}".utf8)).subscriptionConnectionSort, .original)
+        for order in SubscriptionConnectionSort.allCases {
+            let json = Data("{\"subscriptionConnectionSort\":\"\(order.rawValue)\"}".utf8)
+            let saved = try JSONDecoder().decode(AppSnapshot.self, from: json)
+            XCTAssertEqual(saved.subscriptionConnectionSort, order)
+            XCTAssertEqual(try JSONDecoder().decode(AppSnapshot.self, from: JSONEncoder().encode(saved)).subscriptionConnectionSort, order)
+        }
+    }
+
     func testCompositeProfilesSaveAndLoad() throws {
         try withIsolatedStore(name: "composite") { store, _ in
             let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("fixtures/subscriptions")

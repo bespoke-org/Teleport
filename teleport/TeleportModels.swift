@@ -45,6 +45,7 @@ enum ConnectionMode: String, Codable, CaseIterable, Identifiable {
 }
 
 enum SubscriptionConnectionSort: String, Codable, CaseIterable, Identifiable {
+    case original
     case name
     case latency
 
@@ -52,6 +53,8 @@ enum SubscriptionConnectionSort: String, Codable, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
+        case .original:
+            return "Original"
         case .name:
             return "Name"
         case .latency:
@@ -927,7 +930,7 @@ struct AppSnapshot: Codable, Equatable {
         selectedConnectionID: UUID?,
         proxyEndpoint: ProxyEndpoint,
         connectionMode: ConnectionMode = .tun,
-        subscriptionConnectionSort: SubscriptionConnectionSort = .name,
+        subscriptionConnectionSort: SubscriptionConnectionSort = .original,
         showsLatencyInMenuBarPicker: Bool = true,
         animatesMenuBarIcon: Bool = true,
         showsInDock: Bool = true,
@@ -990,7 +993,7 @@ struct AppSnapshot: Codable, Equatable {
         selectedConnectionID = try container.decodeIfPresent(UUID.self, forKey: .selectedConnectionID)
         proxyEndpoint = try container.decodeIfPresent(ProxyEndpoint.self, forKey: .proxyEndpoint) ?? .default
         connectionMode = try container.decodeIfPresent(ConnectionMode.self, forKey: .connectionMode) ?? .tun
-        subscriptionConnectionSort = try container.decodeIfPresent(SubscriptionConnectionSort.self, forKey: .subscriptionConnectionSort) ?? .name
+        subscriptionConnectionSort = try container.decodeIfPresent(SubscriptionConnectionSort.self, forKey: .subscriptionConnectionSort) ?? .original
         showsLatencyInMenuBarPicker = try container.decodeIfPresent(Bool.self, forKey: .showsLatencyInMenuBarPicker) ?? true
         animatesMenuBarIcon = try container.decodeIfPresent(Bool.self, forKey: .animatesMenuBarIcon) ?? true
         showsInDock = try container.decodeIfPresent(Bool.self, forKey: .showsInDock) ?? true

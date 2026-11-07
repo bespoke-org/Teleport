@@ -46,6 +46,11 @@ On first launch the app has no connections. Add a link or a subscription URL in 
 
 ## Subscription routing
 
+Portal order defaults to **Original**, matching each subscription's entry order.
+Name and Latency remain available in General settings. Previously saved sort
+choices are preserved; select Original and refresh an existing subscription
+once to restore the provider's order.
+
 Subscription responses can deliver a Happ/INCY routing profile in the HTTP `routing`
 header. Teleport imports it into Settings > Split Tunneling as soon as the
 subscription is added, and updates that subscription's profile on refresh.

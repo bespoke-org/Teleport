@@ -225,6 +225,7 @@ private struct GeneralSettingsView: View {
                     Text("Portal order")
                 }
                 .pickerStyle(.menu)
+                .help("Original follows the order in each subscription. Refresh existing subscriptions to restore their original order.")
             }
 
             Section("Startup") {
