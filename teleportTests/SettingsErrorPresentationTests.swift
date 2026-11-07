@@ -51,9 +51,9 @@ final class SettingsErrorPresentationTests: XCTestCase {
                 !existing.contains($0.windowNumber) && $0.isVisible && self.containsText("New failure", in: $0)
             }
         }
-        let latest = try XCTUnwrap(NSApp.windows.first {
-            !existing.contains($0.windowNumber) && $0.isVisible && containsText("New failure", in: $0)
-        })
+        let visible = NSApp.windows.filter { !existing.contains($0.windowNumber) && $0.isVisible }
+        let latest = try XCTUnwrap(visible.first { containsText("New failure", in: $0) },
+                                  "Rendered error text: \(visible.flatMap { accessibilityText(in: $0) })")
         // The footer is fixed within the popover: Dismiss is its trailing button.
         try click(in: latest, at: NSPoint(x: latest.frame.width - 55, y: 38))
         await awaitUIUpdate("Dismiss acknowledges the new error and closes details") { model.issue == nil && !latest.isVisible }
@@ -63,16 +63,26 @@ final class SettingsErrorPresentationTests: XCTestCase {
     }
 
     private func containsText(_ text: String, in element: Any) -> Bool {
-        // NSWindow exposes legacy accessibility methods but does not conform to
-        // NSAccessibilityProtocol. Start traversal at its NSView content.
+        accessibilityText(in: element).contains(text)
+    }
+
+    private func accessibilityText(in element: Any, depth: Int = 0) -> [String] {
+        guard depth < 30 else { return [] }
+        // NSWindow and intermediate popover decoration views do not expose the
+        // complete accessibility subtree. Walk NSView children as well.
         if let window = element as? NSWindow {
-            return window.contentView.map { containsText(text, in: $0) } ?? false
+            return window.contentView.map { accessibilityText(in: $0, depth: depth + 1) } ?? []
         }
-        guard let accessible = element as? NSAccessibilityProtocol else { return false }
-        if accessible.accessibilityValue() as? String == text || accessible.accessibilityLabel() == text {
-            return true
+        var result: [String] = []
+        if let accessible = element as? NSAccessibilityProtocol {
+            if let value = accessible.accessibilityValue() as? String { result.append(value) }
+            if let label = accessible.accessibilityLabel() { result.append(label) }
+            result += (accessible.accessibilityChildren() ?? []).flatMap { accessibilityText(in: $0, depth: depth + 1) }
         }
-        return (accessible.accessibilityChildren() ?? []).contains { containsText(text, in: $0) }
+        if let view = element as? NSView {
+            result += view.subviews.flatMap { accessibilityText(in: $0, depth: depth + 1) }
+        }
+        return result
     }
 
     private func click(in window: NSWindow, at point: NSPoint = NSPoint(x: 180, y: 80)) throws {
