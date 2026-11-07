@@ -92,7 +92,8 @@ final class AppViewModel: ObservableObject {
     private var connectionProvider: any ConnectionProvider
     private let subscriptionClient: SubscriptionClient
     private let healthProbeService: ConnectionHealthProbeService
-    private let splitTunnelGeodataMatcher: SplitTunnelGeodataMatcher
+    private var splitTunnelGeodataMatcher: SplitTunnelGeodataMatcher
+    private var matcherSources: GeodataSources?
     private let loginItemService = LoginItemService()
     private let helperUninstaller = PrivilegedHelperUninstaller()
     private let persistenceQueue = DispatchQueue(label: "dev.x.teleport.persistence", qos: .utility)
@@ -171,6 +172,7 @@ final class AppViewModel: ObservableObject {
     // Removed subscription entries remain available only to the running session's
     // selection. They are never written back into the refreshed subscription.
     private var removedSessionConnections: [UUID: SavedConnection] = [:]
+    private let profileGeodataLibrary: ProfileGeodataLibrary
     private var savedConnectionsByID: [UUID: SavedConnection] = [:]
     private var importedConnectionsBySourceID: [UUID: [SavedConnection]] = [:]
     private var importedConnectionCountsBySourceID: [UUID: Int] = [:]
@@ -220,6 +222,7 @@ final class AppViewModel: ObservableObject {
         self.healthProbeService = healthProbeService
         self.systemProxyService = systemProxyService
         self.geodataUpdateCoordinator = geodataUpdateCoordinator
+        profileGeodataLibrary = ProfileGeodataLibrary(coordinator: geodataUpdateCoordinator)
         self.currentUplink = currentUplink
         self.log = log
 
@@ -287,6 +290,24 @@ final class AppViewModel: ObservableObject {
             if !batch.changedKinds.isEmpty { self?.applyGeodataLiveIfNeeded() }
             if self?.pendingSplitTunnelLiveApply == true { self?.applyDeferredSplitTunnelRulesLiveIfNeeded() }
             self?.reconnectAsSoonAsAnUplinkAppears()
+        }
+        profileGeodataLibrary.didChange = { [weak self] in self?.objectWillChange.send() }
+        profileGeodataLibrary.didCache = { [weak self] key in
+            guard let self else { return }
+            let selected = self.selectedProfileGeodataSources
+            let value = key.kind == .geosite ? selected.geositeURLString : selected.geoipURLString
+            if value == key.source.absoluteString {
+                if self.geodataLastAttemptSources == selected { self.setGeodataError(kind: key.kind, error: nil) }
+                self.prepareSplitTunnelGeodataMatcher(reload: true)
+            }
+        }
+        for kind in GeodataKind.allCases {
+            if let value = geodataURLString(for: kind), let source = validatedGeodataURL(value), hasCustomGeodata(kind: kind) {
+                profileGeodataLibrary.recordReady(kind: kind, source: source, date: geodataLastUpdatedAt(for: kind), cached: false)
+            }
+        }
+        for profile in splitTunnelProfiles where profile.subscriptionSourceID != nil || profile.id != connectionTunnelProfile?.id {
+            profileGeodataLibrary.preload(sources: profile.geodataSources ?? GeodataSources())
         }
         prepareSplitTunnelGeodataMatcher()
         observeConnectionState()
@@ -1106,7 +1127,7 @@ final class AppViewModel: ObservableObject {
         // to the default (catch-all) action must, since it rewrites the config.
         guard activeSplitTunnelRules != appliedSplitTunnelRules
             || activeSplitTunnelDefaultAction != appliedSplitTunnelDefaultAction
-            || (connectionTunnelProfile?.geodataSources ?? GeodataSources()) != appliedGeodataSources else { return }
+            || connectionGeodataSources != appliedGeodataSources else { return }
         reconnectToSelectedConnection()
     }
 
@@ -1115,25 +1136,60 @@ final class AppViewModel: ObservableObject {
         guard pendingSplitTunnelLiveApply
             || activeSplitTunnelRules != appliedSplitTunnelRules
             || activeSplitTunnelDefaultAction != appliedSplitTunnelDefaultAction
-            || (connectionTunnelProfile?.geodataSources ?? GeodataSources()) != appliedGeodataSources else { return }
+            || connectionGeodataSources != appliedGeodataSources else { return }
         applySplitTunnelRulesLiveIfNeeded()
     }
 
     // MARK: - Geodata (geosite/geoip)
+
+    private var connectionGeodataSources: GeodataSources {
+        guard connectionMode == .tun, connectionTunnelProfile?.isRoutingEnabled == true else { return GeodataSources() }
+        return connectionTunnelProfile?.geodataSources ?? GeodataSources()
+    }
 
     var selectedProfileGeodataSources: GeodataSources {
         selectedSplitTunnelProfile?.geodataSources ?? GeodataSources()
     }
 
     var geodataProfileError: String? {
-        guard updatingGeodataKinds.isEmpty else { return nil }
-        let sources = selectedProfileGeodataSources
         for kind in GeodataKind.allCases {
-            let expected = kind == .geosite ? sources.geositeURLString : sources.geoipURLString
-            if expected != geodataURLString(for: kind)
-                || (expected != nil && !hasCustomGeodata(kind: kind))
-                || (expected == nil && hasCustomGeodata(kind: kind)) {
-                return "\(kind.displayName) for profile ‘\(selectedSplitTunnelProfile?.name ?? "Default")’ has not been loaded. It will download before connecting."
+            switch profileGeodataStatus(kind: kind) {
+            case let .failed(message): return "\(kind.displayName): \(message)"
+            case .missing: return "\(kind.displayName) download is incomplete. Retry the download."
+            case .loading, .bundled, .ready: continue
+            }
+        }
+        return nil
+    }
+
+    func profileGeodataStatus(kind: GeodataKind) -> ProfileGeodataLibrary.Status {
+        let status = profileGeodataLibrary.status(for: kind, sources: selectedProfileGeodataSources)
+        if status == .loading { return status }
+        if geodataLastAttemptSources == selectedProfileGeodataSources {
+            if updatingGeodataKinds.contains(kind) { return .loading }
+            if let error = kind == .geosite ? geodataSettings.geositeLastError : geodataSettings.geoipLastError {
+                return .failed(error)
+            }
+        }
+        return status
+    }
+
+    var updatingSelectedProfileGeodataKinds: Set<GeodataKind> {
+        var kinds = Set(GeodataKind.allCases.filter { profileGeodataStatus(kind: $0) == .loading })
+        if geodataLastAttemptSources == selectedProfileGeodataSources { kinds.formUnion(updatingGeodataKinds) }
+        return kinds
+    }
+
+    func isDownloadingSubscriptionGeodata(_ id: UUID) -> Bool {
+        guard let sources = splitTunnelProfiles.first(where: { $0.subscriptionSourceID == id })?.geodataSources else { return false }
+        return profileGeodataLibrary.isLoading(sources: sources)
+    }
+
+    func subscriptionGeodataError(_ id: UUID) -> String? {
+        guard let sources = splitTunnelProfiles.first(where: { $0.subscriptionSourceID == id })?.geodataSources else { return nil }
+        for kind in GeodataKind.allCases {
+            if case let .failed(message) = profileGeodataLibrary.status(for: kind, sources: sources) {
+                return "\(kind.displayName) download failed: \(message) Update this subscription to retry."
             }
         }
         return nil
@@ -1165,7 +1221,8 @@ final class AppViewModel: ObservableObject {
     }
 
     func cancelGeodataUpdates() {
-        geodataUpdateCoordinator.cancelAll()
+        profileGeodataLibrary.cancel(sources: selectedProfileGeodataSources)
+        if geodataLastAttemptSources == selectedProfileGeodataSources { geodataUpdateCoordinator.cancelAll() }
     }
 
     func applyGeodataSources(geositeURLString: String?, geoipURLString: String?, forceDownload: Bool = false) {
@@ -1183,12 +1240,24 @@ final class AppViewModel: ObservableObject {
         }
         if let index = selectedSplitTunnelProfileIndex { splitTunnelProfiles[index].geodataSources = sources }
         schedulePersist()
-        startGeodataUpdates(sources: sources, forceDownload: forceDownload)
+        updateProfileGeodata(sources: sources, forceDownload: forceDownload)
     }
 
     func downloadSelectedProfileGeodata(forceDownload: Bool = false) {
         guard !isOperationPending, updatingGeodataKinds.isEmpty else { return }
-        startGeodataUpdates(sources: selectedProfileGeodataSources, forceDownload: forceDownload)
+        if canEditTunnelProfile {
+            updateProfileGeodata(sources: selectedProfileGeodataSources, forceDownload: forceDownload)
+        } else {
+            profileGeodataLibrary.preload(sources: selectedProfileGeodataSources, forceDownload: forceDownload)
+        }
+    }
+
+    private func updateProfileGeodata(sources: GeodataSources, forceDownload: Bool) {
+        if selectedSplitTunnelProfileID == connectionTunnelProfile?.id {
+            startGeodataUpdates(sources: sources, forceDownload: forceDownload)
+        } else {
+            profileGeodataLibrary.preload(sources: sources, forceDownload: forceDownload)
+        }
     }
 
     private func startGeodataUpdates(sources: GeodataSources, forceDownload: Bool = false) {
@@ -1288,17 +1357,16 @@ final class AppViewModel: ObservableObject {
         switch outcome {
         case let .applied(change):
             if let source = change.source {
-                if kind == .geosite { setGeositeURL(source.absoluteString) }
-                else { setGeoipURL(source.absoluteString) }
+                if kind == .geosite { geodataSettings.geositeURLString = source.absoluteString }
+                else { geodataSettings.geoipURLString = source.absoluteString }
+                profileGeodataLibrary.recordReady(kind: kind, source: source, date: change.updatedAt)
             } else {
                 clearGeodataURL(kind: kind)
             }
             setGeodataError(kind: kind, error: nil)
             setGeodataLastUpdatedAt(kind: kind, date: change.updatedAt)
             if change.changed {
-                splitTunnelGeodataMatcher.resetCache()
-                isSplitTunnelGeodataReady = false
-                prepareSplitTunnelGeodataMatcher()
+                prepareSplitTunnelGeodataMatcher(reload: true)
             }
         case let .failed(error):
             setGeodataError(kind: kind, error: error)
@@ -1313,24 +1381,49 @@ final class AppViewModel: ObservableObject {
     /// TUN mode is already connected instead of waiting for the user to notice.
     private func applyGeodataLiveIfNeeded() {
         guard !isTerminating, !isOperationPending, !hasDeferredSubscriptionRoutingChanges,
-              connectionMode == .tun, hasEstablishedConnection,
-              geodataIsReady(for: connectionTunnelProfile?.geodataSources ?? GeodataSources()) else { return }
+              connectionMode == .tun, connectionTunnelProfile?.isRoutingEnabled == true, hasEstablishedConnection,
+              geodataIsReady(for: connectionGeodataSources) else { return }
         reconnectToSelectedConnection()
     }
 
-    private func prepareSplitTunnelGeodataMatcher() {
+    private func prepareSplitTunnelGeodataMatcher(reload: Bool = false) {
+        let selected = selectedProfileGeodataSources
+        let active = GeodataSources(geositeURLString: geodataSettings.geositeURLString, geoipURLString: geodataSettings.geoipURLString)
+        let sources: GeodataSources? = selected == active && !profileGeodataLibrary.hasCachedPair(sources: selected) ? nil : selected
+        if reload || matcherSources != sources {
+            matcherSources = sources
+            splitTunnelGeodataMatcher = SplitTunnelGeodataMatcher(
+                service: GeodataUpdateService(fileManager: store.fileManager), sources: sources
+            )
+            isSplitTunnelGeodataReady = false
+        }
         guard !splitTunnelGeodataMatcher.isReady else {
             isSplitTunnelGeodataReady = true
             return
         }
-        splitTunnelGeodataMatcher.prepare { [weak self] in
-            self?.isSplitTunnelGeodataReady = self?.splitTunnelGeodataMatcher.isReady == true
+        let matcher = splitTunnelGeodataMatcher
+        matcher.prepare { [weak self, weak matcher] in
+            guard let self, let matcher, self.splitTunnelGeodataMatcher === matcher else { return }
+            self.isSplitTunnelGeodataReady = matcher.isReady
         }
     }
 
-    private func performScheduledGeodataUpdateIfNeeded() {
+    func performScheduledGeodataUpdateIfNeeded() {
         guard !isOperationPending else { return }
-        guard geodataIsReady(for: connectionTunnelProfile?.geodataSources ?? GeodataSources()) else { return }
+        for profile in splitTunnelProfiles where profile.id != connectionTunnelProfile?.id {
+            guard let minutes = profile.geodataUpdateIntervalMinutes, minutes > 0 else { continue }
+            let sources = profile.geodataSources ?? GeodataSources()
+            let due = GeodataKind.allCases.contains { kind in
+                switch profileGeodataLibrary.status(for: kind, sources: sources) {
+                case let .ready(date): return Date().timeIntervalSince(date ?? .distantPast) >= TimeInterval(minutes * 60)
+                case .missing, .failed: return true
+                case .loading, .bundled: return false
+                }
+            }
+            if due { profileGeodataLibrary.preload(sources: sources, forceDownload: true) }
+        }
+        let activeSources = connectionTunnelProfile?.geodataSources ?? GeodataSources()
+        guard !profileGeodataLibrary.isLoading(sources: activeSources), geodataIsReady(for: activeSources, requireLatestCache: false) else { return }
         guard let intervalMinutes = connectionTunnelProfile?.geodataUpdateIntervalMinutes, intervalMinutes > 0 else { return }
         let requests = GeodataKind.allCases.compactMap { kind -> GeodataUpdateCoordinator.Request? in
             guard !updatingGeodataKinds.contains(kind), let value = geodataURLString(for: kind),
@@ -1517,6 +1610,7 @@ final class AppViewModel: ObservableObject {
         isTerminating = true
         connectionTask?.task.cancel()
         geodataUpdateCoordinator.cancelAll()
+        profileGeodataLibrary.cancelAll()
         pendingConnectionSelectionID = nil
         connectingSelection = nil
         log.info(Self.subsystem, "terminating")
@@ -1831,7 +1925,7 @@ final class AppViewModel: ObservableObject {
                 appliedConnectionIDs = Set(routedConnections.map(\.id))
                 appliedSplitTunnelRules = activeSplitTunnelRules
                 appliedSplitTunnelDefaultAction = activeSplitTunnelDefaultAction
-                appliedGeodataSources = connectionTunnelProfile?.geodataSources ?? GeodataSources()
+                appliedGeodataSources = connectionGeodataSources
                 if !isInitialState {
                     setStoredError(nil)
                 }
@@ -1931,7 +2025,8 @@ final class AppViewModel: ObservableObject {
         sessionUplink = currentUplink()
         let request = makeConnectionRequest(configuration: configuration)
         let profile = tunnelProfile(for: savedConnections.first { $0.id == request.defaultConnection.id })
-        let sources = profile?.geodataSources ?? GeodataSources()
+        let sources = connectionMode == .tun && profile?.isRoutingEnabled == true
+            ? (profile?.geodataSources ?? GeodataSources()) : GeodataSources()
         let profileName = profile?.name ?? "Default"
         let needsGeodataPreparation = !updatingGeodataKinds.isEmpty || !geodataIsReady(for: sources)
         let provider = connectionProvider
@@ -2596,6 +2691,7 @@ extension AppViewModel {
         guard tunnelTargets.contains(target) else { return }
         selectedTunnelTarget = target
         syncTunnelEditor()
+        profileGeodataLibrary.preload(sources: selectedProfileGeodataSources)
     }
 
     private func normalizeTunnelTarget() {
@@ -2610,6 +2706,7 @@ extension AppViewModel {
                                                   assignments: tunnelAssignments)
         selectedSplitTunnelProfileID = profile?.id
         isSplitTunnelEnabled = profile?.isRoutingEnabled ?? false
+        prepareSplitTunnelGeodataMatcher()
     }
 
     private func assignTunnelProfile(_ id: UUID?, to target: TunnelTarget) {
@@ -2680,18 +2777,22 @@ extension AppViewModel {
             pendingSplitTunnelLiveApply = false
         }
         syncTunnelEditor()
-        // Preload a newly selected subscription's data while idle. Browsing or
-        // refreshing an unrelated subscription never replaces the active files.
-        if !hasActiveConnectionSession, !isOperationPending,
-           selectedConnection.map(TunnelTarget.init(connection:)) == target,
-           let sources = connectionTunnelProfile?.geodataSources, updatingGeodataKinds.isEmpty {
-            startGeodataUpdates(sources: sources)
+        // Every imported profile owns a cached pair, regardless of selection.
+        // Cache preparation never activates files or changes the live session.
+        if let profile = splitTunnelProfiles.first(where: { $0.subscriptionSourceID == sourceID }) {
+            profileGeodataLibrary.preload(sources: profile.geodataSources ?? GeodataSources(), forceDownload: true)
         }
     }
 
-    private func geodataIsReady(for sources: GeodataSources) -> Bool {
+    private func geodataIsReady(for sources: GeodataSources, requireLatestCache: Bool = true) -> Bool {
         GeodataKind.allCases.allSatisfy { kind in
             let expected = kind == .geosite ? sources.geositeURLString : sources.geoipURLString
+            switch profileGeodataLibrary.status(for: kind, sources: sources) {
+            case .loading: return false
+            case let .ready(date):
+                if requireLatestCache, let date, date != geodataLastUpdatedAt(for: kind) { return false }
+            default: break
+            }
             return expected == geodataURLString(for: kind)
                 && (expected == nil ? !hasCustomGeodata(kind: kind) : hasCustomGeodata(kind: kind))
         }
@@ -2700,7 +2801,7 @@ extension AppViewModel {
     nonisolated private func prepareConnectionGeodata(_ sources: GeodataSources, profileName: String) async throws {
         while await MainRunLoopWork.run({ [weak self] in
             guard let self else { return false }
-            return !self.updatingGeodataKinds.isEmpty
+            return self.profileGeodataLibrary.isLoading(sources: sources) || !self.updatingGeodataKinds.isEmpty
         }) { try await Task.sleep(for: .milliseconds(20)) }
         try Task.checkCancellation()
         let started = await MainRunLoopWork.run { [weak self] in

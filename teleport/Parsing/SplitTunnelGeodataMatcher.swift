@@ -4,6 +4,7 @@ import Network
 final class SplitTunnelGeodataMatcher {
     private let service: GeodataUpdateService
     private let bundle: Bundle
+    private let sources: GeodataSources?
     private let lock = NSLock()
     private let queue = DispatchQueue(label: "dev.x.teleport.split-tunnel-geodata-matcher", qos: .utility)
     private var geositeCache: [String: [GeodataFormat.GeositeDomain]]?
@@ -11,9 +12,10 @@ final class SplitTunnelGeodataMatcher {
     private var isLoading = false
     private var pendingCompletions: [() -> Void] = []
 
-    init(service: GeodataUpdateService = GeodataUpdateService(), bundle: Bundle = .main) {
+    init(service: GeodataUpdateService = GeodataUpdateService(), bundle: Bundle = .main, sources: GeodataSources? = nil) {
         self.service = service
         self.bundle = bundle
+        self.sources = sources
     }
 
     func geositeRuleMatches(_ ruleValue: String, candidate: String) -> Bool {
@@ -115,13 +117,26 @@ final class SplitTunnelGeodataMatcher {
     }
 
     private func loadGeosite() throws -> [String: [GeodataFormat.GeositeDomain]] {
-        let url = try service.resolvedAssetDirectoryURL(bundle: bundle).appendingPathComponent(GeodataKind.geosite.fileName)
-        return try GeodataFormat.parseGeositeList(Data(contentsOf: url))
+        try GeodataFormat.parseGeositeList(assetData(for: .geosite))
     }
 
     private func loadGeoIP() throws -> [String: GeodataFormat.GeoIPEntry] {
-        let url = try service.resolvedAssetDirectoryURL(bundle: bundle).appendingPathComponent(GeodataKind.geoip.fileName)
-        return try GeodataFormat.parseGeoIPList(Data(contentsOf: url))
+        try GeodataFormat.parseGeoIPList(assetData(for: .geoip))
+    }
+
+    private func assetData(for kind: GeodataKind) throws -> Data {
+        var data = try Data(contentsOf: assetURL(for: kind))
+        if let sources,
+           (kind == .geosite ? sources.geositeURLString : sources.geoipURLString) != nil,
+           let bundled = bundle.url(forResource: kind.rawValue, withExtension: "dat") {
+            data = try GeodataFormat.addingMissingCategories(from: Data(contentsOf: bundled), to: data)
+        }
+        return data
+    }
+
+    private func assetURL(for kind: GeodataKind) throws -> URL {
+        if let sources { return try service.profileFileURL(for: kind, sources: sources, bundle: bundle) }
+        return try service.resolvedAssetDirectoryURL(bundle: bundle).appendingPathComponent(kind.fileName)
     }
 
     private func geodataToken(_ value: String, prefix: String) -> (category: String, attribute: String?)? {

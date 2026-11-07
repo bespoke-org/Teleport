@@ -1071,11 +1071,11 @@ struct AppSnapshot: Codable, Equatable {
     private mutating func migrateGeodataSources() {
         guard geodataSettings.geositeURLString != nil || geodataSettings.geoipURLString != nil
             || geodataSettings.autoUpdateIntervalMinutes != nil else { return }
-        guard let index = splitTunnelProfiles.firstIndex(where: { $0.id == selectedSplitTunnelProfileID }),
-              splitTunnelProfiles[index].geodataSources == nil else { return }
-        splitTunnelProfiles[index].geodataSources = GeodataSources(
-            geositeURLString: geodataSettings.geositeURLString, geoipURLString: geodataSettings.geoipURLString)
-        splitTunnelProfiles[index].geodataUpdateIntervalMinutes = geodataSettings.autoUpdateIntervalMinutes
+        for index in splitTunnelProfiles.indices where splitTunnelProfiles[index].geodataSources == nil {
+            splitTunnelProfiles[index].geodataSources = GeodataSources(
+                geositeURLString: geodataSettings.geositeURLString, geoipURLString: geodataSettings.geoipURLString)
+            splitTunnelProfiles[index].geodataUpdateIntervalMinutes = geodataSettings.autoUpdateIntervalMinutes
+        }
     }
 }
 
