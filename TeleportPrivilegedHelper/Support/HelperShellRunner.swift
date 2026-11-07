@@ -67,7 +67,7 @@ struct HelperShellRunner: Sendable {
         for (file, name) in [("geosite.dat", "Geosite"), ("geoip.dat", "GeoIP")] {
             let escapedFile = NSRegularExpression.escapedPattern(for: file)
             let patterns = [
-                "(?i)list not found in " + escapedFile + #":\s*([a-z0-9_@.!-]{1,128})(?=\s|$|>)"#,
+                "(?i)list not found in " + escapedFile + #":[ \t]*([a-z0-9_@.!-]{1,128})(?=\s|$|>)"#,
                 #"(?i)failed to (?:check|load) code ([a-z0-9_@.!-]{1,128}) from "# + escapedFile
             ]
             for pattern in patterns {

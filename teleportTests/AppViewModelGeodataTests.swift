@@ -4,6 +4,24 @@ import XCTest
 
 @MainActor
 final class AppViewModelGeodataTests: XCTestCase {
+    func testConnectingBundledProfileRemovesLeftoverCustomFilesBeforeStartingProvider() async throws {
+        // SplitTunnelProfile defines nil source URLs as bundled data. Existing
+        // custom files take precedence on disk and must be removed before Xray starts.
+        let fixture = try Fixture(initiallyConnected: false, geodataSettings: .init())
+        defer { fixture.cleanUp() }
+        let model = fixture.model
+        await waitUntil { model.canConnect }
+        XCTAssertEqual(model.selectedProfileGeodataSources, GeodataSources())
+        XCTAssertNotNil(model.geodataProfileError)
+        model.connect()
+        await waitUntil { fixture.provider.connectCount == 1 && !model.isOperationPending }
+        XCTAssertFalse(fixture.provider.startedWithCustomGeodata)
+        XCTAssertFalse(model.hasCustomGeodata(kind: .geosite))
+        XCTAssertFalse(model.hasCustomGeodata(kind: .geoip))
+        XCTAssertNil(model.geodataProfileError)
+        XCTAssertNil(model.lastError)
+    }
+
     func testTwoSuccessfulUpdatesReconnectOnceAfterBothFinish() async throws {
         let fixture = try await makeFixture()
         defer { fixture.cleanUp() }
@@ -112,6 +130,8 @@ final class AppViewModelGeodataTests: XCTestCase {
         await fixture.service.gate.succeed(.geoip, occurrence: 0)
         await waitUntil { fixture.service.discardCount == 3 }
         XCTAssertEqual(fixture.model.geodataSettings.geoipURLString, "https://replacement.example/geoip.dat")
+        XCTAssertEqual(fixture.model.selectedProfileGeodataSources.geoipURLString, "https://replacement.example/geoip.dat")
+        XCTAssertNil(fixture.model.geodataProfileError)
         XCTAssertEqual(fixture.service.activationCount, 2)
         XCTAssertEqual(fixture.provider.connectCount, 1)
     }
@@ -172,11 +192,14 @@ final class AppViewModelGeodataTests: XCTestCase {
 private final class Fixture {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     let service = ControlledGeodataService()
-    let provider = GeodataTestProvider()
+    let provider: GeodataTestProvider
     let model: AppViewModel
     let store: ConfigurationStore
 
-    init() throws {
+    init(initiallyConnected: Bool = true,
+         geodataSettings: GeodataSourceSettings = .init(geositeURLString: "https://old.example/geosite.dat",
+                                                       geoipURLString: "https://old.example/geoip.dat")) throws {
+        provider = GeodataTestProvider(initiallyConnected: initiallyConnected, geodata: service)
         let manager = GeodataTestFileManager(root: root)
         let log = TeleportLog(directoryURL: root, fileName: "test.log")
         store = ConfigurationStore(fileManager: manager, keychainService: "dev.x.teleport.geodata-test-\(UUID())",
@@ -189,8 +212,7 @@ private final class Fixture {
         ))
         try store.save(AppSnapshot(savedConnections: [connection], selectedConnectionID: connection.id,
                                    proxyEndpoint: .default, connectionMode: .tun, isLeakGuardEnabled: false,
-                                   geodataSettings: .init(geositeURLString: "https://old.example/geosite.dat",
-                                                         geoipURLString: "https://old.example/geoip.dat")))
+                                   geodataSettings: geodataSettings))
         let provider = self.provider
         model = AppViewModel(parser: ConnectionLinkParser(), store: store,
                              connectionProviderFactory: .init(systemProxyProvider: { provider }, tunProvider: { provider }),
@@ -266,12 +288,21 @@ private final class GeodataTestProvider: ConnectionProvider, @unchecked Sendable
     private let lock = NSLock()
     private var connects = 0
     private let state = ConnectionState.connected(.init(id: UUID(), mode: .tun, connectedAt: Date()))
+    private let initialState: ConnectionState
+    private let geodata: ControlledGeodataService
+    private var connectedWithCustomGeodata = false
     private let updates = AsyncStream<ConnectionState>.makeStream()
     var connectCount: Int { lock.withLock { connects } }
-    func currentState() async -> ConnectionState { state }
-    func stateUpdates() -> AsyncStream<ConnectionState> { updates.continuation.yield(state); return updates.stream }
+    var startedWithCustomGeodata: Bool { lock.withLock { connectedWithCustomGeodata } }
+    init(initiallyConnected: Bool, geodata: ControlledGeodataService) {
+        initialState = initiallyConnected ? state : .idle
+        self.geodata = geodata
+    }
+    func currentState() async -> ConnectionState { initialState }
+    func stateUpdates() -> AsyncStream<ConnectionState> { updates.continuation.yield(initialState); return updates.stream }
     func connect(_ request: ConnectionRequest) async throws {
-        lock.withLock { connects += 1 }
+        let hasCustomGeodata = geodata.hasCustomGeodata(for: .geosite) || geodata.hasCustomGeodata(for: .geoip)
+        lock.withLock { connects += 1; connectedWithCustomGeodata = hasCustomGeodata }
         updates.continuation.yield(state)
     }
     func disconnect() async throws { updates.continuation.yield(.idle); updates.continuation.finish() }
