@@ -83,6 +83,14 @@ substitute THIRD_PARTY_NOTICES.md 's/(`Xray-macos-64\.zip`, x86_64 slice, SHA-25
 # gets the new version; otherwise the line goes under "### Changed", which is
 # added before Deprecated/Removed/Fixed/Security when missing.
 if [ "$current_version" != "$VERSION" ]; then
+    # Releases can consume Unreleased entirely. Recreate it before the first
+    # release heading, preserving the introduction and published release notes.
+    perl -0777 -pi -e '
+        unless (/^## \[Unreleased\]\n/m) {
+            s/^(?=## \[)/## [Unreleased]\n\n/m
+                or die "no release heading in CHANGELOG.md\n";
+        }
+    ' "$work_dir/CHANGELOG.md"
     substitute CHANGELOG.md 's{^(## \[Unreleased\]\n)(.*?)(?=^## \[|\z)}{
         my ($heading, $body) = ($1, $2);
         my $line = "- Bundled Xray runtime updated to $ENV{NUMBER}.";
