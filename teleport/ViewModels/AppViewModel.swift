@@ -1897,7 +1897,7 @@ final class AppViewModel: ObservableObject {
                 self?.finishConnectionOperation(operationID, discardPendingRequest: true)
                 if afterUplinkChange && !hasPendingSelection {
                     switch error as? XrayTunConnectionError {
-                    case .proxyAddressResolutionFailed, .proxyRouteUnavailable:
+                    case .proxyAddressResolutionFailed, .proxyRouteUnavailable, .proxyIPv6RouteUnavailable, .noReachableGroupMembers:
                         self?.retryReconnectAfterUplinkChange()
                     default:
                         break

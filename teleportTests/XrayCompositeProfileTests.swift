@@ -200,6 +200,37 @@ final class XrayCompositeProfileTests: XCTestCase {
         XCTAssertEqual((json["burstObservatory"] as? [String: Any])?["subjectSelector"] as? [String], ["proxy-member-0/"])
     }
 
+    func testGroupReportsAggregateDNSAndIPv6Failures() throws {
+        XCTAssertThrowsError(try RoutedProxyOutbound.resolve(connectionID: UUID(), configuration: parse()) { host in
+            if host == "proxy-0.example.test" { throw XrayTunConnectionError.proxyAddressResolutionFailed(host) }
+            throw XrayTunConnectionError.proxyIPv6RouteUnavailable(host)
+        }) { error in
+            guard case let .noReachableGroupMembers(dns, ipv6, route) = error as? XrayTunConnectionError else {
+                return XCTFail("Expected group diagnosis, got \(error)")
+            }
+            XCTAssertEqual(dns, 1)
+            XCTAssertEqual(ipv6, 1)
+            XCTAssertEqual(route, 0)
+            let failure = ConnectionFailure(error: error)
+            XCTAssertTrue(failure.summary.hasPrefix("No eligible server in this group"))
+            XCTAssertTrue(failure.details?.contains("IPv6") == true)
+        }
+    }
+
+    func testIPv6OnlyMemberCanBeExcludedAndReconsideredNextTime() throws {
+        let config = try parse()
+        let first = try RoutedProxyOutbound.resolve(connectionID: UUID(), configuration: config) { host in
+            if host == "proxy-0.example.test" { throw XrayTunConnectionError.proxyIPv6RouteUnavailable(host) }
+            return ("192.0.2.2", "en0")
+        }
+        XCTAssertEqual(first.outbound.unavailableMemberHosts, ["proxy-0.example.test"])
+        let second = try RoutedProxyOutbound.resolve(connectionID: UUID(), configuration: first.outbound.configuration) { host in
+            (host == "proxy-0.example.test" ? "2001:db8::1" : "192.0.2.2", "en0")
+        }
+        XCTAssertTrue(second.outbound.unavailableMemberHosts.isEmpty)
+        XCTAssertEqual(second.outbound.memberAddresses.count, 2)
+    }
+
     func testAllUnavailableMembersAndStandaloneStillFail() throws {
         let group = try parse()
         for configuration in [group, try XCTUnwrap(group.composite?.members.first?.configuration)] {
@@ -236,6 +267,19 @@ final class XrayCompositeProfileTests: XCTestCase {
             if host == "proxy-0.example.test" { throw XrayTunConnectionError.proxyAddressResolutionFailed(host) }
             return ("192.0.2.2", "en0")
         })
+        XCTAssertThrowsError(try RoutedProxyOutbound.resolve(connectionID: UUID(), configuration: noFallback) { host in
+            if host == "proxy-0.example.test" { throw XrayTunConnectionError.proxyAddressResolutionFailed(host) }
+            throw XrayTunConnectionError.proxyIPv6RouteUnavailable(host)
+        }) { error in
+            // The unselected member's IPv6 failure must not obscure the
+            // selected/fallback member's DNS failure.
+            guard case let .noReachableGroupMembers(dns, ipv6, route) = error as? XrayTunConnectionError else {
+                return XCTFail("Expected group diagnosis, got \(error)")
+            }
+            XCTAssertEqual(dns, 1)
+            XCTAssertEqual(ipv6, 0)
+            XCTAssertEqual(route, 0)
+        }
     }
 
     func testLiteralRegexCostsAreExpandedWithoutChangingMatches() throws {

@@ -55,3 +55,31 @@ refresh, sharing, sealed storage, member routes and generated configurations
 with the bundled Xray's `run -test` command. Configuration validation does not
 prove reachability through an operator's whitelist; that needs a connection
 test on the affected network.
+
+## Connection diagnostics
+
+Connection errors distinguish an empty DNS result, a missing route, and an
+IPv6-only DNS answer with no usable route. An empty DNS answer is not enough to
+claim that a server is IPv6-only. A group with no reachable eligible member
+reports a group failure, with counts of DNS, IPv6-route and other route failures.
+Only selected members and the configured fallback contribute to those counts.
+Known local failures have specific portal status labels while keeping the check
+state unknown; they do not claim that the remote server is down.
+
+## Local failover integration tests
+
+Run `just test-case XrayGroupIntegrationTests` to test the bundled Xray with
+configs produced by Teleport's real subscription parser and configuration writer.
+The tests exercise `leastLoad` and `leastPing` using two loopback VLESS servers:
+traffic starts through A, switches to B after A stops, fails while both are down,
+and recovers through B while fallback A remains down. The outage spans a full
+observer cycle. A separate HTTP destination detects any unintended direct
+requests, including observer probes. The tests also stop the client and reap all
+child processes. No external server, subscription credentials or network changes
+are required.
+
+These checks exercise the local proxy and balancer. They do not create a TUN or
+prove privileged route/firewall/DNS cleanup, IPv6 uplink connectivity, continuity
+of existing TCP streams, or reachability through an operator's whitelist. Those
+still need tests on the affected network. Reconnect ordering and cancellation
+are covered separately by `PrivilegedHelperClientTests` with a simulated helper.

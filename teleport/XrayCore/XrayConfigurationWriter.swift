@@ -57,7 +57,7 @@ nonisolated struct RoutedProxyOutbound: Sendable, Equatable {
                         resolver: (String) throws -> (address: String, interface: String)) throws -> (outbound: Self, interface: String) {
         var addresses: [String: String] = [:]
         var unavailable: Set<String> = []
-        var firstUnavailableError: XrayTunConnectionError?
+        var unavailableErrors: [String: XrayTunConnectionError] = [:]
         var interface = ""
         for member in configuration.endpointConfigurations where addresses[member.host] == nil && !unavailable.contains(member.host) {
             do {
@@ -66,20 +66,33 @@ nonisolated struct RoutedProxyOutbound: Sendable, Equatable {
                 addresses[member.host] = route.address
             } catch let error as XrayTunConnectionError where configuration.composite != nil {
                 switch error {
-                case .proxyAddressResolutionFailed, .proxyRouteUnavailable:
+                case .proxyAddressResolutionFailed, .proxyRouteUnavailable, .proxyIPv6RouteUnavailable:
                     unavailable.insert(member.host)
-                    firstUnavailableError = firstUnavailableError ?? error
-                case .existingVPNDetected:
+                    unavailableErrors[member.host] = error
+                case .existingVPNDetected, .noReachableGroupMembers:
                     throw error
                 }
             }
         }
-        if let group = configuration.composite, let firstUnavailableError {
+        if let group = configuration.composite, !unavailableErrors.isEmpty {
             let selectors = Set(group.balancer.object["selector"] as? [String] ?? [])
             let fallback = group.balancer.object["fallbackTag"] as? String ?? group.members.first?.tag
-            guard group.members.contains(where: {
-                addresses[$0.configuration.host] != nil && (selectors.contains($0.tag) || $0.tag == fallback)
-            }) else { throw firstUnavailableError }
+            let eligibleHosts = Set(group.members.filter {
+                selectors.contains($0.tag) || $0.tag == fallback
+            }.map { $0.configuration.host })
+            guard eligibleHosts.contains(where: { addresses[$0] != nil }) else {
+                var dns = 0, ipv6 = 0, route = 0
+                for host in eligibleHosts {
+                    switch unavailableErrors[host] {
+                    case .proxyAddressResolutionFailed: dns += 1
+                    case .proxyIPv6RouteUnavailable: ipv6 += 1
+                    case .proxyRouteUnavailable: route += 1
+                    default: break
+                    }
+                }
+                throw XrayTunConnectionError.noReachableGroupMembers(
+                    dnsFailures: dns, ipv6RouteFailures: ipv6, routeFailures: route)
+            }
         }
         return (Self(connectionID: connectionID, configuration: configuration,
                      serverAddress: addresses[configuration.host], memberAddresses: addresses,

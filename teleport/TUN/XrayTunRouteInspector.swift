@@ -13,6 +13,30 @@ nonisolated struct XrayTunRouteInspector: Sendable {
         self.runCommand = runCommand
     }
 
+    /// The reachable numeric address of one server and the physical interface
+    /// that reaches it.
+    func protectedRoute(for host: String, resolvedAddresses: [String]? = nil) throws -> (address: String, interface: String) {
+        let resolvedAddresses = resolvedAddresses ?? self.resolvedAddresses(for: host)
+        guard !resolvedAddresses.isEmpty else {
+            throw XrayTunConnectionError.proxyAddressResolutionFailed(host)
+        }
+        guard let route = resolvedAddresses.lazy.compactMap({ address -> (String, String)? in
+            guard let interface = self.outboundInterface(for: address) else { return nil }
+            return (address, interface)
+        }).first else {
+            // Do not infer IPv6-only from an empty DNS result. This diagnosis
+            // requires actual IPv6 answers and no returned IPv4 alternative.
+            if resolvedAddresses.allSatisfy({ address in
+                var value = in6_addr()
+                return address.withCString { inet_pton(AF_INET6, $0, &value) } == 1
+            }) {
+                throw XrayTunConnectionError.proxyIPv6RouteUnavailable(host)
+            }
+            throw XrayTunConnectionError.proxyRouteUnavailable(host)
+        }
+        return route
+    }
+
     func outboundInterface(for host: String) -> String? {
         routeInterface(for: host)
     }

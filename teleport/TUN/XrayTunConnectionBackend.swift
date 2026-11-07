@@ -21,22 +21,6 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
         self.leakGuard = leakGuard
     }
 
-    /// The reachable numeric address of one server and the physical interface
-    /// that reaches it.
-    private func protectedRoute(for host: String, resolvedAddresses: [String]? = nil) throws -> (address: String, interface: String) {
-        let resolvedAddresses = resolvedAddresses ?? routeInspector.resolvedAddresses(for: host)
-        guard !resolvedAddresses.isEmpty else {
-            throw XrayTunConnectionError.proxyAddressResolutionFailed(host)
-        }
-        guard let route = resolvedAddresses.lazy.compactMap({ address -> (String, String)? in
-            guard let interface = self.routeInspector.outboundInterface(for: address) else { return nil }
-            return (address, interface)
-        }).first else {
-            throw XrayTunConnectionError.proxyRouteUnavailable(host)
-        }
-        return route
-    }
-
     func hasRestorableState() -> Bool { false }
 
     func hasActiveRuntimeSession() async -> Bool {
@@ -75,7 +59,7 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
                 for connection in [request.defaultConnection] + request.additionalConnections {
                     let prepared = try RoutedProxyOutbound.resolve(connectionID: connection.id, configuration: connection.configuration) { host in
                         try cancellation.check()
-                        return try self.protectedRoute(for: host, resolvedAddresses: resolvedEndpoints[host])
+                        return try self.routeInspector.protectedRoute(for: host, resolvedAddresses: resolvedEndpoints[host])
                     }
                     if outbounds.isEmpty { outboundInterface = prepared.interface }
                     outbounds.append(prepared.outbound)
@@ -224,19 +208,38 @@ nonisolated private final class CancellationFlag: @unchecked Sendable {
     }
 }
 
-enum XrayTunConnectionError: LocalizedError {
+nonisolated enum XrayTunConnectionError: LocalizedError {
     case existingVPNDetected(String)
     case proxyAddressResolutionFailed(String)
     case proxyRouteUnavailable(String)
+    case proxyIPv6RouteUnavailable(String)
+    case noReachableGroupMembers(dnsFailures: Int, ipv6RouteFailures: Int, routeFailures: Int)
 
     var errorDescription: String? {
         switch self {
         case let .existingVPNDetected(interface):
             return "Another VPN appears to be active on \(interface). Disconnect it before using Teleport TUN mode, or use System Proxy mode."
         case let .proxyAddressResolutionFailed(host):
-            return "Teleport could not resolve the proxy server \(host) before installing TUN routes. Check the network and try again."
+            return "DNS lookup failed for proxy server \(host). Check the network and try again."
+        case let .proxyIPv6RouteUnavailable(host):
+            return "IPv6 route unavailable for proxy server \(host). The available server addresses are IPv6-only, but this network has no route to them. Use a network with IPv6 connectivity or choose another portal."
+        case .noReachableGroupMembers:
+            return "No eligible server in this group is reachable on the current network. Check the network or choose another portal."
         case let .proxyRouteUnavailable(host):
-            return "Teleport could not find a reachable physical route to the proxy server \(host). Reconnect to the network and try again."
+            return "No physical route to proxy server \(host). Reconnect to the network and try again."
         }
+    }
+}
+
+// Counts describe only members eligible for selection or fallback, excluding
+// unused provider outbounds. Keep endpoints out of the aggregate diagnosis.
+extension XrayTunConnectionError {
+    var failureReason: String? {
+        guard case let .noReachableGroupMembers(dns, ipv6, route) = self else { return nil }
+        return [
+            dns > 0 ? "DNS lookup failures: \(dns)." : nil,
+            ipv6 > 0 ? "IPv6 route failures: \(ipv6)." : nil,
+            route > 0 ? "Physical route failures: \(route)." : nil
+        ].compactMap { $0 }.joined(separator: " ")
     }
 }
