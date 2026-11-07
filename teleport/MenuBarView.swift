@@ -87,8 +87,8 @@ struct MenuBarView: View {
             return "Connected"
         }
 
-        if viewModel.isInstallingHelper {
-            return "Installing helper"
+        if viewModel.isAwaitingApproval {
+            return "Awaiting approval"
         }
 
         switch viewModel.connectionPhase {
@@ -109,7 +109,7 @@ struct MenuBarView: View {
         if viewModel.isConnected || viewModel.proxyPhase == .enabled {
             return .green
         }
-        if viewModel.isInstallingHelper {
+        if viewModel.isAwaitingApproval {
             return .orange
         }
         switch viewModel.connectionPhase {

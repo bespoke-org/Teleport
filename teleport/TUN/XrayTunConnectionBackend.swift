@@ -27,6 +27,16 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
         await runtimeManager.isRunning()
     }
 
+    func adoptRuntimeSession() async throws {
+        try await BlockingWork.run { [systemProxyService] in try systemProxyService.resumeMonitoringIfNeeded() }
+    }
+
+    func sessionFailure() async -> ConnectionFailure? {
+        await BlockingWork.run { [systemProxyService] in systemProxyService.checkForConflict() }
+    }
+
+    func sessionChanges() -> AsyncStream<Void> { systemProxyService.changes() }
+
     func restorePreviousState() throws {}
 
     func start(_ request: ConnectionRequest, reportPhase: @escaping @Sendable (ConnectionState) -> Void) async throws {
@@ -35,6 +45,24 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
 
     private func start(_ request: ConnectionRequest, resolvedEndpoints: [String: [String]],
                        reportPhase: @escaping @Sendable (ConnectionState) -> Void) async throws {
+        try await BlockingWork.run { [systemProxyService] in try systemProxyService.prepareForTakeover() }
+        do {
+            try await startPrepared(request, resolvedEndpoints: resolvedEndpoints, reportPhase: reportPhase)
+        } catch {
+            let primary = error
+            do {
+                try await BlockingWork.run { [systemProxyService] in try systemProxyService.rollbackIfActive() }
+            } catch {
+                let cleanup = ConnectionFailure(error: error)
+                throw ConnectionFailure(summary: cleanup.requiresExplicitReconnect ? cleanup.summary : primary.localizedDescription,
+                                        details: "Proxy recovery: \(cleanup.details ?? cleanup.summary)",
+                                        requiresExplicitReconnect: cleanup.requiresExplicitReconnect)
+            }
+            throw primary
+        }
+    }
+
+    private func startPrepared(_ request: ConnectionRequest, resolvedEndpoints: [String: [String]], reportPhase: @escaping @Sendable (ConnectionState) -> Void) async throws {
         // The pre-flight below reads routes and resolves names but changes nothing
         // on the machine, so a disconnect or quit that arrives meanwhile may cancel
         // it. The blocking work runs on a dispatch queue where task cancellation is
@@ -114,6 +142,7 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
         try await BlockingWork.run { [systemProxyService] in
             try systemProxyService.suspendProxyForTUN()
         }
+        reportPhase(.connecting)
 
         do {
             // Before the tunnel, not after: between here and the TUN existing there
@@ -135,11 +164,7 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
                 throw XrayRuntimeManager.RuntimeError.startupTimedOut(detail)
             }
         } catch {
-            try? await runtimeManager.stop()
-            try? await BlockingWork.run { [systemProxyService] in
-                try systemProxyService.restoreSavedProxyState()
-            }
-            throw error
+            throw await recoveringFrom(error)
         }
     }
 
@@ -170,26 +195,43 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
         } onCancel: {
             cancellation.cancel()
         }
-        // Cancellation still tears down the old session before the provider
-        // reports idle. start() observes cancellation before any new mutation.
+        try await BlockingWork.run { [systemProxyService] in try systemProxyService.reserveForStop() }
         try await runtimeManager.stop()
-        do {
-            try await start(request, resolvedEndpoints: resolvedEndpoints, reportPhase: reportPhase)
-        } catch is CancellationError {
-            // The old tunnel is already gone and its proxy snapshot still held, so
-            // a cancelled pre-flight here has something to put back after all.
-            try? await BlockingWork.run { [systemProxyService] in
-                try systemProxyService.restoreSavedProxyState()
-            }
-            throw CancellationError()
+        // start also restores held proxy settings if replacement pre-flight fails.
+        try await start(request, resolvedEndpoints: resolvedEndpoints, reportPhase: reportPhase)
+    }
+
+    private func recoveringFrom(_ primary: Error) async -> Error {
+        do { try await stop() } catch {
+            let cleanup = ConnectionFailure(error: error)
+            let failure = ConnectionFailure(error: primary)
+            return ConnectionFailure(
+                summary: cleanup.requiresExplicitReconnect ? cleanup.summary : failure.summary,
+                details: [failure.details, "Cleanup: \(cleanup.details ?? cleanup.summary)"].compactMap { $0 }.joined(separator: "\n"),
+                requiresExplicitReconnect: failure.requiresExplicitReconnect || cleanup.requiresExplicitReconnect)
         }
+        return primary
     }
 
     func stop() async throws {
-        try await runtimeManager.stop()
-        try await BlockingWork.run { [systemProxyService] in
-            try systemProxyService.restoreSavedProxyState()
+        try await BlockingWork.run { [systemProxyService] in try systemProxyService.reserveForStop() }
+        var runtimeError: Error?
+        do { try await runtimeManager.stop() } catch { runtimeError = error }
+        do {
+            try await BlockingWork.run { [systemProxyService] in
+                try systemProxyService.restoreSavedProxyState()
+            }
+        } catch {
+            if let runtimeError {
+                let failure = ConnectionFailure(error: error)
+                throw ConnectionFailure(
+                    summary: failure.summary,
+                    details: [failure.details, "Tunnel cleanup also failed: \(runtimeError.localizedDescription)"].compactMap { $0 }.joined(separator: "\n"),
+                    requiresExplicitReconnect: failure.requiresExplicitReconnect)
+            }
+            throw error
         }
+        if let runtimeError { throw runtimeError }
     }
 }
 

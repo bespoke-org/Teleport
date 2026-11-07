@@ -119,7 +119,11 @@ nonisolated struct SubscriptionFetchResult {
     }
 }
 
-nonisolated struct SubscriptionClient {
+nonisolated protocol SubscriptionFetching: Sendable {
+    func fetch(from url: URL) async throws -> SubscriptionFetchResult
+}
+
+nonisolated struct SubscriptionClient: SubscriptionFetching {
     private let loadResponse: @Sendable (URLRequest) async throws -> (Data, URLResponse)
 
     init(loadResponse: @escaping @Sendable (URLRequest) async throws -> (Data, URLResponse) = { request in

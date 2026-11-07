@@ -47,6 +47,18 @@ private nonisolated protocol TUNHelperPayloadValidating {
     func validate() throws
 }
 
+extension ReadProxyPreferencesRequest: TUNHelperPayloadValidating {
+    fileprivate static let sessionRequirement: TUNHelperSessionRequirement = .absent
+    fileprivate func validate() throws {}
+}
+
+extension ApplyProxyPreferencesRequest: TUNHelperPayloadValidating {
+    fileprivate static let sessionRequirement: TUNHelperSessionRequirement = .absent
+    fileprivate func validate() throws {
+        try validateMutations()
+    }
+}
+
 extension StatusRequest: TUNHelperPayloadValidating {
     fileprivate static let sessionRequirement: TUNHelperSessionRequirement = .absent
     fileprivate func validate() throws {}
