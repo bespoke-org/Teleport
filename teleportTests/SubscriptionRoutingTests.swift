@@ -407,9 +407,13 @@ final class SubscriptionRoutingTests: XCTestCase {
             "Name": "Imported", "GlobalProxy": false, "DirectSites": ["example.com"]
         ]))
         await waitUntil { !viewModel.isRefreshingSubscription(fixture.source.id) }
-        try await Task.sleep(for: .milliseconds(800))
+        // The 0.7s debounce is a minimum delay, not a completion deadline.
+        // Wait for the reconnect itself, including its asynchronous completion.
+        await waitUntil { await fixture.provider.requests.count == 2 && !viewModel.isOperationPending }
         let requestsBeforeEdit = await fixture.provider.requests
         XCTAssertEqual(requestsBeforeEdit.count, 2, "The manual target keeps its own queued edit")
+        XCTAssertEqual(requestsBeforeEdit.last?.splitTunnelPolicy.defaultAction, .direct)
+        XCTAssertEqual(requestsBeforeEdit.last?.splitTunnelPolicy.rules, viewModel.splitTunnelRules)
         viewModel.setSplitTunnelDefaultAction(.proxy)
         await waitUntil { await fixture.provider.requests.count == 3 && !viewModel.isOperationPending }
         let requests = await fixture.provider.requests
