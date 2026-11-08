@@ -4,6 +4,69 @@ import XCTest
 
 @MainActor
 final class SettingsSelectionTests: XCTestCase {
+    func testSubscriptionHierarchyNavigatesWithoutSelectingAndHandlesEmptyGroups() async throws {
+        _ = NSApplication.shared
+        var selected: String?
+        var opens = 0
+        let options = [
+            GlassSelectionOption(id: "manual", title: "Manual"),
+            GlassSelectionOption(id: "provider", title: "Provider", children:
+                (0..<1000).map { GlassSelectionOption(id: "portal-\($0)", title: "Portal \($0)") }),
+            GlassSelectionOption(id: "empty", title: "Empty subscription", children: [])
+        ]
+        let host = NSHostingController(rootView:
+            GlassSelectionPicker(options: options, selectedID: "portal-899", onSelect: { selected = $0 }, onOpen: {
+                opens += 1
+                return options
+            }) { Text("Choose portal").frame(width: 200, height: 40) }
+                .keyboardShortcut("p", modifiers: .command)
+                .frame(width: 360, height: 160)
+        )
+        let window = NSWindow(contentViewController: host)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.makeKeyAndOrderFront(nil)
+        let existing = Set(NSApp.windows.map(\.windowNumber))
+        try await openPicker(in: window, expectedOpens: 1, opens: { opens })
+        await awaitUIUpdate("Hierarchy is presented") {
+            NSApp.windows.contains { !existing.contains($0.windowNumber) && $0.isVisible && $0.frame.height > 100 }
+        }
+        let popover = try XCTUnwrap(NSApp.windows.first { !existing.contains($0.windowNumber) && $0.isVisible })
+        let size = popover.frame.size
+        try key("\r", code: 36, in: popover)
+        await awaitUIUpdate("Enter opens the selected portal's subscription")
+        XCTAssertNil(selected, "Entering a subscription must not select or connect a portal")
+        XCTAssertTrue(popover.isVisible)
+        XCTAssertEqual(popover.frame.size, size)
+        try key("\u{F701}", code: 125, in: popover)
+        await awaitUIUpdate("Next portal is highlighted")
+        try key("\r", code: 36, in: popover)
+        await awaitUIUpdate("Selecting a child closes the picker") { selected == "portal-900" && !popover.isVisible }
+
+        selected = nil
+        try await openPicker(in: window, expectedOpens: 2, opens: { opens })
+        await awaitUIUpdate("Root hierarchy is restored") {
+            NSApp.windows.contains { !existing.contains($0.windowNumber) && $0.isVisible && $0.frame.height > 100 }
+        }
+        let reopened = try XCTUnwrap(NSApp.windows.first { !existing.contains($0.windowNumber) && $0.isVisible })
+        try key("\u{F701}", code: 125, in: reopened)
+        await awaitUIUpdate("Empty subscription is highlighted")
+        try key("\u{F703}", code: 124, in: reopened)
+        await awaitUIUpdate("Right opens an empty subscription")
+        try key("\r", code: 36, in: reopened)
+        XCTAssertNil(selected)
+        XCTAssertTrue(reopened.isVisible)
+        XCTAssertEqual(reopened.frame.size, size)
+        try key("\u{F702}", code: 123, in: reopened)
+        await awaitUIUpdate("Left returns to subscriptions")
+        try key("\u{F700}", code: 126, in: reopened)
+        await awaitUIUpdate("Provider is highlighted")
+        try key("\u{F700}", code: 126, in: reopened)
+        await awaitUIUpdate("Standalone portal is highlighted")
+        try key("\r", code: 36, in: reopened)
+        await awaitUIUpdate("Standalone selection still works") { selected == "manual" && !reopened.isVisible }
+    }
+
     func testPopoverFirstOpenSelectionRefreshAndEscape() async throws {
         _ = NSApplication.shared
         var selected: String?
