@@ -69,10 +69,9 @@ nonisolated struct SubscriptionPayloadDecoder {
             guard link.range(of: "^[A-Za-z][A-Za-z0-9+.-]*://", options: .regularExpression) != nil else { return nil }
             let scheme = link.components(separatedBy: "://")[0].lowercased()
             switch scheme {
-            case "vless", "trojan", "hysteria2", "hy2", WireGuardConfigurationParser.scheme: return .link(link)
+            case "vless", "trojan", "ss", "hysteria2", "hy2", WireGuardConfigurationParser.scheme: return .link(link)
             case "wg": return .skipped("Unsupported WireGuard link format; use wireguard:// links")
             case "hysteria": return .skipped("Hysteria 1 is not supported")
-            case "ss": return .skipped("Shadowsocks is not supported")
             default: return .skipped("Unsupported subscription link protocol")
             }
         }

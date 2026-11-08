@@ -118,11 +118,14 @@ nonisolated struct ProxyEndpoint: Codable, Equatable {
 nonisolated enum ConnectionProtocolType: String, Codable, CaseIterable {
     case vless
     case trojan
+    case shadowsocks
     case wireguard
     case hysteria
 
     var displayName: String {
         switch self {
+        case .shadowsocks:
+            return "Shadowsocks"
         case .wireguard:
             return "WireGuard"
         case .hysteria:
@@ -257,6 +260,7 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
     /// fields above are unused placeholders for that protocol.
     let wireguard: WireGuardParameters?
     let hysteria: HysteriaParameters?
+    let shadowsocks: ShadowsocksParameters?
     var outboundMux: XrayJSONObject?
     var xhttpExtra: XrayJSONObject?
     var finalMask: XrayJSONObject?
@@ -288,6 +292,8 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
             return "\(protocolType.displayName) • MTU \(mtu)"
         }
 
+        if let shadowsocks { return "Shadowsocks • \(shadowsocks.method)" }
+
         var parts = [protocolType.displayName, securitySummary, transportSummary]
 
         if let vlessFlow, !vlessFlow.isEmpty, vlessFlow == "xtls-rprx-vision" {
@@ -305,9 +311,8 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
         if let composite {
             return composite.members.compactMap { $0.configuration.securityWarningText }.first
         }
-        // WireGuard always encrypts; its `.none` security is a placeholder for the
-        // stream layer Xray does not use for this outbound.
-        if protocolType == .wireguard {
+        // These protocols encrypt their own payloads even without stream TLS.
+        if protocolType == .wireguard || protocolType == .shadowsocks {
             return nil
         }
 
@@ -334,8 +339,8 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
     }
 
     nonisolated var duplicateFilterIdentity: String {
-        if protocolType == .hysteria || composite != nil || xhttpExtra != nil || outboundMux != nil {
-            // Canonical JSON includes every supported setting, without the name.
+        if protocolType == .hysteria || protocolType == .shadowsocks || composite != nil || xhttpExtra != nil || outboundMux != nil {
+            // Canonical links/JSON include every supported setting, without the name.
             return withDisplayName("").rawLink
         }
         let components: [String] = [
@@ -402,6 +407,7 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
             transportMode: transportMode,
             wireguard: wireguard,
             hysteria: hysteria,
+            shadowsocks: shadowsocks,
             outboundMux: outboundMux,
             xhttpExtra: xhttpExtra,
             finalMask: finalMask,
@@ -450,6 +456,7 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
         case transportMode
         case wireguard
         case hysteria
+        case shadowsocks
         case outboundMux
         case xhttpExtra
         case finalMask
@@ -480,6 +487,7 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
         transportMode: String? = nil,
         wireguard: WireGuardParameters? = nil,
         hysteria: HysteriaParameters? = nil,
+        shadowsocks: ShadowsocksParameters? = nil,
         outboundMux: XrayJSONObject? = nil,
         xhttpExtra: XrayJSONObject? = nil,
         finalMask: XrayJSONObject? = nil,
@@ -508,6 +516,7 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
         self.transportMode = transportMode
         self.wireguard = wireguard
         self.hysteria = hysteria
+        self.shadowsocks = shadowsocks
         self.outboundMux = outboundMux
         self.xhttpExtra = xhttpExtra
         self.finalMask = finalMask
@@ -539,6 +548,7 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
         transportMode = try container.decodeIfPresent(String.self, forKey: .transportMode)
         wireguard = try container.decodeIfPresent(WireGuardParameters.self, forKey: .wireguard)
         hysteria = try container.decodeIfPresent(HysteriaParameters.self, forKey: .hysteria)
+        shadowsocks = try container.decodeIfPresent(ShadowsocksParameters.self, forKey: .shadowsocks)
         outboundMux = try container.decodeIfPresent(XrayJSONObject.self, forKey: .outboundMux)
         xhttpExtra = try container.decodeIfPresent(XrayJSONObject.self, forKey: .xhttpExtra)
         finalMask = try container.decodeIfPresent(XrayJSONObject.self, forKey: .finalMask)
@@ -1095,12 +1105,13 @@ enum ConfigurationError: LocalizedError, Equatable {
     case multipleWireGuardPeers
     case invalidXrayJSON
     case invalidHysteria(String)
+    case invalidShadowsocks(String)
     case invalidFinalMask
 
     var errorDescription: String? {
         switch self {
         case .invalidScheme:
-            return "Paste a vless://, trojan://, hy2:// or wireguard:// link, Xray JSON, or a WireGuard [Interface] configuration"
+            return "Paste a vless://, trojan://, ss://, hy2:// or wireguard:// link, Xray JSON, or a WireGuard [Interface] configuration"
         case .missingHost:
             return "Server host is missing"
         case .invalidPort:
@@ -1129,7 +1140,7 @@ enum ConfigurationError: LocalizedError, Equatable {
             return "Invalid Xray JSON configuration"
         case .invalidFinalMask:
             return "Unsupported or invalid FinalMask settings; supported masks are TCP fragmentation for VLESS/Trojan over TCP/RAW with TLS or REALITY"
-        case let .invalidHysteria(reason):
+        case let .invalidHysteria(reason), let .invalidShadowsocks(reason):
             return reason
         }
     }

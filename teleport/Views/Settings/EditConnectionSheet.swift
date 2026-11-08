@@ -31,7 +31,7 @@ struct EditConnectionSheet: View {
                 .textFieldStyle(.roundedBorder)
                 .focused($isNameFieldFocused)
 
-            TextField("vless://, trojan://, hy2://, wireguard://, or configuration…", text: $configurationDraft, axis: .vertical)
+            TextField("vless://, trojan://, ss://, hy2://, wireguard://, or configuration…", text: $configurationDraft, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .font(.caption.monospaced())
                 .lineLimit(6...16)
