@@ -1,0 +1,16 @@
+{
+  "remarks": "Example Shadowsocks",
+  "outbounds": [
+    {
+      "tag": "proxy",
+      "protocol": "shadowsocks",
+      "settings": {
+        "address": "example.com",
+        "port": 8388,
+        "method": "aes-128-gcm",
+        "password": "synthetic-password"
+      },
+      "streamSettings": {"network": "tcp", "security": "none"}
+    }
+  ]
+}

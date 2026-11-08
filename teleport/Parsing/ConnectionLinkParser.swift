@@ -36,6 +36,8 @@ nonisolated struct ConnectionLinkParser {
         }
 
         switch scheme {
+        case "ss":
+            return try ShadowsocksConfigurationParser().parseLink(trimmed)
         case "hysteria":
             throw ConfigurationError.invalidHysteria("Hysteria 1 links are not supported; use a Hysteria 2 profile")
         case ConnectionProtocolType.vless.rawValue:

@@ -397,6 +397,18 @@ final class PersistenceTests: XCTestCase {
         }
     }
 
+    func testShadowsocksSaveAndLoad() throws {
+        try withIsolatedStore(name: "shadowsocks") { store, _ in
+            let configuration = try ConnectionLinkParser().parse("ss://aes-256-gcm:synthetic-password@example.com:8388#Example")
+            let connection = SavedConnection(id: UUID(), configuration: configuration, savedAt: Date(), customName: "My Shadowsocks server")
+            try store.save(AppSnapshot(savedConnections: [connection], subscriptionSources: [], selectedConnectionID: connection.id, proxyEndpoint: .default))
+            let loaded = store.load()
+            XCTAssertNil(store.lastLoadError)
+            XCTAssertEqual(loaded.savedConnections, [connection])
+            XCTAssertEqual(try ConnectionLinkParser().parse(loaded.savedConnections[0].configuration.rawLink), configuration)
+        }
+    }
+
     func testHysteriaSaveAndLoad() throws {
         try withIsolatedStore(name: "hysteria") { store, _ in
             let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("fixtures/subscriptions/hysteria2.json")

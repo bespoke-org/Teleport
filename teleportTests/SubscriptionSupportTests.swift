@@ -215,7 +215,7 @@ final class SubscriptionSupportTests: XCTestCase {
         XCTAssert(result.importedEntries.count == 1)
         XCTAssert(result.skippedCount == 5)
         XCTAssert(result.skippedReasons.keys.contains { $0.contains("Hysteria") })
-        XCTAssert(result.skippedReasons["Shadowsocks is not supported"] == 1)
+        XCTAssert(result.skippedReasons.keys.contains { $0.contains("Shadowsocks") })
         XCTAssert(result.statusMessage!.contains("Imported 1, skipped 5"))
         XCTAssert(result.statusMessage!.localizedCaseInsensitiveContains("balancer/observatory"))
         XCTAssert(result.statusMessage!.contains("XHTTP"))

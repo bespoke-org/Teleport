@@ -42,8 +42,7 @@ nonisolated struct XraySubscriptionProfileParser {
         let outbound = proxies[0]
         let proto = try string(outbound, "protocol", required: true)!
         switch proto {
-        case "vless", "trojan", "hysteria": break
-        case "shadowsocks": throw unsupported("Shadowsocks is not supported")
+        case "vless", "trojan", "hysteria", "shadowsocks": break
         case "wireguard": throw unsupported("WireGuard Xray JSON subscriptions are not supported; use wireguard:// links")
         default: throw unsupported("Unsupported Xray outbound protocol")
         }
@@ -55,6 +54,11 @@ nonisolated struct XraySubscriptionProfileParser {
             if try boolean(mux, "enabled") == true {
                 outboundMux = try XrayProfileValidation.mux(mux)
             }
+        }
+
+        if proto == "shadowsocks" {
+            guard outboundMux == nil else { throw unsupported("Shadowsocks multiplexing is not supported") }
+            return try ShadowsocksConfigurationParser().parseOutbound(outbound, remarks: string(profile, "remarks"))
         }
 
         if proto == "hysteria" {
