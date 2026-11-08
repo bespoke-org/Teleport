@@ -2,21 +2,20 @@ import SwiftUI
 
 struct GeodataSettingsView: View {
     @ObservedObject var viewModel: AppViewModel
+    var horizontalInset: CGFloat = 20
     @State private var draft = GeodataSourceDraft(settings: GeodataSourceSettings())
     @State private var showsValidation = false
     @State private var draftProfileID: UUID?
 
     private static let intervalOptions: [Int?] = [nil, 60, 360, 1440, 10080]
 
-    private var isUpdating: Bool { !viewModel.updatingGeodataKinds.isEmpty || viewModel.isOperationPending }
+    private var isUpdating: Bool { !viewModel.updatingSelectedProfileGeodataKinds.isEmpty || viewModel.isOperationPending }
     private var savedURLs: GeodataSourceDraft.URLs {
         let sources = viewModel.selectedProfileGeodataSources
         return .init(geosite: sources.geositeURLString, geoip: sources.geoipURLString)
     }
     private var hasChanges: Bool {
-        draft.urls != savedURLs || GeodataKind.allCases.contains {
-            draft.urls[$0] == nil && viewModel.hasCustomGeodata(kind: $0)
-        }
+        draft.urls != savedURLs
     }
     private var actionTitle: String {
         if draft.choice == .bundled { return "Use bundled data" }
@@ -25,70 +24,119 @@ struct GeodataSettingsView: View {
     }
 
     var body: some View {
-        Group {
-            Section("Geodata") {
-                Picker("Source", selection: Binding(
-                    get: { draft.choice },
-                    set: { choice in
-                        draft.choice = choice
-                        showsValidation = false
-                        if GeodataKind.allCases.allSatisfy({ draft.validationError(for: $0) == nil }) {
-                            applySource(forceDownload: false)
-                        }
+        Section {
+            heading("Geodata")
+            card {
+                VStack(alignment: .leading, spacing: 16) {
+                    HStack(spacing: 8) {
+                        Text("Source").foregroundStyle(.secondary)
+                        SettingsChoicePicker(title: sourceTitle, selection: Binding(
+                            get: { draft.choice }, set: selectSource
+                        ), choices: sourceChoices)
+                        .disabled(isUpdating)
+                        .accessibilityLabel("Geodata source")
+                        Spacer(minLength: 0)
                     }
-                )) {
-                    Text("Bundled with Teleport").tag(GeodataSourceDraft.Choice.bundled)
-                    ForEach(GeodataSourceDraft.presets) { provider in
-                        Text(provider.name).tag(GeodataSourceDraft.Choice.provider(provider.id))
-                    }
-                    Text("Custom URLs").tag(GeodataSourceDraft.Choice.custom)
-                }
-                .disabled(isUpdating)
-
-                if draft.choice == .custom {
-                    Text("Leave a URL empty to use Teleport's bundled data for that kind.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    VStack(spacing: 12) {
+                    if draft.choice == .custom {
                         urlField("Geosite URL", kind: .geosite, text: $draft.geositeURL)
                         urlField("GeoIP URL", kind: .geoip, text: $draft.geoipURL)
+                        Text("An empty URL uses Teleport's bundled data.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
-                }
-
-            }
-
-            Section("Geodata updates") {
-                Picker("Automatic updates", selection: Binding(
-                    get: { savedURLs.usesDownloads ? viewModel.selectedSplitTunnelProfile?.geodataUpdateIntervalMinutes : nil },
-                    set: { viewModel.setGeodataAutoUpdateIntervalMinutes($0) }
-                )) {
-                    ForEach(Self.intervalOptions, id: \.self) { option in
-                        Text(intervalLabel(option)).tag(option)
+                    HStack(alignment: .top, spacing: 24) {
+                        datasetRow(.geosite)
+                        datasetRow(.geoip)
                     }
-                }
-                .disabled(!savedURLs.usesDownloads)
-
-                if hasChanges || draft.choice == .custom || draft.urls.usesDownloads || isUpdating {
-                    HStack(spacing: 10) {
-                        Button(actionTitle) { applySource(forceDownload: !hasChanges) }
-                            .disabled(isUpdating)
-                        if isUpdating {
-                            Button("Cancel") { viewModel.cancelGeodataUpdates() }
+                    .font(.callout)
+                    Divider().opacity(0.5)
+                    HStack(spacing: 12) {
+                        HStack(spacing: 6) {
+                            Text("Updates").foregroundStyle(.secondary)
+                            SettingsChoicePicker(
+                                title: intervalLabel(updateInterval),
+                                selection: Binding(get: { updateInterval }, set: viewModel.setGeodataAutoUpdateIntervalMinutes),
+                                choices: Self.intervalOptions.map { SettingsChoice(value: $0, title: intervalLabel($0)) },
+                                font: .callout
+                            )
+                            .disabled(!savedURLs.usesDownloads)
+                            .accessibilityLabel("Automatic geodata updates")
                         }
-                        Spacer()
+                        .font(.callout)
+                        Spacer(minLength: 8)
+                        if hasChanges || draft.choice == .custom || draft.urls.usesDownloads || isUpdating {
+                            if isUpdating {
+                                ProgressView().controlSize(.mini)
+                                Button("Cancel") { viewModel.cancelGeodataUpdates() }
+                            } else {
+                                Button { applySource(forceDownload: !hasChanges) } label: {
+                                    Label(actionTitle, systemImage: "arrow.clockwise")
+                                }
+                            }
+                        }
                     }
+                    .font(.callout)
+                    .buttonStyle(.borderless)
                 }
-            }
-
-            Section("Data") {
-                datasetRow(.geosite)
-                datasetRow(.geoip)
             }
         }
+        .listSectionSeparator(.hidden)
         .onAppear {
             if draftProfileID != viewModel.selectedSplitTunnelProfileID { syncDraft() }
         }
         .onChange(of: viewModel.selectedSplitTunnelProfileID) { _, _ in syncDraft() }
         .onChange(of: viewModel.selectedProfileGeodataSources) { _, _ in syncDraft() }
+    }
+
+    private var sourceTitle: String {
+        switch draft.choice {
+        case .bundled: return "Bundled with Teleport"
+        case .custom: return "Custom URLs"
+        case .provider(let id): return GeodataSourceDraft.presets.first { $0.id == id }?.name ?? "Custom URLs"
+        }
+    }
+
+    private var updateInterval: Int? {
+        savedURLs.usesDownloads ? viewModel.selectedSplitTunnelProfile?.geodataUpdateIntervalMinutes : nil
+    }
+
+    private var sourceChoices: [SettingsChoice<GeodataSourceDraft.Choice>] {
+        [SettingsChoice(value: .bundled, title: "Bundled with Teleport")]
+            + GeodataSourceDraft.presets.map { SettingsChoice(value: .provider($0.id), title: $0.name) }
+            + [SettingsChoice(value: .custom, title: "Custom URLs")]
+    }
+
+    private func selectSource(_ choice: GeodataSourceDraft.Choice) {
+        draft.choice = choice
+        showsValidation = false
+        if GeodataKind.allCases.allSatisfy({ draft.validationError(for: $0) == nil }) {
+            applySource(forceDownload: false)
+        }
+    }
+
+    private func card<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        content()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 14)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: 0, leading: horizontalInset, bottom: 0, trailing: horizontalInset))
+            .listRowBackground(
+                RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.035))
+                    .padding(.horizontal, horizontalInset)
+            )
+    }
+
+    private func heading(_ title: String) -> some View {
+        Text(title)
+            .font(.headline)
+            .foregroundStyle(.primary)
+            .accessibilityAddTraits(.isHeader)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 20)
+            .padding(.bottom, 8)
+            // Match grouped Form headings after List's 16-point content inset.
+            .listRowInsets(EdgeInsets(top: 0, leading: horizontalInset - 6, bottom: 0, trailing: horizontalInset))
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
     }
 
     private func syncDraft() {
@@ -117,53 +165,53 @@ struct GeodataSettingsView: View {
     }
 
     private func datasetRow(_ kind: GeodataKind) -> some View {
-        let settings = viewModel.geodataSettings
-        let sameAttempt = viewModel.geodataLastAttemptSources == viewModel.selectedProfileGeodataSources
-        let lastError = sameAttempt ? (kind == .geosite ? settings.geositeLastError : settings.geoipLastError) : nil
-        let activeSource = kind == .geosite ? settings.geositeURLString : settings.geoipURLString
-        let isActive = savedURLs[kind] == activeSource
-        let lastUpdated = isActive ? (kind == .geosite ? settings.geositeLastUpdatedAt : settings.geoipLastUpdatedAt) : nil
-        let downloaded = isActive && savedURLs[kind] != nil && viewModel.hasCustomGeodata(kind: kind)
-        let updating = sameAttempt && viewModel.updatingGeodataKinds.contains(kind)
+        let status = viewModel.profileGeodataStatus(kind: kind)
+        let lastError: String? = { if case let .failed(message) = status { return message }; return nil }()
+        let lastUpdated: Date? = { if case let .ready(date) = status { return date }; return nil }()
+        let downloaded: Bool = { if case .ready = status { return true }; return false }()
+        let updating = viewModel.updatingSelectedProfileGeodataKinds.contains(kind)
 
         return VStack(alignment: .leading, spacing: 6) {
-            datasetStatus(kind, lastUpdated: lastUpdated, downloaded: downloaded, updating: updating, lastError: lastError)
-            if let lastError, !updating {
-                Text(lastError).font(.caption).foregroundStyle(.red).textSelection(.enabled)
+            HStack(spacing: 8) {
+                Image(systemName: kind == .geosite ? InterfaceSymbol.domainList : InterfaceSymbol.ipRanges)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 16)
+                    .accessibilityHidden(true)
+                Text(kind.displayName).fontWeight(.medium)
             }
+            .help(kind == .geosite ? "Domain lists" : "IP ranges")
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(kind.displayName + (kind == .geosite ? ", domain lists" : ", IP ranges"))
+            VStack(alignment: .leading, spacing: 4) {
+                datasetStatus(kind, lastUpdated: lastUpdated, downloaded: downloaded, updating: updating, lastError: lastError)
+                if let lastError, !updating {
+                    Text(lastError).foregroundStyle(.red).textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .font(.caption)
+            .padding(.leading, 24)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    @ViewBuilder
     private func datasetStatus(_ kind: GeodataKind, lastUpdated: Date?, downloaded: Bool, updating: Bool, lastError: String?) -> some View {
-        HStack(spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(kind.displayName)
-                Text(kind == .geosite ? "Domains" : "IP ranges")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .fixedSize()
-            Spacer(minLength: 16)
-            if updating {
+        if updating {
+            HStack(spacing: 6) {
                 ProgressView().controlSize(.mini)
                 Text("Updating…").foregroundStyle(.secondary)
-            } else {
-                if downloaded, let lastUpdated {
-                    Text("Updated \(Self.relativeFormatter.localizedString(for: lastUpdated, relativeTo: Date()))")
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text(downloaded ? "Updated previously" : (savedURLs[kind] == nil ? "Bundled" : "Downloads before connecting"))
-                        .foregroundStyle(.secondary)
-                }
-                if let lastError {
-                    Image(systemName: "exclamationmark.triangle")
-                        .foregroundStyle(.red)
-                        .help(lastError)
-                        .accessibilityLabel("Update failed: \(lastError)")
-                }
             }
+        } else if lastError != nil {
+            Text("Update failed").foregroundStyle(.red)
+        } else if downloaded, let lastUpdated {
+            Text("Updated \(Self.relativeFormatter.localizedString(for: lastUpdated, relativeTo: Date()))")
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            Text(downloaded ? "Downloaded" : (savedURLs[kind] == nil ? "Bundled" : "Waiting to download"))
+                .foregroundStyle(.secondary)
         }
-        .lineLimit(1)
     }
 
     private func applySource(forceDownload: Bool) {
@@ -181,7 +229,7 @@ struct GeodataSettingsView: View {
     }
 
     private func intervalLabel(_ minutes: Int?) -> String {
-        guard let minutes else { return "Off" }
+        guard let minutes else { return "Manual" }
         switch minutes {
         case 60: return "Every hour"
         case 360: return "Every 6 hours"

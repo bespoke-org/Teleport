@@ -14,9 +14,6 @@ struct SettingsView: View {
         } detail: {
             detailContent
                 .frame(minWidth: SettingsSidebarLayout.minimumDetailWidth)
-                .safeAreaInset(edge: .bottom, spacing: 0) {
-                    ConnectionErrorBanner(viewModel: viewModel)
-                }
                 .padding(.top, navigation.section == .portals || navigation.section == .tunnel ? 0 : 16)
                 .navigationTitle(navigation.section.title)
         }
@@ -52,6 +49,9 @@ struct SettingsView: View {
                 ToolbarItem(id: "settings.titleSpacer", placement: .principal) {
                     Color.clear.frame(width: 1, height: 1)
                 }
+            }
+            ToolbarItem(id: "settings.error", placement: .primaryAction) {
+                SettingsErrorIndicator(viewModel: viewModel, onOpenLogs: { navigation.select(.logs) })
             }
             PortalsToolbar(state: $portalsState, isActive: navigation.section == .portals,
                            connection: PortalsConnectionButton(viewModel: viewModel))
@@ -149,20 +149,21 @@ private struct GeneralSettingsView: View {
     var body: some View {
         Form {
             Section {
-                Picker(
-                    selection: Binding(
-                        get: { viewModel.connectionMode },
-                        set: { viewModel.selectConnectionMode($0) }
-                    )
-                ) {
-                    ForEach(ConnectionMode.allCases) { mode in
-                        Text(mode.displayName).tag(mode)
-                    }
+                LabeledContent {
+                    SettingsSegmentedPicker(title: "Connection mode", selection: Binding(
+                        get: { viewModel.connectionMode }, set: viewModel.selectConnectionMode
+                    ), choices: ConnectionMode.allCases.map {
+                        SettingsChoice(value: $0, title: $0.displayName)
+                    })
+                    .frame(width: 220, height: 28)
                 } label: {
-                    Text("Connection mode")
-                    Text(modeDescription(for: viewModel.connectionMode))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Connection mode")
+                        Text(modeDescription(for: viewModel.connectionMode))
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
-                .pickerStyle(.menu)
                 .disabled(!viewModel.canChangeSelection || viewModel.hasActiveConnectionSession)
 
                 Toggle(
@@ -213,19 +214,14 @@ private struct GeneralSettingsView: View {
                     )
                 )
 
-                Picker(
-                    selection: Binding(
-                        get: { viewModel.subscriptionConnectionSort },
-                        set: { viewModel.selectSubscriptionConnectionSort($0) }
-                    )
-                ) {
-                    ForEach(SubscriptionConnectionSort.allCases) { sort in
-                        Text(sort.displayName).tag(sort)
-                    }
-                } label: {
-                    Text("Portal order")
+                LabeledContent("Portal order") {
+                    SettingsSegmentedPicker(title: "Portal order", selection: Binding(
+                        get: { viewModel.subscriptionConnectionSort }, set: viewModel.selectSubscriptionConnectionSort
+                    ), choices: SubscriptionConnectionSort.allCases.map {
+                        SettingsChoice(value: $0, title: $0.displayName)
+                    })
+                    .frame(width: 220, height: 28)
                 }
-                .pickerStyle(.menu)
                 .help("Original follows the order in each subscription. Refresh existing subscriptions to restore their original order.")
             }
 
@@ -307,7 +303,7 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         case .portals:
             return "Portals"
         case .tunnel:
-            return "Tunnel"
+            return "Routing"
         case .advanced:
             return "Nerd Shit"
         case .logs:
@@ -322,13 +318,13 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         case .general:
             return "gearshape"
         case .portals:
-            return "oval.portrait"
+            return InterfaceSymbol.portal
         case .tunnel:
-            return "arrow.triangle.branch"
+            return InterfaceSymbol.routing
         case .advanced:
-            return "eyeglasses"
+            return "slider.horizontal.3"
         case .logs:
-            return "terminal"
+            return "doc.text.magnifyingglass"
         case .about:
             return "info.circle"
         }

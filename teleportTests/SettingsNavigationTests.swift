@@ -2,8 +2,8 @@ import XCTest
 
 @MainActor
 final class SettingsNavigationTests: XCTestCase {
-    func testTunnelIsOneSidebarDestination() {
-        XCTAssertEqual(SettingsSection.tunnel.title, "Tunnel")
+    func testRoutingIsOneSidebarDestination() {
+        XCTAssertEqual(SettingsSection.tunnel.title, "Routing")
         XCTAssertTrue(SettingsSection.sidebarSections.contains(.tunnel))
         XCTAssertEqual(SettingsSection.tunnel.sidebarSection, .tunnel)
     }

@@ -58,32 +58,14 @@ struct ConnectionErrorPopover: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
-            .help("Dismiss connection error")
-            .accessibilityLabel("Dismiss connection error")
+            .help("Dismiss error")
+            .accessibilityLabel("Dismiss error")
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .onChange(of: error) { _, _ in
             showsDetails = false
             showsRecovery = false
-        }
-    }
-}
-
-/// Observe connection failures without invalidating the settings navigation shell.
-struct ConnectionErrorBanner: View {
-    @ObservedObject var viewModel: AppViewModel
-
-    var body: some View {
-        if viewModel.connectionError != nil || viewModel.canAllowDirectTraffic {
-            VStack(spacing: 0) {
-                if let error = viewModel.connectionError {
-                    ConnectionErrorPopover(error: error, onDismiss: viewModel.dismissConnectionError)
-                }
-                LeakGuardRecoveryControl(viewModel: viewModel)
-            }
-            .background(.regularMaterial)
-            .overlay(alignment: .top) { Divider() }
         }
     }
 }

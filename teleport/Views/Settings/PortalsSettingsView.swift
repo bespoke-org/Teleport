@@ -141,13 +141,6 @@ struct PortalsSettingsView: View {
             }
             .background(SettingsDialogWindow())
         }
-        .sheet(item: $editingSubscription) { source in
-            SubscriptionSettingsSheet(source: source) { name, url, interval, filterDuplicates in
-                viewModel.updateSubscriptionSettings(id: source.id, customName: name, urlString: url,
-                    autoUpdateIntervalMinutes: interval, filterDuplicateImports: filterDuplicates)
-            }
-            .background(SettingsDialogWindow())
-        }
         .sheet(item: $qrPayload) {
             QRCodeSheet(payload: $0)
                 .background(SettingsDialogWindow())
@@ -172,7 +165,7 @@ struct PortalsSettingsView: View {
 
     private var emptyState: some View {
         ContentUnavailableView {
-            Label("No portals", systemImage: "network")
+            Label("No portals", systemImage: InterfaceSymbol.portal)
         } description: {
             Text("Add a portal link, subscription URL, or configuration file.")
         } actions: {
@@ -284,6 +277,7 @@ struct PortalsSettingsView: View {
     private func subscriptionHeader(_ group: PortalSubscriptionGroup) -> some View {
         let source = group.source
         let expanded = state.isExpanded(source.id)
+        let isUpdating = viewModel.isRefreshingSubscription(source.id) || viewModel.isDownloadingSubscriptionGeodata(source.id)
         let selected = viewModel.savedConnections.first { $0.id == viewModel.selectedConnectionID && $0.source?.subscriptionSourceID == source.id }
         return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
@@ -314,6 +308,8 @@ struct PortalsSettingsView: View {
                                     : group.total == 1 ? "1 portal" : "\(group.total) portals")
                                 if viewModel.isRefreshingSubscription(source.id) {
                                     Text("Updating…")
+                                } else if viewModel.isDownloadingSubscriptionGeodata(source.id) {
+                                    Text("Downloading geodata…")
                                 } else if let date = source.lastRefreshedAt {
                                     TimelineView(.periodic(from: .now, by: 60)) { _ in
                                         Text("Updated \(date.formatted(.relative(presentation: .numeric, unitsStyle: .abbreviated)))")
@@ -343,11 +339,23 @@ struct PortalsSettingsView: View {
                     viewModel.refreshSubscriptionHealth(id: source.id)
                 }
                 .disabled(viewModel.isRefreshingSubscriptionHealth(source.id) || viewModel.isQueuedSubscriptionHealth(source.id))
+                Button {
+                    viewModel.refreshSubscription(id: source.id)
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .symbolEffect(.rotate, options: .repeating, isActive: isUpdating)
+                        .frame(width: 20, height: 24)
+                }
+                .buttonStyle(.borderless)
+                .disabled(isUpdating)
+                .help(isUpdating ? "Updating subscription…" : "Update subscription")
+                .accessibilityLabel("Update \(source.displayName)")
+                .accessibilityValue(isUpdating ? "Updating" : "")
                 Menu {
                     Button("Update", systemImage: "arrow.clockwise") {
                         viewModel.refreshSubscription(id: source.id)
                     }
-                    .disabled(viewModel.isRefreshingSubscription(source.id))
+                    .disabled(isUpdating)
                     Button("Edit", systemImage: "pencil") { editingSubscription = source }
                     shareMenu(title: source.displayName, value: source.urlString)
                     Button("Remove", systemImage: "trash", role: .destructive) { removal = .subscription(source) }
@@ -362,8 +370,17 @@ struct PortalsSettingsView: View {
                 .fixedSize()
                 .help("More subscription actions")
                 .accessibilityLabel("More actions for \(source.displayName)")
+                .popover(isPresented: Binding(
+                    get: { editingSubscription?.id == source.id },
+                    set: { if !$0, editingSubscription?.id == source.id { editingSubscription = nil } }
+                ), attachmentAnchor: .rect(.bounds), arrowEdge: .top) {
+                    SubscriptionSettingsPopover(source: source) { name, url, interval, filterDuplicates in
+                        viewModel.updateSubscriptionSettings(id: source.id, customName: name, urlString: url,
+                            autoUpdateIntervalMinutes: interval, filterDuplicateImports: filterDuplicates)
+                    }
+                }
             }
-            if expanded, let error = source.lastError {
+            if let error = viewModel.subscriptionGeodataError(source.id) ?? source.lastError {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(.orange)

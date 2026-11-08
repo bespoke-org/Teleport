@@ -2823,7 +2823,7 @@ extension AppViewModel {
             guard let self, !self.geodataIsReady(for: sources) else { return nil }
             let errors = [(GeodataKind.geosite, self.geodataSettings.geositeLastError), (.geoip, self.geodataSettings.geoipLastError)]
                 .compactMap { kind, error in error.map { "\(kind.displayName): \($0)" } }.joined(separator: "\n")
-            return "Geodata for profile ‘\(profileName)’ could not be loaded. Check that profile's source URLs in Settings → Tunnel, then download its data again.\(errors.isEmpty ? "" : "\n" + errors)"
+            return "Geodata for profile ‘\(profileName)’ could not be loaded. Check that profile's source URLs in Settings → Routing, then download its data again.\(errors.isEmpty ? "" : "\n" + errors)"
         }
         if let failure { throw GeodataUpdateError.networkFailure(failure) }
     }

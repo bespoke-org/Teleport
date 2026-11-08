@@ -20,7 +20,13 @@ enum SettingsSearch {
     // reads portal names, subscription URLs, or other user configuration.
     private static let entries: [Entry] =
         SettingsSection.allCases.map {
-            Entry(result: SettingsSearchResult(section: $0, title: $0.title), keywords: $0 == .advanced ? "advanced diagnostics" : "")
+            let keywords: String
+            switch $0 {
+            case .advanced: keywords = "advanced diagnostics"
+            case .tunnel: keywords = "tunnel split tunneling traffic"
+            default: keywords = ""
+            }
+            return Entry(result: SettingsSearchResult(section: $0, title: $0.title), keywords: keywords)
         } + [
             entry(.general, "Connection mode", "tun tunnel system proxy vpn"),
             entry(.general, "Protect traffic during tunnel interruptions", "kill switch leak guard protection reconnect"),

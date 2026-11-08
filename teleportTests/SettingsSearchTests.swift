@@ -9,6 +9,8 @@ final class SettingsSearchTests: XCTestCase {
         XCTAssertEqual(SettingsSearch.results(for: "  APP ícon ").map(\.title), ["App icon"])
         XCTAssertEqual(SettingsSearch.results(for: "kill switch").map(\.section), [.general])
         XCTAssertEqual(SettingsSearch.results(for: "socks5").map(\.section), [.advanced])
+        XCTAssertEqual(SettingsSearch.results(for: "routing").first?.section, .tunnel)
+        XCTAssertEqual(SettingsSearch.results(for: "tunnel").first?.section, .tunnel)
     }
 
     func testAllWordsMustMatchOneSetting() {

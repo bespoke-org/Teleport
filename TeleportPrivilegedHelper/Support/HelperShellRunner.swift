@@ -74,11 +74,11 @@ struct HelperShellRunner: Sendable {
                 if let regex = try? NSRegularExpression(pattern: pattern),
                    let match = regex.firstMatch(in: output, range: NSRange(output.startIndex..., in: output)),
                    let range = Range(match.range(at: 1), in: output) {
-                    return "\(name) category ‘\(output[range])’ is missing or unreadable. Download the subscription's geodata in Settings → Tunnel, or change the routing rule to use a category available in the selected dataset."
+                    return "\(name) category ‘\(output[range])’ is missing or unreadable. Download the subscription's geodata in Settings → Routing, or change the routing rule to use a category available in the selected dataset."
                 }
             }
             if lower.contains("failed to load " + name.lowercased()) || lower.contains("failed to open file: " + file) {
-                return "Xray could not load the selected \(name) data. Open Settings → Tunnel and download the profile again, or choose another source."
+                return "Xray could not load the selected \(name) data. Open Settings → Routing and download the profile again, or choose another source."
             }
         }
         if lower.contains("failed to start:") {
@@ -89,7 +89,7 @@ struct HelperShellRunner: Sendable {
                 return "The portal's REALITY public key is invalid or missing. Refresh its subscription or correct the public key in the portal settings."
             }
             if lower.contains("failed to build routing") || lower.contains("invalid field rule") {
-                return "Xray rejected a rule in the tunnel profile. Check the destinations and outgoing portals in Settings → Tunnel, or restore the subscription's profile."
+                return "Xray rejected a rule in the tunnel profile. Check the destinations and outgoing portals in Settings → Routing, or restore the subscription's profile."
             }
             return "Xray rejected the portal configuration. Refresh the subscription or reimport the portal; if you customized its tunnel profile, restore the subscription's profile and try again."
         }
