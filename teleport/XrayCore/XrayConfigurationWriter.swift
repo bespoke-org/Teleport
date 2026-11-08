@@ -634,6 +634,9 @@ nonisolated struct XrayConfigurationWriter {
     private func makeOutboundSettings(configuration: ConnectionConfiguration, addressOverride: String? = nil) -> [String: Any] {
         let serverAddress = addressOverride ?? configuration.host
         switch configuration.protocolType {
+        case .shadowsocks:
+            return ["address": serverAddress, "port": configuration.port,
+                    "method": configuration.shadowsocks?.method ?? "", "password": configuration.shadowsocks?.password ?? ""]
         case .hysteria:
             return ["version": 2, "address": serverAddress, "port": configuration.port]
         case .vless:
