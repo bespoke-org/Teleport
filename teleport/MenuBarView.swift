@@ -56,13 +56,7 @@ struct MenuBarView: View {
 
             Spacer(minLength: 8)
 
-            Button {
-                if viewModel.canDisconnect {
-                    viewModel.disconnect()
-                } else {
-                    viewModel.connect()
-                }
-            } label: {
+            Button(action: viewModel.toggleConnection) {
                 Image(systemName: "power")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(viewModel.isConnected || viewModel.proxyPhase == .enabled ? Color.green : .primary)
@@ -71,8 +65,8 @@ struct MenuBarView: View {
             }
             .buttonStyle(MenuBarPowerButtonStyle())
             .disabled(!viewModel.canConnect && !viewModel.canDisconnect)
-            .help(viewModel.canDisconnect ? "Disconnect" : "Connect")
-            .accessibilityLabel(viewModel.canDisconnect ? "Disconnect" : "Connect")
+            .help(powerActionTitle)
+            .accessibilityLabel(powerActionTitle)
             .accessibilityValue(headerStatusText)
         }
         .padding(.horizontal, 8)
@@ -86,13 +80,13 @@ struct MenuBarView: View {
     }
 
     private var headerStatusText: String {
+        if viewModel.isDisconnecting { return "Disconnecting" }
+        if viewModel.isInstallingHelper { return "Installing helper" }
+        if viewModel.isConnecting { return "Connecting" }
         if viewModel.isConnected || viewModel.proxyPhase == .enabled {
             return "Connected"
         }
 
-        if viewModel.isInstallingHelper {
-            return "Installing helper"
-        }
 
         switch viewModel.connectionPhase {
         case .starting:
@@ -109,6 +103,7 @@ struct MenuBarView: View {
     }
 
     private var headerStatusColor: Color {
+        if viewModel.isDisconnecting || viewModel.isConnecting { return .orange }
         if viewModel.isConnected || viewModel.proxyPhase == .enabled {
             return .green
         }
@@ -125,6 +120,12 @@ struct MenuBarView: View {
         default:
             return .secondary
         }
+    }
+
+    private var powerActionTitle: String {
+        if viewModel.isDisconnecting { return "Disconnecting" }
+        if viewModel.canConnect { return viewModel.connectionPhase == .failed ? "Retry connection" : "Connect" }
+        return viewModel.canDisconnect ? "Disconnect" : "Connect"
     }
 
     private var configurationSection: some View {
