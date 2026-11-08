@@ -87,7 +87,7 @@ routing disabled remain available.
 
 ## MCP for routing and subscriptions
 
-Enable **Settings → Advanced → AI assistants → MCP access**, then copy the MCP client configuration. Local assistants can inspect and edit split routing and subscriptions through the running app. Changes support previews and revision checks; live routing changes require explicit reconnect permission. See [MCP setup and tools](docs/mcp.md).
+Enable **Settings → Advanced → AI assistants → MCP access**, then copy the MCP client configuration. Local assistants can inspect and edit split routing and subscriptions, check routes for batches of destinations, inspect and refresh geodata, and explicitly apply deferred subscription routing through the running app. Changes support previews and revision checks; live routing changes require explicit reconnect permission. See [MCP setup and tools](docs/mcp.md).
 
 ## Connection modes
 

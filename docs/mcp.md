@@ -38,6 +38,10 @@ Teleport instance per macOS user can serve MCP at a time.
 | `get_routing` | Saved profiles, ordered rules, selected editor target/profile, per-profile enablement and app-acknowledged application state |
 | `get_connections` | Portal IDs/names for assigning rules to a particular connection |
 | `explain_route` | Preview a hostname or IP against the selected profile and current local geodata |
+| `explain_routes` | Preview up to 100 hostnames/IPs in order against one saved profile and its geodata without switching the editor |
+| `apply_pending_routing` | Explicitly apply deferred subscription routing to an established TUN session, with reconnect permission |
+| `get_geodata` | Source hosts, download status and optional searchable, paginated categories for a saved profile |
+| `refresh_geodata` | Refresh the selected profile's existing sources; poll `get_geodata` for completion |
 | `audit_routing` | Find redundant/shadowed rules, missing categories and missing portal references |
 | `update_routing_profile` | Replace a profile's complete ordered rules, name and default action atomically; inactive profiles stay inactive |
 | `manage_routing_profile` | Select a target, assign/create a personal profile, customize/inherit provider routing, rename/delete, or enable/disable routing |
@@ -73,6 +77,73 @@ Provider profiles cannot be renamed, overwritten or deleted through MCP. A share
 personal profile can affect the active connection even when another target is
 selected in the editor; reconnect authorization is checked against the active
 profile, not just the editor selection.
+
+## Batch route checks
+
+Call `explain_routes` with `destinations` (1–100 hostnames or IP literals). Omit
+`profileID` to use the editor's profile, or specify any saved profile, including a
+provider profile. Results preserve input order, including repeated destinations.
+Each route includes the normalized destination, action, matched rule (or null for
+the default), and proxy portal ID and name when applicable.
+
+```json
+{
+  "destinations": ["api.example.com", "192.0.2.1"],
+  "profileID": "<profile-UUID>"
+}
+```
+
+The requested profile uses its own local geodata. Reading another profile does
+not select or assign it. Disabled routing uses the default proxy. Missing
+referenced categories fail the analysis instead of silently falling through to
+the default action. Large batches can hit the analysis work limit; retry with
+fewer destinations in that case.
+
+## Geodata
+
+`get_geodata` accepts an optional `profileID` (defaults to the editor selection).
+Each source reports its kind, host, status (`bundled`, `missing`, `loading`, `ready`
+or `failed`) and last update time when known. Full source URLs and raw error
+messages remain private. Status reads work even if downloading or parsing failed.
+
+To inspect categories, set `includeCategories: true`. Optional `kind` (`geosite`
+or `geoip`) and case-insensitive `query` filter the list. `limit` defaults to 100
+(maximum 200); pass the returned `nextOffset` as `offset` for the next page, until
+it is null. Categories require ready, readable local data. For example:
+
+```json
+{"includeCategories": true, "kind": "geosite", "query": "telegram", "limit": 20}
+```
+
+`refresh_geodata` refreshes the editor profile's existing custom sources using the
+usual mutation preview/revision workflow. It does not change source URLs. Bundled
+data ships with Teleport and cannot be refreshed separately. The response is
+`accepted`; poll `get_geodata` until neither source is `loading`, and inspect both
+statuses for partial failures. An active TUN requires `allowReconnect: true`.
+Refreshing an active personal profile can reconnect; provider profiles and
+inactive profiles populate their source cache for a subsequent connection.
+Deferred subscription changes stay deferred during a refresh.
+
+To inspect an update's effect, record `explain_routes` and `audit_routing` results,
+refresh, wait for ready data, and repeat the checks. These describe saved policy
+with local data, not a measurement of traffic through the running tunnel.
+
+## Apply deferred subscription routing
+
+When `get_routing.application.deferredSubscriptionChanges` is true,
+`apply_pending_routing` previews applying the current saved connection policy.
+Apply with the fresh `expectedRevision`, `dryRun: false` and `allowReconnect: true`.
+The tool requires an established TUN session with no connection operation in
+progress and rebuilds the connection request, including refreshed geodata even
+when its URLs and the rules have not changed.
+
+An accepted result does not mean the reconnect succeeded. Poll
+`get_routing.application`: `operationPending` and `liveApplyPending` show pending
+work, `hasError` reports an app error without its potentially secret details, and
+`savedRulesMatchAcknowledgedPolicy` / `savedGeodataSourcesMatchAcknowledgedPolicy`
+compare saved settings with the last app-acknowledged request. Source equality is
+not a geodata-content checksum. These fields are not proof of live traffic or of
+what an adopted session from an earlier app run actually loaded.
 
 ## Editing safely
 
@@ -112,8 +183,9 @@ state before retrying; an error is not proof that a change was rolled back.
 
 ## Route analysis limits
 
-Analysis uses the selected editor profile and that profile's cached geodata (which can differ from the connected profile). It
-refuses analysis while the profile's geodata is not ready. It does not resolve DNS,
+Single-route explanations and audits use the editor profile; batch checks use the
+requested profiles. Each uses its own cached geodata, which can differ from the
+connected profile. Analysis requires ready geodata. It does not resolve DNS,
 observe traffic, model sniffing, or include built-in Xray rules (DNS handling,
 UDP/443 blocking, local proxy inbounds). Explicit HTTP/SOCKS proxy traffic uses the
 default proxy. An explanation is a policy preview, not a connectivity test.
