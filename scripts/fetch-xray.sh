@@ -20,7 +20,7 @@ if [ "${1:-}" = "--update-pin" ]; then
     shift
 fi
 
-VERSION="${1:-v26.10.21}"
+VERSION="${1:-v26.10.31}"
 # One release zip per architecture slice of the universal binary.
 ASSETS="Xray-macos-arm64-v8a.zip Xray-macos-64.zip"
 REQUIRED_ARCHS="arm64 x86_64"

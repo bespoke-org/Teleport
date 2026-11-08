@@ -3,6 +3,10 @@
 Format is based on [_Keep a changelog_](https://keepachangelog.com) and uses
 [_Semantic versioning_](https://semver.org).
 
+## [Unreleased]
+### Changed
+- Bundled Xray runtime updated to 26.10.31.
+
 ## [0.6.0-rc.3] - 2026-11-08
 ### Features
 - New app icon with selectable color palettes
