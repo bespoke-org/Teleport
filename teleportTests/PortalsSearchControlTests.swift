@@ -4,26 +4,27 @@ import XCTest
 
 @MainActor
 final class PortalsSearchControlTests: XCTestCase {
-    func testCommandFRefocusesExistingQueryAfterClickAway() async throws {
+    func testNativeSearchRefocusesExistingQueryAfterEndingInteraction() async throws {
         let state = SearchState()
         let window = makeWindow(state)
         defer { window.close() }
         try await settle()
 
         for _ in 0..<3 {
-            XCTAssertTrue(window.performKeyEquivalent(with: commandF(in: window)))
+            state.focusRequest += 1
             try await settle()
             let field = try XCTUnwrap(searchField(in: window.contentView!.superview!))
             let editor = try XCTUnwrap(field.currentEditor())
             XCTAssertTrue(window.firstResponder === editor)
+            editor.selectAll(nil)
             editor.insertText("Paris")
             try await settle()
             XCTAssertEqual(state.query, "Paris")
 
-            clickAway(in: window)
+            window.makeFirstResponder(nil)
             try await settle()
             XCTAssertNil(field.currentEditor())
-            XCTAssertEqual(state.query, "Paris", "Click-away preserves a nonempty query")
+            XCTAssertEqual(state.query, "Paris", "Ending native search preserves a nonempty query")
             XCTAssertNotNil(searchField(in: window.contentView!.superview!))
             // An ordinary binding update must not steal focus back.
             state.query = "London"
@@ -32,11 +33,13 @@ final class PortalsSearchControlTests: XCTestCase {
         }
     }
 
-    func testEscapeAndEmptyClickAwayCollapseSearchAndAllowReopening() async throws {
+    func testEscapeAndEndingEmptySearchAllowReopening() async throws {
         let state = SearchState()
         state.query = "Saved query"
         let window = makeWindow(state)
         defer { window.close() }
+        try await settle()
+        state.focusRequest += 1
         try await settle()
         let field = try XCTUnwrap(searchField(in: window.contentView!.superview!))
         XCTAssertEqual(field.stringValue, "Saved query")
@@ -44,40 +47,45 @@ final class PortalsSearchControlTests: XCTestCase {
         editor.doCommand(by: #selector(NSResponder.cancelOperation(_:)))
         try await settle()
         XCTAssertEqual(state.query, "")
-        XCTAssertNil(searchField(in: window.contentView!.superview!))
+        XCTAssertNil(searchField(in: window.contentView!.superview!)?.currentEditor())
 
-        XCTAssertTrue(window.performKeyEquivalent(with: commandF(in: window)))
+        state.focusRequest += 1
         try await settle()
         XCTAssertNotNil(searchField(in: window.contentView!.superview!)?.currentEditor())
-        clickAway(in: window)
+        window.makeFirstResponder(nil)
         try await settle()
-        XCTAssertNil(searchField(in: window.contentView!.superview!))
-        XCTAssertTrue(window.performKeyEquivalent(with: commandF(in: window)))
+        XCTAssertNil(searchField(in: window.contentView!.superview!)?.currentEditor())
+        state.focusRequest += 1
         try await settle()
         XCTAssertNotNil(searchField(in: window.contentView!.superview!)?.currentEditor())
+    }
+
+    func testFocusKeepsSearchWidthInAConstrainedToolbar() async throws {
+        let state = SearchState()
+        let window = makeWindow(state)
+        defer { window.close() }
+        window.title = "Search"
+        window.setContentSize(NSSize(width: 500, height: 400))
+        try await settle()
+        let field = try XCTUnwrap(searchField(in: window.contentView!.superview!))
+        let restingFrame = field.convert(field.bounds, to: nil)
+        state.focusRequest += 1
+        try await settle()
+        XCTAssertNotNil(field.currentEditor())
+        XCTAssertEqual(field.convert(field.bounds, to: nil), restingFrame,
+                       "Focus must not expand a slightly compressed native search field")
+        window.makeFirstResponder(nil)
+        try await settle()
+        XCTAssertEqual(field.convert(field.bounds, to: nil), restingFrame)
     }
 
     private func makeWindow(_ state: SearchState) -> NSWindow {
         _ = NSApplication.shared
         let window = NSWindow(contentViewController: NSHostingController(rootView: SearchFixture(state: state)))
+        window.setContentSize(NSSize(width: 700, height: 400))
         window.isReleasedWhenClosed = false
         window.makeKeyAndOrderFront(nil)
         return window
-    }
-
-    private func commandF(in window: NSWindow) -> NSEvent {
-        NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
-                        windowNumber: window.windowNumber, context: nil, characters: "f",
-                        charactersIgnoringModifiers: "f", isARepeat: false, keyCode: 3)!
-    }
-
-    private func clickAway(in window: NSWindow) {
-        let point = NSPoint(x: 20, y: 20)
-        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-            NSApp.sendEvent(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: 0,
-                                              windowNumber: window.windowNumber, context: nil,
-                                              eventNumber: 0, clickCount: 1, pressure: 1)!)
-        }
     }
 
     private func searchField(in view: NSView) -> NSSearchField? {
@@ -91,6 +99,8 @@ final class PortalsSearchControlTests: XCTestCase {
 @MainActor
 private final class SearchState: ObservableObject {
     @Published var portals = PortalsState()
+    @Published var focusRequest = 0
+    @Published var isActive = true
     var query: String {
         get { portals.query }
         set { portals.query = newValue }
@@ -101,10 +111,13 @@ private struct SearchFixture: View {
     @ObservedObject var state: SearchState
 
     var body: some View {
-        Color.clear.frame(width: 700, height: 400)
+        Color.clear.frame(minWidth: 320, idealWidth: 700, maxWidth: .infinity, minHeight: 400)
             .toolbar {
-                PortalsToolbar(state: $state.portals, isActive: true,
-                               connection: Button("Connect", systemImage: "power") {})
+                ToolbarItem(placement: .primaryAction) {
+                    PortalsSearchControl(query: $state.portals.query,
+                                         isActive: state.isActive, focusRequest: state.focusRequest)
+                        .frame(width: 240, height: 36)
+                }
             }
     }
 }
