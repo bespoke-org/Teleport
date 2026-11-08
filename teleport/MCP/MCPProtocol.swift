@@ -96,7 +96,7 @@ nonisolated enum MCPTools {
         return ["name": name, "description": description,
                 "inputSchema": ["type": "object", "properties": fields, "required": required + (writes ? ["expectedRevision"] : []), "additionalProperties": false],
                 "annotations": ["readOnlyHint": !writes, "destructiveHint": writes, "idempotentHint": !writes,
-                                "openWorldHint": name.contains("subscription") && writes]]
+                                "openWorldHint": (name.contains("subscription") || name == "refresh_geodata") && writes]]
     }
     static var definitions: [[String: Any]] {
         [
@@ -104,6 +104,19 @@ nonisolated enum MCPTools {
             tool("get_subscriptions", "Read subscriptions, refresh state and imported portal IDs. URLs, credentials and raw network errors are omitted."),
             tool("get_connections", "Read portal IDs and names for routing through a specific connection. No connection credentials."),
             tool("explain_route", "Preview the selected profile for a domain or IP. Does not resolve DNS, sniff traffic or include Xray's built-in rules.", ["destination": string], required: ["destination"]),
+            tool("explain_routes", "Preview up to 100 hostnames/IPs in input order against one saved profile and its local geodata, without changing selection. Returns the matched rule, action and portal. No DNS, sniffing or built-in Xray rules.", [
+                "destinations": ["type": "array", "minItems": 1, "maxItems": 100, "items": string],
+                "profileID": string
+            ], required: ["destinations"]),
+            tool("apply_pending_routing", "Explicitly resume deferred subscription routing on an established TUN session. Requires allowReconnect when applied. Poll get_routing.application for acknowledged state, not live traffic.", writes: true),
+            tool("get_geodata", "Read a saved profile's geodata source hosts and download status. Optionally list searchable, paginated category names from its local data. URLs and raw errors are omitted.", [
+                "profileID": string, "includeCategories": boolean,
+                "kind": ["type": "string", "enum": ["geosite", "geoip"]],
+                "query": ["type": "string", "maxLength": 256],
+                "offset": ["type": "integer", "minimum": 0, "maximum": 1000000],
+                "limit": ["type": "integer", "minimum": 1, "maximum": 200]
+            ]),
+            tool("refresh_geodata", "Refresh the selected profile's existing geodata sources. Returns accepted; poll get_geodata. May reconnect an active TUN and requires explicit consent. Preserves deferred subscription routing. Bundled data is updated with the app, not downloaded here.", writes: true),
             tool("audit_routing", "Conservatively check the selected profile for duplicates, covered rules, missing categories and dangling connections using current local geodata."),
             tool("update_routing_profile", "Atomically replace a profile's name, default action and complete ordered rules. Preserve rule IDs when editing. Does not change geodata sources. Provider profiles are read-only; customize one before editing.", [
                 "profileID": string, "name": string, "defaultAction": action,
@@ -163,7 +176,7 @@ nonisolated enum MCPTools {
             }
         }
         if let array = value as? [Any], let child = schema["items"] as? [String: Any] {
-            guard array.count <= (schema["maxItems"] as? Int ?? 2000) else { throw MCPFailure("Too many items in \(path)") }
+            guard array.count >= (schema["minItems"] as? Int ?? 0), array.count <= (schema["maxItems"] as? Int ?? 2000) else { throw MCPFailure("Invalid item count in \(path)") }
             for item in array { try validate(item, schema: child, path: path + "[]") }
         }
     }

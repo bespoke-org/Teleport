@@ -1059,24 +1059,41 @@ final class AppViewModel: ObservableObject {
 
     var mcpConnectionProfileID: UUID? { connectionTunnelProfile?.id }
 
-    func mcpLoadRoutingAudit() async throws -> RoutingAudit {
+    func mcpLoadRoutingAudit(profile: SplitTunnelProfile) async throws -> RoutingAudit {
         let service = GeodataUpdateService(fileManager: store.fileManager)
-        let sources = matcherSources
+        let selected = profile.geodataSources ?? GeodataSources()
+        let active = GeodataSources(geositeURLString: geodataSettings.geositeURLString, geoipURLString: geodataSettings.geoipURLString)
+        let sources: GeodataSources? = selected == active && !profileGeodataLibrary.hasCachedPair(sources: selected) ? nil : selected
         return try await Task.detached(priority: .utility) {
             try RoutingAudit(service: service, sources: sources)
         }.value
     }
 
     var mcpGeodataRevision: [String] {
-        GeodataKind.allCases.map { kind in
-            switch profileGeodataStatus(kind: kind) {
-            case .bundled: return "bundled"
-            case .missing: return "missing"
-            case .loading: return "loading"
-            case let .failed(message): return "failed:" + message
-            case let .ready(date): return "ready:" + (date.map { String($0.timeIntervalSince1970) } ?? "unknown")
+        splitTunnelProfiles.flatMap { profile in
+            GeodataKind.allCases.map { kind in
+                switch mcpGeodataStatus(kind: kind, profile: profile) {
+                case .bundled: return "bundled"
+                case .missing: return "missing"
+                case .loading: return "loading"
+                case let .failed(message): return "failed:" + message
+                case let .ready(date): return "ready:" + (date.map { String($0.timeIntervalSince1970) } ?? "unknown")
+                }
             }
         }
+    }
+
+    func mcpGeodataStatus(kind: GeodataKind, profile: SplitTunnelProfile) -> ProfileGeodataLibrary.Status {
+        profileGeodataStatus(kind: kind, sources: profile.geodataSources ?? GeodataSources())
+    }
+
+    func mcpApplyPendingRouting(dryRun: Bool = false) throws {
+        guard hasDeferredSubscriptionRoutingChanges else { throw MCPFailure("No deferred subscription routing to apply") }
+        guard connectionMode == .tun, hasEstablishedConnection, !isOperationPending,
+              inFlightConnectionRequest == nil else { throw MCPFailure("Wait for an established, idle TUN session before applying deferred routing") }
+        // A subscription can refresh cached geodata without changing source URLs
+        // or rules. Rebuild the connection request even in that case.
+        if !dryRun { reconnectToSelectedConnection() }
     }
 
     /// The app's last acknowledged policy, not a read of the live Xray config.
@@ -1084,8 +1101,11 @@ final class AppViewModel: ObservableObject {
     var mcpRoutingApplicationState: [String: Any] {
         ["hasActiveSession": hasActiveConnectionSession,
          "operationPending": isOperationPending,
+         "liveApplyPending": pendingSplitTunnelLiveApply || splitTunnelApplyWorkItem != nil,
+         "hasError": lastError != nil,
          "deferredSubscriptionChanges": hasDeferredSubscriptionRoutingChanges,
          "savedRulesMatchAcknowledgedPolicy": appliedSplitTunnelRules.map { $0 == activeSplitTunnelRules && appliedSplitTunnelDefaultAction == activeSplitTunnelDefaultAction } as Any? ?? NSNull(),
+         "savedGeodataSourcesMatchAcknowledgedPolicy": appliedGeodataSources.map { $0 == connectionGeodataSources } as Any? ?? NSNull(),
          "basis": "app_acknowledged_policy_not_live_config"]
     }
 
@@ -1160,6 +1180,7 @@ final class AppViewModel: ObservableObject {
 
         splitTunnelApplyWorkItem?.cancel()
         let workItem = DispatchWorkItem { [weak self] in
+            self?.splitTunnelApplyWorkItem = nil
             self?.applySplitTunnelRulesLiveIfNeeded()
         }
         splitTunnelApplyWorkItem = workItem
@@ -1217,9 +1238,13 @@ final class AppViewModel: ObservableObject {
     }
 
     func profileGeodataStatus(kind: GeodataKind) -> ProfileGeodataLibrary.Status {
-        let status = profileGeodataLibrary.status(for: kind, sources: selectedProfileGeodataSources)
+        profileGeodataStatus(kind: kind, sources: selectedProfileGeodataSources)
+    }
+
+    private func profileGeodataStatus(kind: GeodataKind, sources: GeodataSources) -> ProfileGeodataLibrary.Status {
+        let status = profileGeodataLibrary.status(for: kind, sources: sources)
         if status == .loading { return status }
-        if geodataLastAttemptSources == selectedProfileGeodataSources {
+        if geodataLastAttemptSources == sources {
             if updatingGeodataKinds.contains(kind) { return .loading }
             if let error = kind == .geosite ? geodataSettings.geositeLastError : geodataSettings.geoipLastError {
                 return .failed(error)

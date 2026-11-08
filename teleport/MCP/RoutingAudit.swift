@@ -118,7 +118,6 @@ nonisolated struct RoutingAudit {
         return findings
     }
 
-    @MainActor
     func firstMatch(destination: String, rules: [SplitTunnelRule]) -> SplitTunnelRule? {
         let isIP = SplitTunnelRuleClassifier.isIPLiteral(destination)
         let candidate = SplitTunnelRule(value: isIP ? destination : "full:" + destination.lowercased(), kind: isIP ? .ip : .domain, action: .proxy)

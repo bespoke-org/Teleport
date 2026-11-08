@@ -194,6 +194,185 @@ final class MCPTests: XCTestCase {
         XCTAssertEqual(fixture.model.splitTunnelProfiles.first { $0.id == active.id }, active)
     }
 
+    func testBatchRoutesUseRequestedProfileGeodataWithoutChangingSelection() async throws {
+        let fixture = try MCPFixture(extraTarget: true)
+        defer { fixture.cleanUp() }
+        let model = fixture.model
+        var first = try XCTUnwrap(model.selectedSplitTunnelProfile)
+        var second = try XCTUnwrap(model.personalTunnelProfiles.first { $0.id != first.id })
+        first.rules = [.init(value: "geosite:test", kind: .geosite, action: .direct),
+                       .init(value: "192.0.2.0/24", kind: .ip, action: .block)]
+        second.rules = [.init(value: "geosite:test", kind: .geosite, action: .direct),
+                        .init(value: "192.0.2.0/24", kind: .ip, action: .block)]
+        model.replaceSplitTunnelProfile(first)
+        model.replaceSplitTunnelProfile(second)
+        let firstID = first.id
+        var loaded: [UUID] = []
+        fixture.auditLoader = { profile in
+            loaded.append(profile.id)
+            return RoutingAudit(sites: ["test": [.init(type: 2, value: profile.id == firstID ? "first.example" : "second.example", attributes: [])]], ips: [:])
+        }
+        fixture.access = .readOnly
+        let selection = model.selectedTunnelTarget
+        let revision = fixture.service.revision
+        let result = try await fixture.call("explain_routes", ["destinations": ["FIRST.EXAMPLE", "second.example", "192.0.2.1", "unknown.example"],
+            "profileID": second.id.uuidString])
+        let routes = try XCTUnwrap(result["routes"] as? [[String: Any]])
+        XCTAssertEqual(routes.compactMap { $0["action"] as? String }, ["proxy", "direct", "block", "proxy"])
+        XCTAssertEqual(routes.compactMap { $0["destination"] as? String }, ["first.example", "second.example", "192.0.2.1", "unknown.example"])
+        XCTAssertEqual((routes[1]["rule"] as? [String: Any])?["id"] as? String, second.rules[0].id.uuidString)
+        XCTAssertEqual(routes[0]["connectionID"] as? String, model.selectedConnectionID?.uuidString)
+        XCTAssertEqual(routes[0]["connectionName"] as? String, model.selectedConnection?.displayName)
+        XCTAssertTrue(routes[1]["connectionID"] is NSNull)
+        XCTAssertEqual(loaded, [second.id])
+        XCTAssertEqual(model.selectedTunnelTarget, selection)
+        XCTAssertEqual(fixture.service.revision, revision)
+    }
+
+    func testAuditLoaderReadsRequestedProfileCacheInsteadOfEditorData() async throws {
+        let fixture = try MCPFixture()
+        defer { fixture.cleanUp() }
+        let service = GeodataUpdateService(fileManager: MCPTestFileManager(root: fixture.root))
+        func field(_ tag: UInt8, _ bytes: Data) -> Data { Data([tag, UInt8(bytes.count)]) + bytes }
+        let rule = SplitTunnelRule(value: "geosite:test", kind: .geosite, action: .direct)
+        for domain in ["first.example", "second.example"] {
+            var profile = try XCTUnwrap(fixture.model.selectedSplitTunnelProfile)
+            let siteURL = URL(string: "https://" + domain + "/geosite.dat")!
+            let ipURL = URL(string: "https://" + domain + "/geoip.dat")!
+            profile.geodataSources = .init(geositeURLString: siteURL.absoluteString, geoipURLString: ipURL.absoluteString)
+            let domainEntry = Data([8, 2]) + field(18, Data(domain.utf8))
+            let site = field(10, field(10, Data("test".utf8)) + field(18, domainEntry))
+            let cidr = field(10, Data([192, 0, 2, 0])) + Data([16, 24])
+            let ip = field(10, field(10, Data("test".utf8)) + field(18, cidr))
+            try service.cacheDownload(.init(data: site, updatedAt: Date()), for: .geosite, source: siteURL)
+            try service.cacheDownload(.init(data: ip, updatedAt: Date()), for: .geoip, source: ipURL)
+            let audit = try await fixture.model.mcpLoadRoutingAudit(profile: profile)
+            XCTAssertNotNil(audit.firstMatch(destination: domain, rules: [rule]))
+            XCTAssertNil(audit.firstMatch(destination: domain == "first.example" ? "second.example" : "first.example", rules: [rule]))
+        }
+    }
+
+    func testBatchRoutesValidateInputsAndMissingCategories() async throws {
+        let fixture = try MCPFixture()
+        defer { fixture.cleanUp() }
+        for destinations in [[], Array(repeating: "example.com", count: 101), ["192.0.2.0/24"], ["https://example.com"], ["full:example.com"], ["FULL:example.com"]] {
+            await fixture.assertFailure("explain_routes", ["destinations": destinations])
+        }
+        await fixture.assertFailure("explain_routes", ["destinations": ["example.com"], "compareToProfileID": UUID().uuidString])
+        var profile = try XCTUnwrap(fixture.model.selectedSplitTunnelProfile)
+        profile.rules = [.init(value: "geosite:missing", kind: .geosite, action: .direct)]
+        fixture.model.replaceSplitTunnelProfile(profile)
+        await fixture.assertFailure("explain_routes", ["destinations": ["example.com"]])
+        fixture.model.setSplitTunnelEnabled(false)
+        let disabled = try await fixture.call("explain_routes", ["destinations": ["example.com"]])
+        XCTAssertEqual((disabled["routes"] as? [[String: Any]])?.first?["action"] as? String, "proxy")
+    }
+
+    func testAnalysisRejectsStateChangesWhileLoadingGeodata() async throws {
+        let fixture = try MCPFixture()
+        defer { fixture.cleanUp() }
+        fixture.auditLoader = { profile in
+            fixture.model.renameSplitTunnelProfile(id: profile.id, name: "Changed during load")
+            return RoutingAudit(sites: [:], ips: [:])
+        }
+        await fixture.assertFailure("explain_routes", ["destinations": ["example.com"]])
+        fixture.auditLoader = { _ in
+            fixture.access = .off
+            return RoutingAudit(sites: [:], ips: [:])
+        }
+        await fixture.assertFailure("get_geodata", ["includeCategories": true])
+    }
+
+    func testGeodataCategoriesAreSearchableAndPaginated() async throws {
+        let fixture = try MCPFixture()
+        defer { fixture.cleanUp() }
+        fixture.access = .readOnly
+        fixture.auditLoader = { _ in RoutingAudit(sites: ["test-b": [], "test-a": [], "other": []],
+                                                  ips: ["test": .init(ranges: [], reverseMatch: false)]) }
+        let result = try await fixture.call("get_geodata", ["includeCategories": true, "kind": "geosite", "query": "TEST", "limit": 1])
+        XCTAssertEqual(result["categories"] as? [String], ["geosite:test-a"])
+        XCTAssertEqual(result["totalCategories"] as? Int, 2)
+        XCTAssertEqual(result["nextOffset"] as? Int, 1)
+        let next = try await fixture.call("get_geodata", ["includeCategories": true, "kind": "geosite", "query": "test", "offset": 1, "limit": 1])
+        XCTAssertEqual(next["categories"] as? [String], ["geosite:test-b"])
+        XCTAssertTrue(next["nextOffset"] is NSNull)
+        await fixture.assertFailure("get_geodata", ["limit": 0])
+        await fixture.assertFailure("get_geodata", ["offset": -1])
+    }
+
+    func testGeodataRefreshChecksConsentAndReportsRedactedFailure() async throws {
+        let fixture = try MCPFixture(connected: true)
+        defer { fixture.cleanUp() }
+        let deadline = Date().addingTimeInterval(3)
+        while !fixture.model.isConnected && Date() < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        var profile = try XCTUnwrap(fixture.model.selectedSplitTunnelProfile)
+        profile.geodataSources = .init(geositeURLString: "https://data.example/private-token?key=secret")
+        fixture.model.replaceSplitTunnelProfile(profile)
+        let state = try await fixture.call("get_geodata")
+        XCTAssertEqual((state["sources"] as? [[String: Any]])?.first?["host"] as? String, "data.example")
+        XCTAssertFalse(String(describing: state).contains("private-token"))
+        await fixture.assertFailure("get_geodata", ["includeCategories": true])
+        var args: [String: Any] = ["expectedRevision": fixture.service.revision]
+        let preview = try await fixture.call("refresh_geodata", args)
+        XCTAssertEqual(preview["mayReconnect"] as? Bool, true)
+        XCTAssertEqual(fixture.geodataService.requestCount, 0)
+        args["dryRun"] = false
+        await fixture.assertFailure("refresh_geodata", args)
+        args["allowReconnect"] = true
+        fixture.access = .readOnly
+        await fixture.assertFailure("refresh_geodata", args)
+        fixture.access = .readWrite
+        args["expectedRevision"] = "stale"
+        await fixture.assertFailure("refresh_geodata", args)
+        XCTAssertEqual(fixture.geodataService.requestCount, 0)
+        args["expectedRevision"] = fixture.service.revision
+        let accepted = try await fixture.call("refresh_geodata", args)
+        XCTAssertEqual(accepted["status"] as? String, "accepted")
+        let finish = Date().addingTimeInterval(3)
+        while !fixture.model.updatingSelectedProfileGeodataKinds.isEmpty && Date() < finish { try await Task.sleep(for: .milliseconds(5)) }
+        let failed = try await fixture.call("get_geodata")
+        XCTAssertEqual((failed["sources"] as? [[String: Any]])?.first?["status"] as? String, "failed")
+        XCTAssertEqual(fixture.geodataService.requestCount, 1)
+        XCTAssertFalse(String(describing: failed).contains("private-token"))
+        XCTAssertFalse(String(describing: failed).contains("secret"))
+        XCTAssertEqual(fixture.provider.connectCount, 0)
+    }
+
+    func testGeodataRefreshPublishesReadyStateAndReconnectsOnce() async throws {
+        let fixture = try MCPFixture(connected: true)
+        defer { fixture.cleanUp() }
+        let deadline = Date().addingTimeInterval(3)
+        while !fixture.model.isConnected && Date() < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        var profile = try XCTUnwrap(fixture.model.selectedSplitTunnelProfile)
+        profile.geodataSources = .init(geositeURLString: "https://data.example/site.dat", geoipURLString: "https://data.example/ip.dat")
+        fixture.model.replaceSplitTunnelProfile(profile)
+        fixture.geodataService.succeed = true
+        _ = try await fixture.call("refresh_geodata", ["expectedRevision": fixture.service.revision, "dryRun": false, "allowReconnect": true])
+        let finish = Date().addingTimeInterval(3)
+        while (fixture.model.updatingSelectedProfileGeodataKinds.isEmpty == false || fixture.provider.connectCount == 0) && Date() < finish {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        let result = try await fixture.call("get_geodata")
+        XCTAssertEqual((result["sources"] as? [[String: Any]])?.compactMap { $0["status"] as? String }, ["ready", "ready"])
+        XCTAssertEqual(fixture.geodataService.requestCount, 2)
+        XCTAssertEqual(fixture.provider.connectCount, 1)
+    }
+
+    func testBundledGeodataAndAbsentDeferredPolicyAreNotAcceptedAsUpdates() async throws {
+        let fixture = try MCPFixture()
+        defer { fixture.cleanUp() }
+        await fixture.assertFailure("refresh_geodata", ["expectedRevision": fixture.service.revision])
+        await fixture.assertFailure("apply_pending_routing", ["expectedRevision": fixture.service.revision, "dryRun": false, "allowReconnect": true])
+    }
+
+    func testApplyPendingRoutingRequiresConsentAndResumesDeferredPolicy() async throws {
+        try await assertDeferredRoutingPreserved(operation: "apply_pending")
+    }
+
+    func testGeodataRefreshPreservesDeferredSubscriptionRouting() async throws {
+        try await assertDeferredRoutingPreserved(operation: "refresh_geodata")
+    }
+
     func testDeletingInactiveProfilePreservesDeferredSubscriptionRouting() async throws {
         try await assertDeferredRoutingPreserved(operation: "delete")
     }
@@ -207,7 +386,9 @@ final class MCPTests: XCTestCase {
     }
 
     private func assertDeferredRoutingPreserved(operation: String) async throws {
-        let payload = try JSONSerialization.data(withJSONObject: ["Name": "Updated provider", "DirectSites": ["new.example"]])
+        var routing: [String: Any] = ["Name": "Updated provider", "DirectSites": ["new.example"]]
+        if operation == "refresh_geodata" { routing["Geositeurl"] = "https://data.example/site.dat" }
+        let payload = try JSONSerialization.data(withJSONObject: routing)
         let fixture = try MCPFixture(connected: true, providerProfile: true, extraTarget: true,
                                      routingHeader: "happ://routing/onadd/" + payload.base64EncodedString())
         defer { fixture.cleanUp() }
@@ -226,6 +407,46 @@ final class MCPTests: XCTestCase {
         XCTAssertEqual(model.selectedSplitTunnelProfile?.rules.first?.value, "new.example")
         XCTAssertEqual(model.mcpRoutingApplicationState["deferredSubscriptionChanges"] as? Bool, true)
         XCTAssertEqual(model.mcpRoutingApplicationState["savedRulesMatchAcknowledgedPolicy"] as? Bool, false)
+
+        if operation == "refresh_geodata" {
+            let finishImport = Date().addingTimeInterval(3)
+            while !model.updatingSelectedProfileGeodataKinds.isEmpty && Date() < finishImport { try await Task.sleep(for: .milliseconds(5)) }
+            fixture.geodataService.succeed = true
+            _ = try await fixture.call("refresh_geodata", ["expectedRevision": fixture.service.revision, "dryRun": false, "allowReconnect": true])
+            let finishRefresh = Date().addingTimeInterval(3)
+            while !model.updatingSelectedProfileGeodataKinds.isEmpty && Date() < finishRefresh { try await Task.sleep(for: .milliseconds(5)) }
+            XCTAssertEqual(model.mcpRoutingApplicationState["deferredSubscriptionChanges"] as? Bool, true)
+            XCTAssertEqual(fixture.provider.connectCount, 0)
+            XCTAssertEqual(fixture.provider.disconnectCount, 0)
+            let state = try await fixture.call("get_geodata")
+            XCTAssertEqual((state["sources"] as? [[String: Any]])?.first?["status"] as? String, "ready")
+            return
+        }
+
+        if operation == "apply_pending" {
+            var arguments: [String: Any] = ["expectedRevision": fixture.service.revision]
+            let preview = try await fixture.call("apply_pending_routing", arguments)
+            XCTAssertEqual(preview["mayReconnect"] as? Bool, true)
+            XCTAssertEqual(model.mcpRoutingApplicationState["deferredSubscriptionChanges"] as? Bool, true)
+            arguments["dryRun"] = false
+            await fixture.assertFailure("apply_pending_routing", arguments)
+            XCTAssertEqual(model.mcpRoutingApplicationState["deferredSubscriptionChanges"] as? Bool, true)
+            arguments["allowReconnect"] = true
+            fixture.access = .readOnly
+            await fixture.assertFailure("apply_pending_routing", arguments)
+            fixture.access = .readWrite
+            let accepted = try await fixture.call("apply_pending_routing", arguments)
+            XCTAssertEqual(accepted["status"] as? String, "accepted")
+            XCTAssertEqual(model.mcpRoutingApplicationState["operationPending"] as? Bool, true)
+            XCTAssertEqual(model.mcpRoutingApplicationState["deferredSubscriptionChanges"] as? Bool, false)
+            await fixture.assertFailure("apply_pending_routing", arguments)
+            try await Task.sleep(for: .milliseconds(1000))
+            XCTAssertEqual(fixture.provider.connectCount, 1)
+            XCTAssertEqual(model.mcpRoutingApplicationState["liveApplyPending"] as? Bool, false)
+            XCTAssertEqual(model.mcpRoutingApplicationState["savedRulesMatchAcknowledgedPolicy"] as? Bool, true)
+            XCTAssertEqual(model.mcpRoutingApplicationState["savedGeodataSourcesMatchAcknowledgedPolicy"] as? Bool, true)
+            return
+        }
 
         let inactive = try XCTUnwrap(model.personalTunnelProfiles.first { $0.name == "Other" })
         if operation == "select" { model.selectTunnelTarget(.subscription(fixture.otherSourceID)) }
@@ -293,7 +514,9 @@ private final class MCPFixture {
     let store: ConfigurationStore
     let provider: MCPTestProvider
     var access = MCPAccess.readWrite
-    lazy var service = TeleportMCPService(model: model, access: { [unowned self] in self.access }, loadAudit: { RoutingAudit(sites: [:], ips: [:]) })
+    let geodataService = MCPTestGeodataService()
+    var auditLoader: (SplitTunnelProfile) async throws -> RoutingAudit = { _ in RoutingAudit(sites: [:], ips: [:]) }
+    lazy var service = TeleportMCPService(model: model, access: { [unowned self] in self.access }, loadAudit: { [unowned self] in try await self.auditLoader($0) })
 
     init(connected: Bool = false, providerProfile: Bool = false, extraTarget: Bool = false, routingHeader: String? = nil) throws {
         let manager = MCPTestFileManager(root: root)
@@ -323,7 +546,7 @@ private final class MCPFixture {
                                  return (responseData, HTTPURLResponse(url: responseURL, statusCode: 200, httpVersion: nil, headerFields: ["routing": routingHeader])!)
                              }),
                              healthProbeService: ConnectionHealthProbeService(), systemProxyService: SystemProxyService(fileManager: manager, log: log),
-                             geodataUpdateCoordinator: GeodataUpdateCoordinator(service: GeodataUpdateService(fileManager: manager)), log: log)
+                             geodataUpdateCoordinator: GeodataUpdateCoordinator(service: geodataService), log: log)
     }
 
     func call(_ name: String, _ args: [String: Any] = [:]) async throws -> [String: Any] {
@@ -352,15 +575,58 @@ private final class MCPTestFileManager: FileManager, @unchecked Sendable {
 }
 
 private final class MCPTestProvider: ConnectionProvider, @unchecked Sendable {
-    let state: ConnectionState
+    private var state: ConnectionState
     private let lock = NSLock()
     private var connects = 0
     private var disconnects = 0
+    private var subscribers: [UUID: AsyncStream<ConnectionState>.Continuation] = [:]
     var connectCount: Int { lock.withLock { connects } }
     var disconnectCount: Int { lock.withLock { disconnects } }
     init(connected: Bool) { state = connected ? .connected(.init(id: UUID(), mode: .tun, connectedAt: Date())) : .idle }
-    func currentState() async -> ConnectionState { state }
-    func stateUpdates() -> AsyncStream<ConnectionState> { AsyncStream { $0.yield(state); $0.finish() } }
-    func connect(_ request: ConnectionRequest) async throws { lock.withLock { connects += 1 } }
-    func disconnect() async throws { lock.withLock { disconnects += 1 } }
+    func currentState() async -> ConnectionState { lock.withLock { state } }
+    func stateUpdates() -> AsyncStream<ConnectionState> {
+        AsyncStream { continuation in
+            let id = UUID()
+            let initial = lock.withLock { subscribers[id] = continuation; return state }
+            continuation.yield(initial)
+            continuation.onTermination = { [weak self] _ in
+                guard let self else { return }
+                _ = self.lock.withLock { self.subscribers.removeValue(forKey: id) }
+            }
+        }
+    }
+    func connect(_ request: ConnectionRequest) async throws {
+        lock.withLock { connects += 1 }
+        publish(.connected(.init(id: UUID(), mode: .tun, connectedAt: Date())))
+    }
+    func disconnect() async throws {
+        lock.withLock { disconnects += 1 }
+        publish(.idle)
+    }
+    private func publish(_ value: ConnectionState) {
+        let observers = lock.withLock { state = value; return Array(subscribers.values) }
+        observers.forEach { $0.yield(value) }
+    }
+}
+
+nonisolated private final class MCPTestGeodataService: GeodataUpdateServicing, @unchecked Sendable {
+    private let lock = NSLock()
+    private var requests = 0
+    private var success = false
+    private var activated = Set<GeodataKind>()
+    var succeed: Bool {
+        get { lock.withLock { success } }
+        set { lock.withLock { success = newValue } }
+    }
+    var requestCount: Int { lock.withLock { requests } }
+    func cacheCurrentDownload(for kind: GeodataKind, source: URL?, updatedAt: Date?) throws {}
+    func prepareUpdate(kind: GeodataKind, from source: URL, useCache: Bool) async throws -> GeodataUpdateService.PreparedUpdate {
+        lock.withLock { requests += 1 }
+        if succeed { return .init(stagedURL: URL(fileURLWithPath: "/unused-mcp-test-staging"), updatedAt: Date(), changed: true) }
+        throw GeodataUpdateError.networkFailure("Failed https://data.example/private-token?key=secret")
+    }
+    func activate(_ update: GeodataUpdateService.PreparedUpdate, for kind: GeodataKind) throws { _ = lock.withLock { activated.insert(kind) } }
+    func discard(_ update: GeodataUpdateService.PreparedUpdate) {}
+    func hasCustomGeodata(for kind: GeodataKind) -> Bool { lock.withLock { activated.contains(kind) } }
+    func removeCustomGeodata(for kind: GeodataKind) throws {}
 }
