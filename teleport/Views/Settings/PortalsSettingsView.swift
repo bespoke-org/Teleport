@@ -327,6 +327,9 @@ struct PortalsSettingsView: View {
                 .disabled(isSearching)
                 .accessibilityLabel("\(source.displayName), \(expanded ? "expanded" : "collapsed")")
                 .accessibilityValue(selected.map { "Selected portal: \($0.displayName)" } ?? "")
+                if let usage = source.usage {
+                    SubscriptionUsageButton(usage: usage)
+                }
                 rowButton("Test all portals in subscription", icon: "waveform.path.ecg") {
                     viewModel.refreshSubscriptionHealth(id: source.id)
                 }

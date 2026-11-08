@@ -671,6 +671,7 @@ nonisolated struct SubscriptionSource: Codable, Equatable, Identifiable {
     var lastRefreshedAt: Date?
     var lastError: String?
     var lastSkippedCount: Int
+    var usage: SubscriptionUsage?
 
     var displayName: String {
         let host = URL(string: urlString)?.host ?? ""
@@ -695,7 +696,8 @@ nonisolated struct SubscriptionSource: Codable, Equatable, Identifiable {
         filterDuplicateImports: Bool = true,
         lastRefreshedAt: Date? = nil,
         lastError: String? = nil,
-        lastSkippedCount: Int = 0
+        lastSkippedCount: Int = 0,
+        usage: SubscriptionUsage? = nil
     ) {
         self.id = id
         self.urlString = urlString
@@ -706,6 +708,7 @@ nonisolated struct SubscriptionSource: Codable, Equatable, Identifiable {
         self.lastRefreshedAt = lastRefreshedAt
         self.lastError = lastError
         self.lastSkippedCount = lastSkippedCount
+        self.usage = usage
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -718,6 +721,7 @@ nonisolated struct SubscriptionSource: Codable, Equatable, Identifiable {
         case lastRefreshedAt
         case lastError
         case lastSkippedCount
+        case usage
     }
 
     init(from decoder: Decoder) throws {
@@ -731,6 +735,7 @@ nonisolated struct SubscriptionSource: Codable, Equatable, Identifiable {
         lastRefreshedAt = try container.decodeIfPresent(Date.self, forKey: .lastRefreshedAt)
         lastError = try container.decodeIfPresent(String.self, forKey: .lastError)
         lastSkippedCount = try container.decodeIfPresent(Int.self, forKey: .lastSkippedCount) ?? 0
+        usage = try container.decodeIfPresent(SubscriptionUsage.self, forKey: .usage)
     }
 }
 

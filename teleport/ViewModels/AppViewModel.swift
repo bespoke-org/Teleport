@@ -745,6 +745,7 @@ final class AppViewModel: ObservableObject {
                     source.lastError = nil
                     source.lastRefreshedAt = nil
                     source.lastSkippedCount = 0
+                    source.usage = nil
                 }
             }
 
@@ -2102,6 +2103,7 @@ final class AppViewModel: ObservableObject {
                     skippedCount: importResult.skippedCount,
                     importStatus: importStatus.isEmpty ? nil : importStatus,
                     routing: fetched.routing,
+                    usage: fetched.usage,
                     to: source.id,
                     fetchedAt: Date(),
                     autoSelectFirstImported: autoSelectFirstImported,
@@ -2137,6 +2139,7 @@ final class AppViewModel: ObservableObject {
         skippedCount: Int,
         importStatus: String?,
         routing: SubscriptionRoutingImport?,
+        usage: SubscriptionUsage?,
         to sourceID: UUID,
         fetchedAt: Date,
         autoSelectFirstImported: Bool,
@@ -2187,6 +2190,7 @@ final class AppViewModel: ObservableObject {
         normalizeTunnelTarget()
 
         updateSubscriptionSource(sourceID) {
+            $0.usage = usage
             $0.lastRefreshedAt = fetchedAt
             $0.lastSkippedCount = skippedCount
             $0.lastError = importStatus

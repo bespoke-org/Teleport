@@ -110,9 +110,11 @@ nonisolated struct SubscriptionFetchResult {
     let candidates: [SubscriptionCandidate]
     let routing: SubscriptionRoutingImport?
     let routingWarning: String?
+    let usage: SubscriptionUsage?
 
     init(data: Data, response: HTTPURLResponse) throws {
         candidates = try SubscriptionPayloadDecoder().decode(data)
+        usage = SubscriptionUsage.parse(response.value(forHTTPHeaderField: "subscription-userinfo"))
         let result = SubscriptionRoutingHeaderParser().parse(response.value(forHTTPHeaderField: "routing"))
         routing = result.routing
         routingWarning = result.warning
