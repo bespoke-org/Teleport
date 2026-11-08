@@ -746,6 +746,7 @@ final class AppViewModel: ObservableObject {
                     source.lastRefreshedAt = nil
                     source.lastSkippedCount = 0
                     source.usage = nil
+                    source.announcement = nil
                 }
             }
 
@@ -2104,6 +2105,7 @@ final class AppViewModel: ObservableObject {
                     importStatus: importStatus.isEmpty ? nil : importStatus,
                     routing: fetched.routing,
                     usage: fetched.usage,
+                    announcement: fetched.announcement,
                     to: source.id,
                     fetchedAt: Date(),
                     autoSelectFirstImported: autoSelectFirstImported,
@@ -2140,6 +2142,7 @@ final class AppViewModel: ObservableObject {
         importStatus: String?,
         routing: SubscriptionRoutingImport?,
         usage: SubscriptionUsage?,
+        announcement: String?,
         to sourceID: UUID,
         fetchedAt: Date,
         autoSelectFirstImported: Bool,
@@ -2191,6 +2194,7 @@ final class AppViewModel: ObservableObject {
 
         updateSubscriptionSource(sourceID) {
             $0.usage = usage
+            $0.announcement = announcement
             $0.lastRefreshedAt = fetchedAt
             $0.lastSkippedCount = skippedCount
             $0.lastError = importStatus
