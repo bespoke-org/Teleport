@@ -2,12 +2,34 @@ import SwiftUI
 
 struct AdvancedSettingsView: View {
     @ObservedObject var viewModel: AppViewModel
+    @EnvironmentObject private var mcp: TeleportMCPController
     let onOpenLogs: () -> Void
     @State private var isConfirmingHelperUninstall = false
     @AppStorage(SystemStateDump.defaultsKey) private var capturesNetworkState = false
 
     var body: some View {
         Form {
+            Section {
+                Picker("MCP access", selection: Binding(get: { mcp.access }, set: { mcp.setAccess($0) })) {
+                    ForEach(MCPAccess.allCases, id: \.rawValue) { access in
+                        Text(access.title).tag(access)
+                    }
+                }
+                Button("Copy MCP client configuration") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(mcp.clientConfiguration, forType: .string)
+                }
+                if let error = mcp.error { Text(error).foregroundStyle(.red) }
+                if let operation = mcp.lastOperation {
+                    LabeledContent("Last tool", value: operation)
+                        .font(.caption)
+                }
+            } header: {
+                Text("AI assistants")
+            } footer: {
+                Text("Let local assistants inspect split routing and subscriptions. Read and edit also permits changes and subscription downloads. Routing changes can reconnect the VPN when explicitly requested. Keep Teleport open while using MCP.")
+            }
+
             Section {
                 HStack {
                     Text("HTTP/HTTPS")

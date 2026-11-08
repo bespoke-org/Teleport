@@ -85,6 +85,10 @@ caches stay separate from the combined files used by Xray. An incomplete profile
 blocks TUN split routing until its data is ready; System Proxy and TUN with split
 routing disabled remain available.
 
+## MCP for routing and subscriptions
+
+Enable **Settings → Advanced → AI assistants → MCP access**, then copy the MCP client configuration. Local assistants can inspect and edit split routing and subscriptions through the running app. Changes support previews and revision checks; live routing changes require explicit reconnect permission. See [MCP setup and tools](docs/mcp.md).
+
 ## Connection modes
 
 ### System Proxy

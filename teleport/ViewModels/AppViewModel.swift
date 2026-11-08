@@ -1043,6 +1043,52 @@ final class AppViewModel: ObservableObject {
         splitTunnelRules.contains { $0.isEnabled && ($0.kind == .geosite || $0.kind == .geoip) }
     }
 
+    /// Atomic profile edit shared with automation. An inactive profile can be
+    /// edited without selecting it or changing the live session's geodata.
+    func replaceSplitTunnelProfile(_ profile: SplitTunnelProfile) {
+        guard let index = splitTunnelProfiles.firstIndex(where: { $0.id == profile.id && $0.subscriptionSourceID == nil }),
+              splitTunnelProfiles[index] != profile else { return }
+        let previous = splitTunnelProfiles[index]
+        splitTunnelProfiles[index] = profile
+        schedulePersist()
+        if profile.id == connectionTunnelProfile?.id,
+           previous.rules != profile.rules || previous.defaultAction != profile.defaultAction {
+            scheduleSplitTunnelLiveApply()
+        }
+    }
+
+    var mcpConnectionProfileID: UUID? { connectionTunnelProfile?.id }
+
+    func mcpLoadRoutingAudit() async throws -> RoutingAudit {
+        let service = GeodataUpdateService(fileManager: store.fileManager)
+        let sources = matcherSources
+        return try await Task.detached(priority: .utility) {
+            try RoutingAudit(service: service, sources: sources)
+        }.value
+    }
+
+    var mcpGeodataRevision: [String] {
+        GeodataKind.allCases.map { kind in
+            switch profileGeodataStatus(kind: kind) {
+            case .bundled: return "bundled"
+            case .missing: return "missing"
+            case .loading: return "loading"
+            case let .failed(message): return "failed:" + message
+            case let .ready(date): return "ready:" + (date.map { String($0.timeIntervalSince1970) } ?? "unknown")
+            }
+        }
+    }
+
+    /// The app's last acknowledged policy, not a read of the live Xray config.
+    /// An adopted session may have been created by a previous app run.
+    var mcpRoutingApplicationState: [String: Any] {
+        ["hasActiveSession": hasActiveConnectionSession,
+         "operationPending": isOperationPending,
+         "deferredSubscriptionChanges": hasDeferredSubscriptionRoutingChanges,
+         "savedRulesMatchAcknowledgedPolicy": appliedSplitTunnelRules.map { $0 == activeSplitTunnelRules && appliedSplitTunnelDefaultAction == activeSplitTunnelDefaultAction } as Any? ?? NSNull(),
+         "basis": "app_acknowledged_policy_not_live_config"]
+    }
+
     // MARK: - Split-tunnel profiles
 
     @discardableResult
