@@ -32,6 +32,7 @@ final class SettingsSelectionTests: XCTestCase {
         await awaitUIUpdate("First selection popover has laid out its rows") {
             NSApp.windows.contains { !existing.contains($0.windowNumber) && $0.isVisible && $0.frame.height > 100 }
         }
+        print("[DEBUG-selection] opens=\(opens) active=\(NSApp.isActive) key=\(window.isKeyWindow) host=\(host.view.frame) windows=\(NSApp.windows.map { "\($0.windowNumber):\($0.isVisible):\($0.frame):existing=\(existing.contains($0.windowNumber))" })")
         let first = try XCTUnwrap(NSApp.windows.first { !existing.contains($0.windowNumber) && $0.isVisible })
         XCTAssertGreaterThan(first.frame.height, 100, "The first click must show rows, not an empty glass strip")
         XCTAssertEqual(opens, 1)
