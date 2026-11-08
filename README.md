@@ -117,7 +117,7 @@ Protection is enabled for new installations in Settings > General. Saved prefere
 - The app renews the guard every 45 seconds. After 180 seconds without renewal the helper **tightens to standby**, keeping traffic blocked. A helper restart also restores standby. Manual Disconnect, normal Quit, turning protection off while disconnected, or uninstalling the helper releases it. General settings show the helper's protection status and offer **Disconnect and restore direct access** after a crash.
 - Enabling protection clears existing PF connection states once, which can interrupt existing connections. Heartbeats do not flush states. Rules use stateless exceptions so narrowing a policy cannot leave old exceptions in the state table.
 
-Protection requires the stock macOS PF root anchor. Custom root rules cause connection startup to fail instead of silently loading an unused anchor. Packet-level verification on a disposable dual-stack macOS system is still required before claiming leak resistance across OS versions, network changes and third-party networking software; see the security audit.
+Protection requires the stock macOS PF root anchor. Custom root rules cause connection startup to fail instead of silently loading an unused anchor. Packet-level verification on a disposable dual-stack macOS system is still required before claiming leak resistance across OS versions, network changes and third-party networking software.
 
 If a connection fails, the guard keeps direct traffic blocked while Connect retries
 the portal. To stop trying and restore direct traffic, choose **Allow direct traffic**
