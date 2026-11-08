@@ -44,6 +44,7 @@ enum SettingsSearch {
             entry(.tunnel, "Geodata", "geosite geoip domain ip lists"),
             entry(.tunnel, "Source", "custom urls geosite geoip domain ip lists"),
             entry(.tunnel, "Automatic updates", "geodata interval schedule download"),
+            entry(.advanced, "MCP access", "ai assistants model context protocol routing subscriptions"),
             entry(.advanced, "Local proxy ports", "http https socks5 localhost 127.0.0.1"),
             entry(.advanced, "Privileged helper", "uninstall maintenance administrator"),
             entry(.advanced, "Capture network state", "diagnostics routes dns firewall"),

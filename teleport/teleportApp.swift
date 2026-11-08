@@ -11,6 +11,7 @@ import SwiftUI
 
 final class TeleportAppDelegate: NSObject, NSApplicationDelegate {
     let xrayVersion = XrayVersionModel()
+    let mcp = TeleportMCPController()
     var cleanupHandler: ((@escaping () -> Void) -> Void)?
     private var isTerminationPending = false
     private var dockVisibilitySubscription: AnyCancellable?
@@ -60,6 +61,7 @@ final class TeleportAppDelegate: NSObject, NSApplicationDelegate {
         guard !isTerminationPending else { return .terminateLater }
 
         isTerminationPending = true
+        mcp.stop()
         cleanupHandler {
             sender.reply(toApplicationShouldTerminate: true)
         }
@@ -68,6 +70,16 @@ final class TeleportAppDelegate: NSObject, NSApplicationDelegate {
 }
 
 @main
+struct TeleportEntryPoint {
+    static func main() {
+        if CommandLine.arguments.contains("--mcp") {
+            MCPLocalTransport.runStdio()
+        } else {
+            TeleportApp.main()
+        }
+    }
+}
+
 struct TeleportApp: App {
     @NSApplicationDelegateAdaptor(TeleportAppDelegate.self) private var appDelegate
     @StateObject private var viewModel: AppViewModel
@@ -77,6 +89,7 @@ struct TeleportApp: App {
         let viewModel = AppViewModel()
         _viewModel = StateObject(wrappedValue: viewModel)
         appDelegate.observeDockVisibility(of: viewModel)
+        appDelegate.mcp.attach(to: viewModel)
         appDelegate.cleanupHandler = { completion in
             viewModel.handleAppTermination(completion: completion)
         }
@@ -99,6 +112,7 @@ struct TeleportApp: App {
         Window("Settings", id: "settings") {
             SettingsView(viewModel: viewModel, navigation: $settingsNavigation)
                 .environmentObject(appDelegate.xrayVersion)
+                .environmentObject(appDelegate.mcp)
                 .focusedSceneValue(\.toggleSettingsSidebar) {
                     NSApplication.shared.sendAction(#selector(NSSplitViewController.toggleSidebar(_:)), to: nil, from: nil)
                 }
