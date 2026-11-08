@@ -217,6 +217,45 @@ final class HelperCommandDispatchTests: XCTestCase {
         }
     }
 
+    func testMissingGeodataCategoryNeverCopiesTheNextDiagnosticLine() throws {
+        // Root diagnostics belong in helper.log, not in the client-visible summary.
+        // An empty category must not authorize extracting a token from another line.
+        for file in ["geosite.dat", "geoip.dat"] {
+            for newline in ["\n", "\r\n", "\u{0085}", "\u{2028}", "\u{2029}"] {
+                let output = "list not found in \(file): \(newline)SENTINEL_ROOT_SECRET"
+                XCTAssertThrowsError(try HelperShellRunner().run(
+                    "printf '%s' \(shellQuote(output)) >&2; exit 7", label: "tunnel start script"
+                )) { error in
+                    XCTAssertFalse(error.localizedDescription.contains("SENTINEL_ROOT_SECRET"),
+                                   "Copied diagnostic after \(newline.debugDescription)")
+                    XCTAssertFalse(error.localizedDescription.contains("category ‘"))
+                }
+            }
+        }
+    }
+
+    func testGeodataCategoryNamesRemainBoundedAndAllowInlineWhitespace() throws {
+        for (category, allowed) in [
+            ("CATEGORY-!@ads.example_1", true),
+            (String(repeating: "A", count: 128), true),
+            (String(repeating: "A", count: 129), false),
+            ("SENTINEL_ROOT_SECRET/credentials", false),
+            ("\"SENTINEL_ROOT_SECRET\"", false)
+        ] {
+            for file in ["geosite.dat", "geoip.dat"] {
+                let output = "list not found in \(file): \t \(category) > another diagnostic"
+                XCTAssertThrowsError(try HelperShellRunner().run(
+                    "printf '%s' \(shellQuote(output)) >&2; exit 7", label: "tunnel start script"
+                )) { error in
+                    XCTAssertEqual(error.localizedDescription.contains("category ‘"), allowed)
+                    if allowed { XCTAssertTrue(error.localizedDescription.contains("‘\(category)’")) }
+                    XCTAssertFalse(error.localizedDescription.contains("another diagnostic"))
+                    XCTAssertFalse(error.localizedDescription.contains("SENTINEL_ROOT_SECRET"))
+                }
+            }
+        }
+    }
+
     func testMatchingCommandsDispatchOnlyTheirExecutorMethod() async throws {
         let executor = RecordingExecutor()
         let dispatcher = HelperCommandDispatcher(executor: executor)
