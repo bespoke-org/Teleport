@@ -12,7 +12,11 @@ final class AppViewModelGeodataTests: XCTestCase {
         let model = fixture.model
         await waitUntil { model.canConnect }
         XCTAssertEqual(model.selectedProfileGeodataSources, GeodataSources())
-        XCTAssertNotNil(model.geodataProfileError)
+        // The selected profile is bundled even though the previous session left
+        // global runtime files behind. Profile-isolated UI no longer reports
+        // those files as an error for this profile; startup must still clear them.
+        XCTAssertTrue(fixture.service.hasCustomGeodata(for: .geosite))
+        XCTAssertTrue(fixture.service.hasCustomGeodata(for: .geoip))
         model.connect()
         await waitUntil { fixture.provider.connectCount == 1 && !model.isOperationPending }
         XCTAssertFalse(fixture.provider.startedWithCustomGeodata)
