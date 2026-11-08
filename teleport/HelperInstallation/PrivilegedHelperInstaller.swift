@@ -196,6 +196,25 @@ nonisolated struct PrivilegedHelperInstaller: Sendable {
 
         verify_artifacts "$HELPER_SRC" "$XRAY_SRC"
 
+        # A private primary group identifies helper/core sockets to PF without
+        # granting an exception to every root daemon. Never add login users.
+        if ! /usr/bin/dscl . -read /Groups/_teleport >/dev/null 2>&1; then
+            /usr/sbin/dseditgroup -o create -r "Teleport isolated runtime" _teleport
+        fi
+        for attribute in GroupMembership GroupMembers NestedGroups; do
+            members=$(/usr/bin/dscl . -read /Groups/_teleport "$attribute" 2>/dev/null || true)
+            if printf '%s\\n' "$members" | /usr/bin/awk '{ sub(/^[^:]*:/, ""); if (NF) found=1 } END { exit !found }'; then
+                echo "Teleport runtime group must not contain login users." >&2
+                exit 1
+            fi
+        done
+        runtime_gid=$(/usr/bin/dscl . -read /Groups/_teleport PrimaryGroupID | /usr/bin/awk '{print $2}')
+        case "$runtime_gid" in ''|0|*[!0-9]*) echo "Invalid Teleport runtime group" >&2; exit 1 ;; esac
+        duplicate_groups=$(/usr/bin/dscl . -list /Groups PrimaryGroupID | /usr/bin/awk -v gid="$runtime_gid" '$2 == gid { n++ } END { print n+0 }')
+        [ "$duplicate_groups" -eq 1 ] || { echo "Teleport runtime group ID is shared" >&2; exit 1; }
+        primary_users=$(/usr/bin/dscl . -list /Users PrimaryGroupID | /usr/bin/awk -v gid="$runtime_gid" '$2 == gid { n++ } END { print n+0 }')
+        [ "$primary_users" -eq 0 ] || { echo "Teleport runtime group belongs to a user" >&2; exit 1; }
+
         mkdir -p /Library/PrivilegedHelperTools
         tmp_dir=$(/usr/bin/mktemp -d /Library/PrivilegedHelperTools/.teleport-install.XXXXXX)
 
@@ -286,6 +305,8 @@ nonisolated struct PrivilegedHelperInstaller: Sendable {
             <array>
                 <string>\(PrivilegedHelperClient.installedToolPath)</string>
             </array>
+            <key>GroupName</key>
+            <string>_teleport</string>
             <key>MachServices</key>
             <dict>
                 <key>\(TUNHelperProtocol.machServiceName)</key>

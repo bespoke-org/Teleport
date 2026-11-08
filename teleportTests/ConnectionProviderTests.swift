@@ -4,6 +4,38 @@ import XCTest
 
 final class ConnectionProviderTests: XCTestCase {
     @MainActor
+    func testProtectedTUNDoesNotEnqueueSubscriptionOrManualProbes() async throws {
+        let root = try makeIsolatedRoot("protected-probes")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let guardService = LeakGuardService(client: PrivilegedHelperClient(transport: GuardTransport()), isEnabled: true,
+                                            log: TeleportLog(directoryURL: root, fileName: "guard.log"))
+        let gate = RejectingProbeGate()
+        let (model, store) = try makeLaunchFixture(root: root, mode: .tun, enabled: false,
+            backend: RecordingConnectionBackend(), leakGuard: guardService,
+            probeService: ConnectionHealthProbeService(uplinkExemption: gate))
+        defer { store.deleteStoredDataForTesting() }
+        await waitUntil("ready") { await MainActor.run { model.canConnect } }
+        model.refreshVisibleConnectionHealth(force: true)
+        try await Task.sleep(for: .milliseconds(100))
+        let count = await gate.calls
+        XCTAssertEqual(count, 0, "protected mode must not even begin direct probe setup")
+        model.setLocalDNSDomains("home.arpa, corp.example")
+        XCTAssertEqual(model.localDNSDomains, ["corp.example", "home.arpa"])
+        model.setLocalDNSDomains("domain:example.com, invalid zone")
+        XCTAssertEqual(model.localDNSDomains, ["corp.example", "home.arpa"], "invalid input must preserve the saved zones")
+        try await guardService.armForSession(tunnelInterface: "utun123", protectedHosts: [])
+        let outcome = await LeakGuardProbeExemption(leakGuard: guardService).open(host: "must-not-resolve.invalid")
+        if case .blockedByProtection = outcome {} else { XCTFail("queued probes must be refused") }
+        await guardService.disarm()
+    }
+
+    private actor RejectingProbeGate: ProbeUplinkExemption {
+        var calls = 0
+        func open(host: String) async -> ProbeUplinkExemptionOutcome { calls += 1; return .blockedByProtection }
+        func close(_ addresses: [String]) async {}
+    }
+
+    @MainActor
     func testConnectStartsWhileMenuRunLoopIsTracking() async throws {
         let root = try makeIsolatedRoot("menu-tracking")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -628,7 +660,8 @@ final class ConnectionProviderTests: XCTestCase {
         backend: RecordingConnectionBackend, hasConnections: Bool = true,
         currentUplink: @escaping () -> SystemUplinkInventory.Uplink? = SystemUplinkInventory.current,
         leakGuard: LeakGuardService? = nil, supervisionInterval: TimeInterval = 60,
-        verifyConnection: (@Sendable (ConnectionRequest) async throws -> Void)? = nil
+        verifyConnection: (@Sendable (ConnectionRequest) async throws -> Void)? = nil,
+        probeService: ConnectionHealthProbeService = ConnectionHealthProbeService()
     ) throws -> (AppViewModel, ConfigurationStore) {
         let fileManager = TempFileManager(root: root)
         let log = TeleportLog(directoryURL: root, fileName: "verify.log")
@@ -653,7 +686,7 @@ final class ConnectionProviderTests: XCTestCase {
             parser: ConnectionLinkParser(), store: store,
             connectionProviderFactory: ConnectionProviderFactory(systemProxyProvider: { provider }, tunProvider: { provider }),
             leakGuard: leakGuard ?? LeakGuardService(isEnabled: false, log: log),
-            subscriptionClient: SubscriptionClient(), healthProbeService: ConnectionHealthProbeService(),
+            subscriptionClient: SubscriptionClient(), healthProbeService: probeService,
             systemProxyService: SystemProxyService(fileManager: fileManager, log: log), currentUplink: currentUplink, log: log
         )
         return (model, store)
@@ -1480,10 +1513,12 @@ final class ConnectionProviderTests: XCTestCase {
         private let lock = NSLock()
         private var recordedCommands: [TUNHelperCommand] = []
         private var releaseFails = false
+        private var isEngaged = false
         let releaseGate = Gate()
         let released = Flag()
 
-        var commands: [TUNHelperCommand] { lock.withLock { recordedCommands } }
+        /// Lifecycle assertions concern mutations; status reads are observational.
+        var commands: [TUNHelperCommand] { lock.withLock { recordedCommands.filter { $0 != .status } } }
 
         func setReleaseFails(_ fails: Bool) { lock.withLock { releaseFails = fails } }
 
@@ -1491,14 +1526,22 @@ final class ConnectionProviderTests: XCTestCase {
             lock.withLock { recordedCommands.append(command) }
             let requestID: UUID
             switch command {
+            case .status:
+                let request: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(requestData)
+                return try TUNHelperCodec.encodeResponse(TUNHelperResponseEnvelope(
+                    revision: TUNHelperProtocol.revision, requestID: request.requestID, sessionID: nil,
+                    payload: StatusResponse(helperVersion: PrivilegedHelperConstants.version, phase: .idle,
+                        summary: nil, details: nil, isLeakGuardEngaged: lock.withLock { isEngaged }), failure: nil))
             case .engageLeakGuard:
                 let request: TUNHelperRequestEnvelope<EngageLeakGuardRequest> = try TUNHelperCodec.decodeRequest(requestData)
                 requestID = request.requestID
+                lock.withLock { isEngaged = true }
             case .releaseLeakGuard:
                 let request: TUNHelperRequestEnvelope<ReleaseLeakGuardRequest> = try TUNHelperCodec.decodeRequest(requestData)
                 requestID = request.requestID
                 await releaseGate.enter()
                 if lock.withLock({ releaseFails }) { throw TestError.stopFailed }
+                lock.withLock { isEngaged = false }
                 released.set()
             default:
                 XCTFail("Unexpected guard command: \(command)")

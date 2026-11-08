@@ -5,6 +5,8 @@ nonisolated enum ProbeUplinkExemptionOutcome: Sendable {
     /// Nothing is filtering the uplink, so the probe needs no path opened and has
     /// nothing to close afterwards.
     case notNeeded
+    /// Probes must not reveal the physical IP while protection is held.
+    case blockedByProtection
     /// These addresses stay open until they are closed again.
     case opened([String])
     /// The uplink is filtered and the server's name resolves to nothing, so there

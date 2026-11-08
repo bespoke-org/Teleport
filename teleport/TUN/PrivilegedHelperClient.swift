@@ -21,6 +21,14 @@ nonisolated struct PrivilegedHelperClient: Sendable {
         self.transport = transport
     }
 
+    func resolveEndpoint(host: String, interface: String) async throws -> [String] {
+        let response: TUNHelperResponseEnvelope<ResolveEndpointResponse> = try await exchange(
+            command: .resolveEndpoint, requestID: UUID(), sessionID: nil,
+            payload: ResolveEndpointRequest(host: host, interface: interface), timeout: 12, responseSessionRule: .absent)
+        guard let payload = response.payload else { throw PrivilegedHelperClientError.invalidResponse("Missing endpoint addresses") }
+        return payload.addresses
+    }
+
     func status() async throws -> PrivilegedHelperStatus {
         let requestID = UUID()
         do {
@@ -42,7 +50,8 @@ nonisolated struct PrivilegedHelperClient: Sendable {
                 summary: payload.summary,
                 details: payload.details,
                 tunnelInterfaceName: payload.tunnelInterfaceName,
-                outboundInterface: payload.outboundInterface
+                outboundInterface: payload.outboundInterface,
+                isLeakGuardEngaged: payload.isLeakGuardEngaged
             )
         } catch {
             throw mapClientError(error)
@@ -140,7 +149,8 @@ nonisolated struct PrivilegedHelperClient: Sendable {
     func engageLeakGuard(
         tunnelInterfaceName: String?,
         protectedHosts: [String],
-        leaseSeconds: TimeInterval
+        leaseSeconds: TimeInterval,
+        policy: LeakGuardPolicy = .init()
     ) async throws {
         do {
             let response: TUNHelperResponseEnvelope<LeakGuardResponse> = try await exchange(
@@ -150,7 +160,8 @@ nonisolated struct PrivilegedHelperClient: Sendable {
                 payload: EngageLeakGuardRequest(
                     tunnelInterfaceName: tunnelInterfaceName,
                     protectedHosts: protectedHosts,
-                    leaseSeconds: min(leaseSeconds, TUNHelperProtocol.maximumLeakGuardLeaseSeconds)
+                    leaseSeconds: min(leaseSeconds, TUNHelperProtocol.maximumLeakGuardLeaseSeconds),
+                    policy: policy
                 ),
                 timeout: 10,
                 responseSessionRule: .absent
@@ -384,6 +395,7 @@ nonisolated struct PrivilegedHelperStatus: Sendable, Equatable {
     let details: String?
     var tunnelInterfaceName: String? = nil
     var outboundInterface: String? = nil
+    var isLeakGuardEngaged: Bool = false
     var success: Bool { true }
 }
 

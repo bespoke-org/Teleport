@@ -78,6 +78,7 @@ struct XrayTunSessionState: Codable, Sendable {
 /// its root-only state directory before starting Xray.
 struct XrayTunLaunchSession: Sendable {
     var configData: Data
+    var leakGuardPolicy: LeakGuardPolicy = .init()
     /// Every proxy server the generated config dials.
     var protectedHosts: [String]
     var tunnelInterfaceName: String

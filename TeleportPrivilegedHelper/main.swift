@@ -2,9 +2,11 @@ import Darwin
 import Foundation
 
 let controller = XrayTunController()
-// Before the listener accepts anything: a guard this process did not engage was
-// engaged by a helper that is gone, and nothing left is going to renew it.
-controller.releaseStaleLeakGuard()
+do { try controller.restoreLeakGuard() }
+catch {
+    fputs("Teleport could not restore persistent protection; refusing to serve requests.\n", stderr)
+    exit(1)
+}
 let dispatcher = HelperCommandDispatcher(executor: controller)
 let delegate = HelperXPCListenerDelegate(dispatcher: dispatcher)
 let listener = NSXPCListener(machServiceName: TUNHelperProtocol.machServiceName)

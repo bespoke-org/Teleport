@@ -1,92 +1,62 @@
 import Foundation
 
-/// The pf ruleset that keeps traffic off the physical uplink while a TUN session
-/// is meant to be carrying it.
-///
-/// A routed session is torn down and rebuilt whenever the uplink changes, and
-/// between the teardown and the next tunnel the machine routes directly — for
-/// seconds after a wake, and for as long as a commute when the uplink went away
-/// entirely. Applications do not wait: a browser reissues its open requests the
-/// moment DHCP publishes an address, and the far side records whatever address it
-/// arrived from. Routing alone cannot close that window, because there is nothing
-/// to route through yet; only a filter can.
-///
-/// Kept as a pure function of the session's facts so the rules can be read and
-/// verified without a network to take down, in the manner of `UplinkChangeDecision`.
-nonisolated enum LeakGuardRuleset: Sendable {
-    /// Loaded under the `com.apple` anchor point that `/etc/pf.conf` already
-    /// evaluates. A sub-anchor needs no edit to a system file, unlike a top-level
-    /// one, and is flushed by a reboot rather than outliving the app that set it.
-    static let anchorName = "com.apple/dev.x.teleport"
+nonisolated struct LeakGuardEndpoint: Codable, Equatable, Sendable {
+    var address: String
+    var transport: String
+    /// Numeric ports or inclusive ranges, already checked at the helper boundary.
+    var ports: String
+}
 
+nonisolated struct LeakGuardPolicy: Codable, Equatable, Sendable {
+    var endpoints: [LeakGuardEndpoint] = []
+    var allowsDirect = false
+    var allowsLAN = false
+}
+
+/// Stateless passes avoid leaving an exception alive in PF's state table after
+/// the policy is narrowed. Existing states are flushed once when protection is
+/// first acquired, before any tunnel routes change.
+nonisolated enum LeakGuardRuleset: Sendable {
+    static let anchorName = "com.apple/dev.x.teleport"
+    static let bootstrapAddress = "1.1.1.1"
     enum Stage: Equatable, Sendable {
-        /// No tunnel exists. Nothing but the local network, DNS and the proxy
-        /// servers themselves has any legitimate reason to leave the machine.
         case standby
-        /// A session owns `tunnelInterface`. Traffic leaving through the tunnel is
-        /// the point of the exercise, and Xray's own transport has to reach the
-        /// servers outside it.
         case session(tunnelInterface: String)
     }
 
-    /// Destinations that never leave the local link, so blocking them would break
-    /// address configuration and local discovery without protecting anything.
-    private static let localIPv4Destinations = [
-        "10.0.0.0/8",
-        "172.16.0.0/12",
-        "192.168.0.0/16",
-        "169.254.0.0/16",
-        "224.0.0.0/4",
-        "255.255.255.255",
-    ]
-
-    private static let localIPv6Destinations = [
-        "fe80::/10",
-        "fc00::/7",
-        "ff00::/8",
-    ]
-
-    /// `protectedHosts` are the numeric proxy-server addresses this session pins to
-    /// the physical uplink; their transport is what carries everything else and
-    /// cannot itself be blocked.
-    static func rules(stage: Stage, protectedHosts: [String]) -> String {
-        var lines: [String] = []
-        lines.append("# Teleport leak guard — flushed by a reboot, by the app, or by its lease expiring.")
-        lines.append("pass quick on lo0 all")
-        // A `pass` rule keeps state with `flags S/SA`, so the local-network rules
-        // below let the machine open connections but never let it answer one: a
-        // SYN-ACK carries ACK and falls through to the block. Inbound traffic is not
-        // what the guard exists for, and state created on the way in lets the reply
-        // out before any rule is evaluated — AirDrop and Handoff accept connections.
-        lines.append("pass in quick all")
-
+    static func rules(stage: Stage, protectedHosts: [String] = [], policy: LeakGuardPolicy = .init(), runtimeGroupID: UInt32 = 499) -> String {
+        var lines = [
+            "# Teleport protection remains until explicitly released.",
+            "pass quick on lo0 all flags any no state",
+            // Incoming packets must not create states that bypass outbound rules.
+            "pass in quick all flags any no state",
+            "pass out quick inet proto udp from any port 68 to any port 67 no state",
+            "pass out quick inet6 proto udp from any port 546 to ff02::1:2 port 547 no state",
+            "pass out quick inet6 proto icmp6 from any to { fe80::/10, ff02::/16 } icmp6-type { 133, 134, 135, 136 } no state",
+            // Only Teleport's isolated helper group may bootstrap an endpoint.
+            "pass out quick inet proto tcp from any to \(bootstrapAddress) port 443 group \(runtimeGroupID) flags any no state"
+        ]
         if case let .session(tunnelInterface) = stage {
-            lines.append("pass out quick on \(tunnelInterface) all")
-            // Xray's direct outbound — split-tunnel rules whose action is `direct` —
-            // leaves on the uplink from the uplink's own address, which is exactly
-            // what a leaking application looks like. The one thing that separates
-            // them is the user: the helper runs Xray as root, and the applications
-            // this guard exists for do not.
-            lines.append("pass out quick all user root")
+            lines.append("pass out quick on \(tunnelInterface) all flags any no state")
+            for endpoint in policy.endpoints {
+                let family = endpoint.address.contains(":") ? "inet6" : "inet"
+                let ports = endpoint.ports.replacingOccurrences(of: "-", with: ":")
+                lines.append("pass out quick \(family) proto \(endpoint.transport) from any to \(endpoint.address) port { \(ports) } group \(runtimeGroupID) flags any no state")
+            }
         }
-
-        lines.append("pass out quick inet proto udp from any to any port { 67, 68 }")
-        lines.append("pass out quick inet to { \(localIPv4Destinations.joined(separator: ", ")) }")
-        lines.append("pass out quick inet6 to { \(localIPv6Destinations.joined(separator: ", ")) }")
-        // Name resolution is allowed to any resolver: the address of the proxy
-        // server has to be resolvable before a session can be built at all, and a
-        // machine that cannot resolve anything is indistinguishable from a broken
-        // one. What this leaks is the names asked for, never the address they are
-        // asked from — which is the disclosure the guard exists to prevent.
-        lines.append("pass out quick proto { tcp, udp } from any to any port { 53, 853 }")
-
-        for protectedHost in protectedHosts where !protectedHost.isEmpty {
-            let family = protectedHost.contains(":") ? "inet6" : "inet"
-            lines.append("pass out quick \(family) to \(protectedHost)")
+        // LAN permission must not reopen ordinary DNS to the network's router.
+        lines.append("block drop out quick proto { tcp, udp } to any port { 53, 853 }")
+        if policy.allowsLAN {
+            lines += [
+                "pass out quick inet to { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 224.0.0.0/24 } flags any no state",
+                "pass out quick inet6 to { fe80::/10, fc00::/7, ff02::/16 } flags any no state"
+            ]
         }
-
-        lines.append("block drop out quick inet all")
-        lines.append("block drop out quick inet6 all")
+        if case .session = stage, policy.allowsDirect {
+            // Only Xray's isolated group may implement explicit direct routing.
+            lines.append("pass out quick proto { tcp, udp } all group \(runtimeGroupID) flags any no state")
+        }
+        lines += ["block drop out quick inet all", "block drop out quick inet6 all"]
         return lines.joined(separator: "\n") + "\n"
     }
 }

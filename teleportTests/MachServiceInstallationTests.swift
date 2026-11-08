@@ -25,6 +25,25 @@ final class MachServiceInstallationTests: XCTestCase {
         XCTAssertFalse(error.localizedDescription.contains("(-128)"))
     }
 
+    func testIsolatedGroupInstallationScriptParsesWithoutExecuting() throws {
+        let manifest = HelperInstallationManifest(helperVersion: PrivilegedHelperConstants.version,
+            appCDHashes: [String(repeating: "a", count: 40)], helperCDHashes: [String(repeating: "b", count: 40)],
+            xraySHA256: String(repeating: "c", count: 64))
+        let script = try PrivilegedHelperInstaller().installScript(
+            appBundleURL: URL(fileURLWithPath: "/unused/Teleport.app"), helperURL: URL(fileURLWithPath: "/unused/helper"),
+            runtimeURL: URL(fileURLWithPath: "/unused/xray"), manifest: manifest, plist: PrivilegedHelperInstaller.launchDaemonPlist())
+        XCTAssert(script.contains("GroupMembership GroupMembers NestedGroups"))
+        XCTAssert(script.contains("-list /Users PrimaryGroupID"))
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent("teleport-install-parse-\(UUID()).sh")
+        try script.write(to: path, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: path) }
+        let shell = Process()
+        shell.executableURL = URL(fileURLWithPath: "/bin/sh")
+        shell.arguments = ["-n", path.path]
+        try shell.run(); shell.waitUntilExit()
+        XCTAssertEqual(shell.terminationStatus, 0)
+    }
+
     func testLaunchDaemonPlist() throws {
         let plistData = Data(PrivilegedHelperInstaller.launchDaemonPlist().utf8)
         let decoded = try PropertyListSerialization.propertyList(from: plistData, format: nil)
@@ -39,6 +58,7 @@ final class MachServiceInstallationTests: XCTestCase {
         XCTAssert(plist["StandardErrorPath"] as? String == "/var/log/teleport-privileged-helper.log", "stderr path changed")
         XCTAssert(plist["RunAtLoad"] as? Bool == true, "LaunchDaemon must run when loaded")
         XCTAssert(plist["KeepAlive"] as? Bool == true, "LaunchDaemon must remain available")
+        XCTAssertEqual(plist["GroupName"] as? String, PrivilegedHelperConstants.runtimeGroup)
         XCTAssert(plist["UserName"] == nil, "LaunchDaemon must use launchd's root default")
         XCTAssert(plist["Sockets"] == nil, "Legacy launchd Sockets dictionary must be absent")
 

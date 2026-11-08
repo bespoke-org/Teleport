@@ -29,7 +29,7 @@ enum SettingsSearch {
             return Entry(result: SettingsSearchResult(section: $0, title: $0.title), keywords: keywords)
         } + [
             entry(.general, "Connection mode", "tun tunnel system proxy vpn"),
-            entry(.general, "Protect traffic during tunnel interruptions", "kill switch leak guard protection reconnect"),
+            entry(.general, "Protect traffic when the tunnel fails", "kill switch leak guard protection reconnect DNS LAN local network zones restore direct access"),
             entry(.general, "Show Teleport in Dock", "app switcher cmd tab"),
             entry(.general, "Animate menu bar icon", "animation"),
             entry(.general, "Show portal latency", "ping speed menu bar"),

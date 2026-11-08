@@ -50,10 +50,7 @@ nonisolated final class ConnectionHealthProbeService: @unchecked Sendable {
 
         let checkedAt = Date()
 
-        // The leak guard drops everything on the uplink but the session's own
-        // servers, and drops it silently — so a server outside the session has to
-        // be let out to before it can be asked anything. Opened once for both
-        // attempts below, and closed as soon as there is an answer.
+        // Direct probes can be refused before resolving any group member.
         var openedAddresses: [String] = []
         var seenHosts = Set<String>()
         for endpoint in connection.configuration.endpointConfigurations where seenHosts.insert(endpoint.host).inserted {
@@ -62,6 +59,10 @@ nonisolated final class ConnectionHealthProbeService: @unchecked Sendable {
                 break
             case let .opened(addresses):
                 openedAddresses.append(contentsOf: addresses)
+            case .blockedByProtection:
+                if !openedAddresses.isEmpty { await uplinkExemption?.close(openedAddresses) }
+                return ConnectionHealthProbeResult(state: .unknown, checkedAt: checkedAt,
+                    latencyMilliseconds: nil, latencyKind: nil, failureSummary: "Server checks are paused by tunnel protection")
             case .couldNotResolve:
                 if !openedAddresses.isEmpty { await uplinkExemption?.close(openedAddresses) }
                 return ConnectionHealthProbeResult(

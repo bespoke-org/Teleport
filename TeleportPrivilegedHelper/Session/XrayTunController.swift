@@ -28,10 +28,14 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
         self.leakGuard = leakGuard
     }
 
-    /// Called once before the listener accepts anything. See
-    /// `LeakGuardController.releaseStaleGuard`.
-    func releaseStaleLeakGuard() {
-        leakGuard.releaseStaleGuard()
+    /// Restore the persistent guard before accepting client requests.
+    func restoreLeakGuard() throws {
+        _ = try preparedHelperStateDirectoryPath()
+        try leakGuard.restoreGuard()
+    }
+
+    func resolveEndpoint(request: ResolveEndpointRequest) throws -> ResolveEndpointResponse {
+        try EndpointResolver.resolve(request)
     }
 
     func status(request: StatusRequest) throws -> StatusResponse {
@@ -50,7 +54,8 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
             summary: nil,
             details: nil,
             tunnelInterfaceName: interfaces?.tunnel,
-            outboundInterface: interfaces?.outbound
+            outboundInterface: interfaces?.outbound,
+            isLeakGuardEngaged: leakGuard.isEngaged
         )
     }
 
@@ -137,13 +142,13 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
         try leakGuard.engage(
             stage: stage,
             protectedHosts: protectedHosts,
-            leaseSeconds: request.leaseSeconds
+            leaseSeconds: request.leaseSeconds, policy: request.policy
         )
         return LeakGuardResponse(isEngaged: true)
     }
 
     func releaseLeakGuard(request: ReleaseLeakGuardRequest) throws -> LeakGuardResponse {
-        leakGuard.release()
+        try leakGuard.release()
         return LeakGuardResponse(isEngaged: false)
     }
 

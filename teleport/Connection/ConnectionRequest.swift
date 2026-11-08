@@ -2,13 +2,13 @@ import Foundation
 
 /// One connection taking part in a session, paired with the saved-connection id
 /// that split-tunnel rules use to name it.
-struct RoutedConnection: Sendable, Equatable {
+nonisolated struct RoutedConnection: Sendable, Equatable {
     let id: UUID
     let configuration: ConnectionConfiguration
 }
 
 /// Immutable inputs required by either connection provider.
-struct ConnectionRequest: Sendable, Equatable {
+nonisolated struct ConnectionRequest: Sendable, Equatable {
     /// The default connection: the outbound that carries everything no rule sends
     /// elsewhere, and the only one System Proxy mode uses.
     let defaultConnection: RoutedConnection
@@ -20,19 +20,25 @@ struct ConnectionRequest: Sendable, Equatable {
     /// physical uplink. Ignored by System Proxy mode, which pins nothing to an
     /// uplink and so has no window to guard.
     let usesLeakGuard: Bool
+    let allowsLocalNetwork: Bool
+    let localDNSDomains: [String]
 
     init(
         defaultConnection: RoutedConnection,
         additionalConnections: [RoutedConnection] = [],
         localProxy: ProxyEndpoint,
         splitTunnelPolicy: SplitTunnelPolicy,
-        usesLeakGuard: Bool = true
+        usesLeakGuard: Bool = true,
+        allowsLocalNetwork: Bool = false,
+        localDNSDomains: [String] = []
     ) {
         self.defaultConnection = defaultConnection
         self.additionalConnections = additionalConnections
         self.localProxy = localProxy
         self.splitTunnelPolicy = splitTunnelPolicy
         self.usesLeakGuard = usesLeakGuard
+        self.allowsLocalNetwork = allowsLocalNetwork
+        self.localDNSDomains = localDNSDomains
     }
 
     /// The default connection first: outbound order decides which one keeps the
@@ -47,7 +53,7 @@ struct ConnectionRequest: Sendable, Equatable {
 }
 
 /// Provider-neutral split-tunnel configuration for one connection attempt.
-struct SplitTunnelPolicy: Sendable, Equatable {
+nonisolated struct SplitTunnelPolicy: Sendable, Equatable {
     let rules: [SplitTunnelRule]
     let defaultAction: SplitTunnelRuleAction
 }

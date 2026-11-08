@@ -36,6 +36,7 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
     }
 
     func start(_ request: ConnectionRequest, reportPhase: @escaping @Sendable (ConnectionState) -> Void) async throws {
+        try validateProtectedRequest(request)
         // A previous build may still own the default tunnel and no longer accept
         // this app's signature. Repair authorization before treating that tunnel
         // as a VPN conflict, then let the helper tear down only its own session.
@@ -46,12 +47,14 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
         let existingVPNInterfaces = await BlockingWork.run { [routeInspector] in
             routeInspector.existingVPNDefaultRouteInterfaces()
         }
-        var resolvedEndpoints: [String: [String]] = [:]
+        await leakGuard.configure(isEnabled: request.usesLeakGuard)
+        var cachedEndpoints: [String: [String]] = [:]
         let recovered = try await runtimeManager.recoverPreviousSession(existingVPNInterfaces: existingVPNInterfaces) {
-            resolvedEndpoints = await self.resolveEndpointsBeforeStopping(request)
+            if request.usesLeakGuard { try await self.leakGuard.armBootstrap() }
+            else { cachedEndpoints = await self.resolveEndpointsBeforeStopping(request) }
         }
         do {
-            try await start(request, resolvedEndpoints: resolvedEndpoints, helperPrepared: true, reportPhase: reportPhase)
+            try await start(request, cachedEndpoints: cachedEndpoints, helperPrepared: true, reportPhase: reportPhase)
         } catch {
             // Recovery removed the old tunnel even if DNS/preflight or cancellation
             // prevents its replacement. Release that session's proxy snapshot too.
@@ -64,12 +67,21 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
         }
     }
 
-    private func start(_ request: ConnectionRequest, resolvedEndpoints: [String: [String]], helperPrepared: Bool = false,
+    private func start(_ request: ConnectionRequest, cachedEndpoints: [String: [String]] = [:], helperPrepared: Bool = false,
                        reportPhase: @escaping @Sendable (ConnectionState) -> Void) async throws {
-        // The pre-flight below reads routes and resolves names but changes nothing
-        // on the machine, so a disconnect or quit that arrives meanwhile may cancel
-        // it. The blocking work runs on a dispatch queue where task cancellation is
-        // invisible, hence the flag it polls between steps.
+        try Task.checkCancellation()
+        if request.usesLeakGuard && !helperPrepared {
+            try await runtimeManager.prepareHelper { reportPhase(.awaitingUserApproval) }
+        }
+        reportPhase(.connecting)
+        if let otherVPN = await BlockingWork.run({ [routeInspector] in routeInspector.existingVPNDefaultRouteInterface() }) {
+            throw XrayTunConnectionError.existingVPNDetected(otherVPN)
+        }
+        await leakGuard.configure(isEnabled: request.usesLeakGuard)
+        if request.usesLeakGuard { try await leakGuard.armBootstrap() }
+        // Resolve every eligible group endpoint through the helper's fixed-IP
+        // HTTPS service. Never retry a failed answer through the system resolver.
+        let resolvedEndpoints = request.usesLeakGuard ? try await resolveEndpoints(request) : cachedEndpoints
         let cancellation = CancellationFlag()
         let session = try await withTaskCancellationHandler {
             try await BlockingWork.run { [self] () -> XrayTunLaunchSession in
@@ -90,7 +102,7 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
                 for connection in [request.defaultConnection] + request.additionalConnections {
                     let prepared = try RoutedProxyOutbound.resolve(connectionID: connection.id, configuration: connection.configuration) { host in
                         try cancellation.check()
-                        return try self.routeInspector.protectedRoute(for: host, resolvedAddresses: resolvedEndpoints[host])
+                        return try self.routeInspector.protectedRoute(for: host, resolvedAddresses: request.usesLeakGuard ? (resolvedEndpoints[host] ?? []) : resolvedEndpoints[host])
                     }
                     if outbounds.isEmpty { outboundInterface = prepared.interface }
                     outbounds.append(prepared.outbound)
@@ -105,6 +117,25 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
 
                 let directSendThrough = routeInspector.ipv4Address(for: outboundInterface)
                 let tunnelInterfaceName = routeInspector.nextAvailableTunnelInterfaceName()
+                let localResolvers = request.localDNSDomains.isEmpty ? [] : XrayConfigurationWriter.resolverAddresses(SystemResolverInventory.nameservers())
+                guard request.localDNSDomains.isEmpty || !localResolvers.isEmpty else {
+                    throw XrayTunConnectionError.localDNSUnavailable
+                }
+                let endpoints = outbounds.flatMap { outbound in
+                    outbound.configuration.endpointConfigurations.compactMap { config -> LeakGuardEndpoint? in
+                        guard let address = outbound.memberAddresses[config.host] else { return nil }
+                        return LeakGuardEndpoint(address: address,
+                            transport: config.protocolType == .wireguard || config.protocolType == .hysteria ? "udp" : "tcp",
+                            ports: config.hysteria?.quic?.udpHop?.ports ?? String(config.port))
+                    }
+                }
+                let localDNSEndpoints = localResolvers.flatMap { address in
+                    ["tcp", "udp"].map { LeakGuardEndpoint(address: address, transport: $0, ports: "53") }
+                }
+                let policy = LeakGuardPolicy(endpoints: endpoints + localDNSEndpoints,
+                    allowsDirect: request.splitTunnelPolicy.defaultAction == .direct
+                        || request.splitTunnelPolicy.rules.contains { $0.isEnabled && $0.action == .direct },
+                    allowsLAN: request.allowsLocalNetwork)
                 let configData = try XrayConfigurationWriter(proxyEndpoint: request.localProxy).tunnelConfigData(
                     for: outbounds,
                     interfaceName: tunnelInterfaceName,
@@ -113,12 +144,14 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
                     splitTunnelRules: request.splitTunnelPolicy.rules,
                     defaultAction: request.splitTunnelPolicy.defaultAction,
                     dnsPolicy: TunnelDNSPolicy(
-                        localResolvers: SystemResolverInventory.nameservers(),
+                        localResolvers: localResolvers,
+                        localDomains: request.localDNSDomains,
                         ipv6Enabled: routeInspector.hasGlobalIPv6(on: outboundInterface)
                     )
                 )
                 return XrayTunLaunchSession(
                     configData: configData,
+                    leakGuardPolicy: policy,
                     protectedHosts: protectedHosts,
                     tunnelInterfaceName: tunnelInterfaceName,
                     outboundInterface: outboundInterface
@@ -128,20 +161,13 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
             cancellation.cancel()
         }
 
-        // Connect prepared the helper before recovery. Reconnect has already
-        // stopped its identified session, so it can defer preparation until here.
-        // The administrator prompt is still a wait the user can cancel out of.
-        try Task.checkCancellation()
-        if !helperPrepared {
-            try await runtimeManager.prepareHelper {
-                reportPhase(.awaitingUserApproval)
-            }
+        if !request.usesLeakGuard && !helperPrepared {
+            try Task.checkCancellation()
+            try await runtimeManager.prepareHelper { reportPhase(.awaitingUserApproval) }
         }
-        reportPhase(.connecting)
-
         // The commit point. Past this line the operation runs to the end whatever
-        // happens to its task: proxies, guard, and tunnel must be either all up or
-        // all put back, and the catch below does the putting back.
+        // happens to its task. Failed startup restores proxy state while the
+        // firewall stays held in standby.
         try Task.checkCancellation()
         try await BlockingWork.run { [systemProxyService] in
             try systemProxyService.suspendProxyForTUN()
@@ -155,7 +181,7 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
             if request.usesLeakGuard {
                 try await leakGuard.armForSession(
                     tunnelInterface: session.tunnelInterfaceName,
-                    protectedHosts: session.protectedHosts
+                    protectedHosts: session.protectedHosts, policy: session.leakGuardPolicy
                 )
             }
             try await runtimeManager.start(session: session)
@@ -167,6 +193,7 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
                 throw XrayRuntimeManager.RuntimeError.startupTimedOut(detail)
             }
         } catch {
+            if request.usesLeakGuard { await leakGuard.armStandby() }
             try? await runtimeManager.stop()
             try? await BlockingWork.run { [systemProxyService] in
                 try systemProxyService.restoreSavedProxyState()
@@ -176,12 +203,25 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
     }
 
     func reconnect(_ request: ConnectionRequest, reportPhase: @escaping @Sendable (ConnectionState) -> Void) async throws {
-        let resolvedEndpoints = await resolveEndpointsBeforeStopping(request)
+        if Task.isCancelled {
+            try await runtimeManager.stop()
+            try await BlockingWork.run { [systemProxyService] in try systemProxyService.restoreSavedProxyState() }
+            throw CancellationError()
+        }
+        try validateProtectedRequest(request)
+        var cachedEndpoints: [String: [String]] = [:]
+        if request.usesLeakGuard {
+            try await runtimeManager.prepareHelper { reportPhase(.awaitingUserApproval) }
+            await leakGuard.configure(isEnabled: true)
+            try await leakGuard.armBootstrap()
+        } else {
+            cachedEndpoints = await resolveEndpointsBeforeStopping(request)
+        }
         // Cancellation still tears down the old session before the provider
         // reports idle. start() observes cancellation before any new mutation.
         try await runtimeManager.stop()
         do {
-            try await start(request, resolvedEndpoints: resolvedEndpoints, reportPhase: reportPhase)
+            try await start(request, cachedEndpoints: cachedEndpoints, helperPrepared: request.usesLeakGuard, reportPhase: reportPhase)
         } catch is CancellationError {
             // The old tunnel is already gone and its proxy snapshot still held, so
             // a cancelled pre-flight here has something to put back after all.
@@ -221,6 +261,33 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
         }
     }
 
+    private func validateProtectedRequest(_ request: ConnectionRequest) throws {
+        if request.usesLeakGuard, let unsafe = request.connections.flatMap({ $0.configuration.endpointConfigurations }).first(where: {
+            $0.securityWarningText != nil
+        }) {
+            throw XrayTunConnectionError.unsafeConfiguration(unsafe.displayName)
+        }
+        guard request.localDNSDomains.isEmpty || request.allowsLocalNetwork else {
+            throw XrayTunConnectionError.localDNSRequiresLAN
+        }
+    }
+
+    private func resolveEndpoints(_ request: ConnectionRequest) async throws -> [String: [String]] {
+        guard let uplink = SystemUplinkInventory.primaryInterfaceName() else {
+            throw XrayTunConnectionError.proxyRouteUnavailable(request.configuration.host)
+        }
+        var answers: [String: [String]] = [:]
+        for connection in request.connections {
+            for endpoint in connection.configuration.endpointConfigurations where answers[endpoint.host] == nil {
+                try Task.checkCancellation()
+                answers[endpoint.host] = isNumericIPAddress(endpoint.host) ? [endpoint.host]
+                    : (try? await leakGuard.resolveEndpoint(host: endpoint.host, interface: uplink)) ?? []
+                try Task.checkCancellation()
+            }
+        }
+        return answers
+    }
+
     func stop() async throws {
         try await runtimeManager.stop()
         try await BlockingWork.run { [systemProxyService] in
@@ -245,6 +312,9 @@ nonisolated private final class CancellationFlag: @unchecked Sendable {
 }
 
 nonisolated enum XrayTunConnectionError: LocalizedError {
+    case unsafeConfiguration(String)
+    case localDNSRequiresLAN
+    case localDNSUnavailable
     case existingVPNDetected(String)
     case proxyAddressResolutionFailed(String)
     case proxyRouteUnavailable(String)
@@ -253,6 +323,12 @@ nonisolated enum XrayTunConnectionError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
+        case let .unsafeConfiguration(name):
+            return "Protection requires encryption and certificate verification. Fix the security settings for \(name) before connecting."
+        case .localDNSRequiresLAN:
+            return "Local DNS zones require explicit local network access."
+        case .localDNSUnavailable:
+            return "No local DNS resolver is available for the configured local zones."
         case let .existingVPNDetected(interface):
             return "Another VPN appears to be active on \(interface). Disconnect it before using Teleport TUN mode, or use System Proxy mode."
         case let .proxyAddressResolutionFailed(host):

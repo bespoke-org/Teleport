@@ -60,6 +60,18 @@ final class ConnectionHealthProbeQueue: @unchecked Sendable {
         drain()
     }
 
+    func cancelAll() {
+        pendingIDs = []
+        pendingIDSet = []
+        for task in activeTasks.values { task.cancel() }
+        activeTasks = [:]
+        refreshingIDs = []
+        pendingResults = [:]
+        applyResultsWorkItem?.cancel()
+        applyResultsWorkItem = nil
+        publishState()
+    }
+
     func cancel(id: UUID) {
         activeTasks[id]?.cancel()
         activeTasks[id] = nil
@@ -91,7 +103,9 @@ final class ConnectionHealthProbeQueue: @unchecked Sendable {
 
             let task = Task.detached(priority: .utility) { [healthProbeService, connection, nextID, queue = self] in
                 let result = await healthProbeService.probe(connection)
+                guard !Task.isCancelled else { return }
                 await MainActor.run {
+                    guard !Task.isCancelled else { return }
                     queue.receive(result, for: nextID)
                 }
             }
