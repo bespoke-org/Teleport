@@ -45,6 +45,9 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var subscriptionSources: [SubscriptionSource]
     @Published private(set) var selectedConnectionID: UUID?
     @Published private(set) var connectionState: ConnectionState = .idle
+    /// A new provider reports preparing while checking for an existing session.
+    /// Keep that lookup distinct from starting a connection in the settings UI.
+    @Published private(set) var isResolvingConnectionProvider = true
     @Published private(set) var lastError: String?
     @Published private(set) var lastErrorDetails: String?
     /// Connection diagnostics survive unrelated import, edit, and persistence actions.
@@ -847,6 +850,7 @@ final class AppViewModel: ObservableObject {
         isLaunchConnectionPending = false
         let previousProvider = connectionProvider
         connectionStateTask?.cancel()
+        isResolvingConnectionProvider = true
         connectionMode = mode
         connectionProvider = connectionProviderFactory.makeProvider(for: mode)
         connectionState = .idle
@@ -1962,6 +1966,9 @@ final class AppViewModel: ObservableObject {
     }
 
     private func applyConnectionState(_ state: ConnectionState) {
+        if state != .preparing {
+            isResolvingConnectionProvider = false
+        }
         let isInitialState = !hasObservedInitialConnectionState
         hasObservedInitialConnectionState = true
         if state != connectionState || isInitialState {
