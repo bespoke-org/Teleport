@@ -6,6 +6,39 @@ import Foundation
 /// run time is also the one that vets a download before it is stored and handed to
 /// the root helper: whatever would fail later has to fail here instead.
 nonisolated enum GeodataFormat {
+    /// Keep each custom category intact (including unknown protobuf fields),
+    /// adding only categories absent from that source. Both list formats use
+    /// field 1 for their entries and field 1 inside each entry for its name.
+    static func addingMissingCategories(from bundled: Data, to custom: Data) throws -> Data {
+        var names = Set(try categoryRecords(custom).map(\.name))
+        var resolved = custom
+        for record in try categoryRecords(bundled) where names.insert(record.name).inserted {
+            resolved.append(record.bytes)
+        }
+        return resolved
+    }
+
+    private static func categoryRecords(_ data: Data) throws -> [(name: String, bytes: Data)] {
+        var reader = ProtobufReader(data)
+        var records: [(String, Data)] = []
+        while true {
+            let start = reader.position
+            guard let field = try reader.nextField() else { break }
+            guard field.number == 1, field.wireType == 2 else {
+                try reader.skip(field)
+                continue
+            }
+            var entry = try ProtobufReader(reader.readLengthDelimited())
+            var name = ""
+            while let field = try entry.nextField() {
+                if field.number == 1, field.wireType == 2 { name = try entry.readString().lowercased() }
+                else { try entry.skip(field) }
+            }
+            if !name.isEmpty { records.append((name, Data(data[start..<reader.position]))) }
+        }
+        return records
+    }
+
     struct GeositeDomain {
         let type: Int
         let value: String
@@ -166,6 +199,7 @@ nonisolated private struct ProtobufReader {
 
     private let bytes: [UInt8]
     private var offset = 0
+    var position: Int { offset }
 
     init(_ data: Data) {
         bytes = [UInt8](data)

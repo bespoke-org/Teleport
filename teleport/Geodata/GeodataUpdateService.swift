@@ -24,6 +24,7 @@ enum GeodataUpdateError: LocalizedError {
     case tooSmall
     case unreadablePayload(GeodataKind)
     case bundledDefaultMissing
+    case cachedSourceMissing(GeodataKind)
 
     var errorDescription: String? {
         switch self {
@@ -43,14 +44,16 @@ enum GeodataUpdateError: LocalizedError {
             return "The downloaded file is not readable \(kind.displayName) data. Check that the URL points at \(kind.fileName)."
         case .bundledDefaultMissing:
             return "Teleport's bundled geodata is missing. Reinstall Teleport."
+        case let .cachedSourceMissing(kind):
+            return "This profile's \(kind.displayName) has not finished downloading."
         }
     }
 }
 
 /// Downloads, stores, and resolves geosite.dat/geoip.dat. Custom files a user
 /// supplies by URL are kept separately from Teleport's bundled defaults; the
-/// "resolved" directory always contains exactly one usable file per kind
-/// (custom override if present, otherwise the bundled default) and is what
+/// "resolved" directory always contains one usable file per kind. Custom
+/// categories take precedence; missing categories come from bundled data. It is what
 /// gets delivered to the privileged helper for TUN mode.
 // FileManager file operations are thread-safe; the service keeps no mutable state.
 nonisolated struct GeodataUpdateService: GeodataUpdateServicing, @unchecked Sendable {
@@ -133,6 +136,22 @@ nonisolated struct GeodataUpdateService: GeodataUpdateServicing, @unchecked Send
         return CachedDownload(data: data, updatedAt: receipt.updatedAt)
     }
 
+    /// The editor reads its own cached pair, independently of Xray's active pair.
+    /// A missing custom source is an error; another profile is never a fallback.
+    func profileFileURL(for kind: GeodataKind, sources: GeodataSources, bundle: Bundle = .main) throws -> URL {
+        let value = kind == .geosite ? sources.geositeURLString : sources.geoipURLString
+        if let value {
+            guard let source = Self.validatedSourceURL(value), cachedDownload(for: kind, source: source) != nil else {
+                throw GeodataUpdateError.cachedSourceMissing(kind)
+            }
+            return cacheURL(for: kind, source: source)
+        }
+        guard let bundled = bundle.url(forResource: kind.rawValue, withExtension: "dat") else {
+            throw GeodataUpdateError.bundledDefaultMissing
+        }
+        return bundled
+    }
+
     func cacheDownload(_ download: CachedDownload, for kind: GeodataKind, source: URL) throws {
         try GeodataFormat.validate(download.data, kind: kind)
         try writeValidatedCache(download, for: kind, source: source)
@@ -152,7 +171,7 @@ nonisolated struct GeodataUpdateService: GeodataUpdateServicing, @unchecked Send
     /// not a cache integrity check: preparation validates every cache read itself.
     func cacheCurrentDownload(for kind: GeodataKind, source: URL?, updatedAt: Date?) throws {
         let marker = customDirectoryURL.appendingPathComponent(".\(kind.rawValue)-cache-migrated")
-        guard !fileManager.fileExists(atPath: marker.path), let source, let updatedAt else { return }
+        guard !fileManager.fileExists(atPath: marker.path), let source else { return }
         let cachedFile = cacheURL(for: kind, source: source)
         // Existing cache artifacts belong to the new format, including interrupted
         // or corrupt writes. Let preparation reject those and download fresh bytes.
@@ -160,7 +179,8 @@ nonisolated struct GeodataUpdateService: GeodataUpdateServicing, @unchecked Send
            !fileManager.fileExists(atPath: cachedFile.appendingPathExtension("json").path),
            let data = try? Data(contentsOf: customFileURL(for: kind)),
            (try? GeodataFormat.validate(data, kind: kind)) != nil {
-            try writeValidatedCache(CachedDownload(data: data, updatedAt: updatedAt), for: kind, source: source)
+            let date = updatedAt ?? (try? customFileURL(for: kind).resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            try writeValidatedCache(CachedDownload(data: data, updatedAt: date), for: kind, source: source)
         }
         try fileManager.createDirectory(at: customDirectoryURL, withIntermediateDirectories: true,
                                         attributes: [.posixPermissions: 0o700])
@@ -256,7 +276,7 @@ nonisolated struct GeodataUpdateService: GeodataUpdateServicing, @unchecked Send
     }
 
     /// Ensures a directory exists containing exactly one geosite.dat and one
-    /// geoip.dat, preferring custom downloads over the bundled defaults, and
+    /// geoip.dat, preferring custom categories over the bundled defaults, and
     /// returns it. Only rewrites a resolved file when its source changed, so
     /// this is cheap to call on every connect.
     func resolvedAssetDirectoryURL(bundle: Bundle = .main) throws -> URL {
@@ -266,16 +286,19 @@ nonisolated struct GeodataUpdateService: GeodataUpdateServicing, @unchecked Send
         try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: resolvedDirectoryURL.path)
 
         var manifest = (try? Data(contentsOf: manifestURL))
-            .flatMap { try? JSONDecoder().decode([String: ResolvedAssetStamp].self, from: $0) } ?? [:]
+            .flatMap { try? JSONDecoder().decode([String: [ResolvedAssetStamp]].self, from: $0) } ?? [:]
         var manifestChanged = false
 
         for kind in GeodataKind.allCases {
             let sourceURL = try resolvedSourceURL(for: kind, bundle: bundle)
             let destinationURL = resolvedDirectoryURL.appendingPathComponent(kind.fileName)
-            let sourceStamp = try resolvedAssetStamp(for: sourceURL, kind: kind)
+            let bundledURL = sourceURL == customFileURL(for: kind)
+                ? bundle.url(forResource: kind.rawValue, withExtension: "dat") : nil
+            let sourceStamps = try ([sourceURL] + [bundledURL].compactMap { $0 })
+                .map { try resolvedAssetStamp(for: $0, kind: kind) }
 
             if fileManager.fileExists(atPath: destinationURL.path),
-               manifest[kind.rawValue] == sourceStamp {
+               manifest[kind.rawValue] == sourceStamps {
                 try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destinationURL.path)
                 continue
             }
@@ -283,13 +306,16 @@ nonisolated struct GeodataUpdateService: GeodataUpdateServicing, @unchecked Send
             // download time, so re-validate whatever actually changed before it is
             // copied into the directory the privileged helper is pointed at. Bundled
             // defaults are covered by the app signature and skipped.
+            var data = try Data(contentsOf: sourceURL)
             if sourceURL == customFileURL(for: kind) {
-                try GeodataFormat.validate(Data(contentsOf: sourceURL), kind: kind)
+                try GeodataFormat.validate(data, kind: kind)
+                if let bundledURL {
+                    data = try GeodataFormat.addingMissingCategories(from: Data(contentsOf: bundledURL), to: data)
+                }
             }
-            try? fileManager.removeItem(at: destinationURL)
-            try fileManager.copyItem(at: sourceURL, to: destinationURL)
+            try data.write(to: destinationURL, options: .atomic)
             try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destinationURL.path)
-            manifest[kind.rawValue] = sourceStamp
+            manifest[kind.rawValue] = sourceStamps
             manifestChanged = true
         }
 

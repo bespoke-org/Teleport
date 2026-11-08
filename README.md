@@ -67,12 +67,23 @@ The header accepts raw base64 JSON, `happ://routing/onadd/<base64>`,
 The imported fields are `Name`, `GlobalProxy`, `RouteOrder`, and the
 `DirectSites`/`DirectIp`, `ProxySites`/`ProxyIp`, `BlockSites`/`BlockIp` lists.
 Rules support domains (including `domain:` and `full:`), IP/CIDR, `geosite:` and
-`geoip:`. They apply in TUN mode on the next connection. Profile DNS settings,
-geodata URLs, FakeDNS, chunk files and `DomainStrategy` are not transferred;
+`geoip:`. They apply in TUN mode on the next connection. HTTPS `GeositeURL` and
+`GeoipURL` sources are saved with the routing profile and downloaded when that
+profile is imported, without replacing the active session’s data. Refreshing a profile also updates its
+sources, including `routing/add`. A missing URL uses bundled data for that kind;
+an omitted or invalid source pair on refresh preserves the previous sources.
+Profile DNS settings, FakeDNS, chunk files and `DomainStrategy` are not transferred;
 Teleport reports these in the subscription's status and uses its own settings.
 Invalid routing leaves existing profiles intact and does not prevent server
 imports. Routing links in the response body and the separate `autorouting`
 header are not imported.
+
+Each routing profile keeps its own geodata sources. Downloaded categories take
+precedence over bundled categories with the same name; categories missing from
+the download remain available from bundled data. Source downloads and their
+caches stay separate from the combined files used by Xray. An incomplete profile
+blocks TUN split routing until its data is ready; System Proxy and TUN with split
+routing disabled remain available.
 
 ## Connection modes
 

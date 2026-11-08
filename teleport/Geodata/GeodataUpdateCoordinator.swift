@@ -63,6 +63,15 @@ final class GeodataUpdateCoordinator {
         service.hasCustomGeodata(for: kind)
     }
 
+    /// Preparation fills the persistent source cache. Discard only the staging
+    /// copy: importing an inactive profile must never publish its active files.
+    nonisolated func cacheUpdate(kind: GeodataKind, from source: URL, useCache: Bool) async throws -> Date {
+        let prepared = try await service.prepareUpdate(kind: kind, from: source, useCache: useCache)
+        defer { service.discard(prepared) }
+        try Task.checkCancellation()
+        return prepared.updatedAt
+    }
+
     @discardableResult
     func startBatch(_ requests: [Request]) -> UUID? {
         guard !requests.isEmpty else { return nil }

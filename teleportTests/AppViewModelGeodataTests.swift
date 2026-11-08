@@ -12,7 +12,11 @@ final class AppViewModelGeodataTests: XCTestCase {
         let model = fixture.model
         await waitUntil { model.canConnect }
         XCTAssertEqual(model.selectedProfileGeodataSources, GeodataSources())
-        XCTAssertNotNil(model.geodataProfileError)
+        // The selected profile is bundled even though the previous session left
+        // global runtime files behind. Profile-isolated UI no longer reports
+        // those files as an error for this profile; startup must still clear them.
+        XCTAssertTrue(fixture.service.hasCustomGeodata(for: .geosite))
+        XCTAssertTrue(fixture.service.hasCustomGeodata(for: .geoip))
         model.connect()
         await waitUntil { fixture.provider.connectCount == 1 && !model.isOperationPending }
         XCTAssertFalse(fixture.provider.startedWithCustomGeodata)
@@ -20,6 +24,24 @@ final class AppViewModelGeodataTests: XCTestCase {
         XCTAssertFalse(model.hasCustomGeodata(kind: .geoip))
         XCTAssertNil(model.geodataProfileError)
         XCTAssertNil(model.lastError)
+    }
+
+    func testSharedCacheRefreshDoesNotDisableActiveProfileAutomaticUpdates() async throws {
+        let fixture = try Fixture(sharedProfile: true)
+        defer { fixture.cleanUp() }
+        await waitUntil { fixture.model.isConnected }
+        await waitUntil { await fixture.service.gate.count == 2 }
+        await fixture.service.gate.succeed(.geosite)
+        await fixture.service.gate.succeed(.geoip)
+        await waitUntil { fixture.model.updatingSelectedProfileGeodataKinds.isEmpty }
+        fixture.model.performScheduledGeodataUpdateIfNeeded()
+        XCTAssertEqual(fixture.model.updatingGeodataKinds, [.geosite, .geoip],
+                       "A newer shared cache must not permanently block activation of the active source")
+        guard !fixture.model.updatingGeodataKinds.isEmpty else { return }
+        await waitUntil { await fixture.service.gate.count == 4 }
+        await fixture.service.gate.succeed(.geosite, occurrence: 1)
+        await fixture.service.gate.succeed(.geoip, occurrence: 1)
+        await waitUntil { fixture.model.updatingGeodataKinds.isEmpty }
     }
 
     func testTwoSuccessfulUpdatesReconnectOnceAfterBothFinish() async throws {
@@ -196,7 +218,7 @@ private final class Fixture {
     let model: AppViewModel
     let store: ConfigurationStore
 
-    init(initiallyConnected: Bool = true,
+    init(sharedProfile: Bool = false, initiallyConnected: Bool = true,
          geodataSettings: GeodataSourceSettings = .init(geositeURLString: "https://old.example/geosite.dat",
                                                        geoipURLString: "https://old.example/geoip.dat")) throws {
         provider = GeodataTestProvider(initiallyConnected: initiallyConnected, geodata: service)
@@ -210,9 +232,15 @@ private final class Fixture {
         let connection = SavedConnection(id: UUID(), configuration: configuration, savedAt: Date(), healthCheck: .init(
             state: .reachable, checkedAt: Date(), latencyMilliseconds: 1, latencyKind: .tcpConnect, failureSummary: nil
         ))
+        let sources = GeodataSources(geositeURLString: geodataSettings.geositeURLString, geoipURLString: geodataSettings.geoipURLString)
+        let activeProfile = SplitTunnelProfile(name: "Default", geodataSources: sources,
+                                              geodataUpdateIntervalMinutes: sharedProfile ? 1 : nil)
+        let profiles = sharedProfile ? [activeProfile, SplitTunnelProfile(name: "Shared", geodataSources: sources,
+                                                                         geodataUpdateIntervalMinutes: 1)] : [activeProfile]
         try store.save(AppSnapshot(savedConnections: [connection], selectedConnectionID: connection.id,
-                                   proxyEndpoint: .default, connectionMode: .tun, isLeakGuardEnabled: false,
-                                   geodataSettings: geodataSettings))
+                                   proxyEndpoint: .default, connectionMode: .tun, splitTunnelProfiles: profiles,
+                                   selectedSplitTunnelProfileID: activeProfile.id, isSplitTunnelEnabled: true,
+                                   isLeakGuardEnabled: false, geodataSettings: geodataSettings))
         let provider = self.provider
         model = AppViewModel(parser: ConnectionLinkParser(), store: store,
                              connectionProviderFactory: .init(systemProxyProvider: { provider }, tunProvider: { provider }),

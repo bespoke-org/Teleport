@@ -2,7 +2,7 @@ import Foundation
 import XCTest
 
 final class GeodataTests: XCTestCase {
-    func testLegacyGlobalSourcesMigrateToTheSelectedRoutingProfile() throws {
+    func testLegacyGlobalSourcesMigrateToEveryLegacyRoutingProfile() throws {
         let selected = UUID()
         let other = UUID()
         let json = """
@@ -11,7 +11,7 @@ final class GeodataTests: XCTestCase {
          "geodataSettings":{"geositeURLString":"https://provider.example/geosite.dat"}}
         """
         let snapshot = try JSONDecoder().decode(AppSnapshot.self, from: Data(json.utf8))
-        XCTAssertNil(snapshot.splitTunnelProfiles[0].geodataSources)
+        XCTAssertEqual(snapshot.splitTunnelProfiles[0].geodataSources, GeodataSources(geositeURLString: "https://provider.example/geosite.dat"))
         XCTAssertEqual(snapshot.splitTunnelProfiles[1].geodataSources,
                        GeodataSources(geositeURLString: "https://provider.example/geosite.dat"))
         XCTAssertEqual(try JSONDecoder().decode(AppSnapshot.self, from: JSONEncoder().encode(snapshot)), snapshot)
@@ -89,6 +89,37 @@ final class GeodataTests: XCTestCase {
         _ = try service.resolvedAssetDirectoryURL()
         let refreshed = try Data(contentsOf: resolved.appendingPathComponent("geosite.dat"))
         XCTAssert(refreshed == changed, "expected changed source metadata to refresh the resolved asset")
+    }
+
+    func testCustomGeodataKeepsBundledCategoriesAndOverridesMatchingOnes() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let resources = root.appendingPathComponent("Defaults.bundle/Contents/Resources")
+        try FileManager.default.createDirectory(at: resources, withIntermediateDirectories: true)
+        let info = try PropertyListSerialization.data(fromPropertyList: ["CFBundleIdentifier": "dev.x.teleport.geodata-fixture"],
+                                                     format: .xml, options: 0)
+        try info.write(to: resources.deletingLastPathComponent().appendingPathComponent("Info.plist"))
+        let bundled = geositeFixture(domain: "bundled.example")
+            + geositeFixture(domain: "spotify.example", category: "SPOTIFY")
+            + geositeFixture(domain: "anthropic.example", category: "ANTHROPIC")
+        try bundled.write(to: resources.appendingPathComponent("geosite.dat"))
+        try geoipFixture().write(to: resources.appendingPathComponent("geoip.dat"))
+        let bundle = try XCTUnwrap(Bundle(url: root.appendingPathComponent("Defaults.bundle")))
+        let service = GeodataUpdateService(fileManager: TempFileManager(root: root))
+        let custom = geositeFixture(domain: "provider.example")
+        try service.store(custom, for: .geosite)
+        let resolved = try service.resolvedAssetDirectoryURL(bundle: bundle)
+        let categories = try GeodataFormat.parseGeositeList(Data(contentsOf: resolved.appendingPathComponent("geosite.dat")))
+        XCTAssertEqual(Set(categories.keys), ["test", "spotify", "anthropic"])
+        XCTAssertEqual(categories["test"]?.map(\.value), ["provider.example"], "The selected source wins for matching categories")
+        XCTAssertEqual(categories["spotify"]?.map(\.value), ["spotify.example"])
+        XCTAssertEqual(try Data(contentsOf: service.customFileURL(for: .geosite)), custom, "Keep the downloaded source unchanged")
+
+        // A bundled update must invalidate resolution even if custom is unchanged.
+        try (bundled + geositeFixture(domain: "new.example", category: "NEW")).write(to: resources.appendingPathComponent("geosite.dat"))
+        _ = try service.resolvedAssetDirectoryURL(bundle: bundle)
+        let refreshed = try GeodataFormat.parseGeositeList(Data(contentsOf: resolved.appendingPathComponent("geosite.dat")))
+        XCTAssertNotNil(refreshed["new"])
     }
 
     func testGeodataSettingsDefaultsWhenMissing() throws {
@@ -176,6 +207,66 @@ final class GeodataTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: reopened.customFileURL(for: .geosite)), dataA)
     }
 
+    @MainActor
+    func testProfileLibraryKeepsBothPairsAndMatcherIndependentOfActiveFiles() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = GeodataUpdateService(fileManager: TempFileManager(root: root))
+        let activeSite = geositeFixture(domain: "active.example")
+        let activeIP = geoipFixture(country: "active")
+        try service.store(activeSite, for: .geosite)
+        try service.store(activeIP, for: .geoip)
+        let first = GeodataSources(geositeURLString: "https://first.example/geosite.dat", geoipURLString: "https://first.example/geoip.dat")
+        let second = GeodataSources(geositeURLString: "https://second.example/geosite.dat", geoipURLString: "https://second.example/geoip.dat")
+        let dates = [Date(timeIntervalSince1970: 1_700_000_000), Date(timeIntervalSince1970: 1_700_001_000)]
+        for (index, sources) in [first, second].enumerated() {
+            try service.cacheDownload(.init(data: geositeFixture(domain: index == 0 ? "first.example" : "second.example"), updatedAt: dates[index]),
+                                      for: .geosite, source: URL(string: sources.geositeURLString!)!)
+            try service.cacheDownload(.init(data: geoipFixture(country: index == 0 ? "first" : "second"), updatedAt: dates[index]),
+                                      for: .geoip, source: URL(string: sources.geoipURLString!)!)
+        }
+        let library = ProfileGeodataLibrary(coordinator: GeodataUpdateCoordinator(service: service))
+        library.preload(sources: first)
+        library.preload(sources: second)
+        let deadline = ContinuousClock.now + .seconds(2)
+        while library.isLoading(sources: first) || library.isLoading(sources: second) {
+            guard ContinuousClock.now < deadline else { return XCTFail("Profile cache preloads did not complete") }
+            try await Task.sleep(for: .milliseconds(2))
+        }
+        XCTAssertEqual(library.status(for: .geosite, sources: first), .ready(dates[0]))
+        XCTAssertEqual(library.status(for: .geoip, sources: second), .ready(dates[1]))
+        XCTAssertEqual(try Data(contentsOf: service.customFileURL(for: .geosite)), activeSite)
+        XCTAssertEqual(try Data(contentsOf: service.customFileURL(for: .geoip)), activeIP)
+        XCTAssertNotEqual(try service.profileFileURL(for: .geosite, sources: first), try service.profileFileURL(for: .geosite, sources: second))
+        let matcherA = SplitTunnelGeodataMatcher(service: service, sources: first)
+        let matcherB = SplitTunnelGeodataMatcher(service: service, sources: second)
+        try matcherA.prepareSynchronously()
+        try matcherB.prepareSynchronously()
+        XCTAssertTrue(matcherA.geositeRuleMatches("geosite:test", candidate: "first.example"))
+        XCTAssertFalse(matcherB.geositeRuleMatches("geosite:test", candidate: "first.example"))
+        XCTAssertTrue(matcherB.geoipRuleMatches("geoip:second", candidate: "1.2.3.5"))
+        XCTAssertFalse(matcherA.geoipRuleMatches("geoip:second", candidate: "1.2.3.5"))
+        XCTAssertThrowsError(try service.profileFileURL(for: .geosite, sources: .init(geositeURLString: "https://missing.example/geosite.dat")),
+                             "A missing source cannot silently use the active profile")
+    }
+
+    @MainActor
+    func testCancelledProfilePreloadCannotPublishReadyState() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let service = GeodataUpdateService(fileManager: TempFileManager(root: root))
+        let source = URL(string: "https://example.com/geosite.dat")!
+        try service.cacheDownload(.init(data: geositeFixture(), updatedAt: .distantPast), for: .geosite, source: source)
+        let library = ProfileGeodataLibrary(coordinator: GeodataUpdateCoordinator(service: service))
+        let sources = GeodataSources(geositeURLString: source.absoluteString)
+        library.preload(sources: sources)
+        library.cancelAll()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(library.status(for: .geosite, sources: sources), .missing)
+        XCTAssertFalse(service.hasCustomGeodata(for: .geosite))
+        XCTAssertNotNil(service.cachedDownload(for: .geosite, source: source))
+    }
+
     func testExplicitRefreshBypassesCacheAndStagingPreservesActiveFile() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -241,14 +332,14 @@ final class GeodataTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: service.customFileURL(for: .geosite)), fresh)
     }
 
-    func testLegacyMigrationRunsOnlyOnceEvenAfterCacheRemoval() throws {
+    func testLegacyMigrationWithoutTimestampRunsOnlyOnceEvenAfterCacheRemoval() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let manager = TempFileManager(root: root)
         let service = GeodataUpdateService(fileManager: manager)
         let source = URL(string: "https://example.com/geosite.dat")!
         try service.store(geositeFixture(), for: .geosite)
-        try service.cacheCurrentDownload(for: .geosite, source: source, updatedAt: .distantPast)
+        try service.cacheCurrentDownload(for: .geosite, source: source, updatedAt: nil)
         XCTAssertNotNil(service.cachedDownload(for: .geosite, source: source))
         let cacheDirectory = service.customFileURL(for: .geosite).deletingLastPathComponent()
             .appendingPathComponent("sources")
@@ -309,16 +400,16 @@ final class GeodataTests: XCTestCase {
     }
 
     /// One `geosite.dat` entry: country "test" holding the domain "example.com".
-    private func geositeFixture(domain value: String = "example.com") -> Data {
+    private func geositeFixture(domain value: String = "example.com", category: String = "test") -> Data {
         let domain = tag(1, 0) + varint(2) + lengthDelimited(2, Array(value.utf8))
-        let site = lengthDelimited(1, Array("test".utf8)) + lengthDelimited(2, domain)
+        let site = lengthDelimited(1, Array(category.utf8)) + lengthDelimited(2, domain)
         return Data(lengthDelimited(1, site))
     }
 
     /// One `geoip.dat` entry: country "cn" holding the range 1.2.3.4/24.
-    private func geoipFixture() -> Data {
+    private func geoipFixture(country value: String = "cn") -> Data {
         let cidr = lengthDelimited(1, [1, 2, 3, 4]) + tag(2, 0) + varint(24)
-        let country = lengthDelimited(1, Array("cn".utf8)) + lengthDelimited(2, cidr)
+        let country = lengthDelimited(1, Array(value.utf8)) + lengthDelimited(2, cidr)
         return Data(lengthDelimited(1, country))
     }
 
