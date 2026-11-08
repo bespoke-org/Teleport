@@ -31,7 +31,7 @@ nonisolated struct SubscriptionImportProcessor {
             }
             do {
                 let configuration = try parser.parse(rawLink)
-                let sourceEntryID = configuration.protocolType == .hysteria
+                let sourceEntryID = configuration.protocolType == .hysteria || configuration.protocolType == .shadowsocks
                     ? configuration.duplicateFilterIdentity
                     : rawLink.trimmingCharacters(in: .whitespacesAndNewlines)
                 // Exact repetitions share a refresh identity even when optional
@@ -71,7 +71,7 @@ nonisolated struct SubscriptionImportProcessor {
         case .missingPassword: return "Missing Trojan password"
         case .invalidFinalMask: return "Unsupported or invalid FinalMask settings"
         case .invalidXrayJSON: return "Invalid Xray JSON configuration"
-        case .invalidHysteria(let reason): return reason
+        case .invalidHysteria(let reason), .invalidShadowsocks(let reason): return reason
         default: return "Invalid connection settings"
         }
     }
