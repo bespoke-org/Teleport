@@ -173,6 +173,94 @@ private final class LostStopReplyConnectionFactory: @unchecked Sendable {
 
 final class PrivilegedHelperClientTests: XCTestCase {
     @MainActor
+    func testFailedTUNRecoveryKeepsProxyRestorationFailureActionable() async throws {
+        try await assertTUNProxyRestorationFailure(cancelBeforeStart: false)
+    }
+
+    @MainActor
+    func testCancelledTUNStartKeepsProxyRestorationFailureActionable() async throws {
+        try await assertTUNProxyRestorationFailure(cancelBeforeStart: true)
+    }
+
+    @MainActor
+    private func assertTUNProxyRestorationFailure(cancelBeforeStart: Bool) async throws {
+        let paths = try temporaryRuntimePaths(named: "tun-proxy-restore")
+        defer { removeTemporaryRuntimePaths(paths) }
+        let root = paths.sessionStateFileURL.deletingLastPathComponent()
+        let snapshot = root.appendingPathComponent("teleport/system-proxy-snapshot.json")
+        let recovery = RecoveryProbe()
+        let restore = ProxyRestoreProbe()
+        let transport = ScriptedTransport { command, data, _, _ in
+            switch command {
+            case .status:
+                let request: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(data)
+                let hasOldConfig = recovery.sessionID == nil
+                return try response(requestID: request.requestID, sessionID: nil,
+                    payload: StatusResponse(helperVersion: PrivilegedHelperClient.expectedVersion,
+                        phase: .idle, summary: nil, details: nil,
+                        tunnelInterfaceName: hasOldConfig ? "utun10" : nil,
+                        outboundInterface: hasOldConfig ? "en0" : nil))
+            case .stopSession:
+                let request: TUNHelperRequestEnvelope<StopSessionRequest> = try TUNHelperCodec.decodeRequest(data)
+                recovery.record(sessionID: try XCTUnwrap(request.sessionID))
+                return try response(requestID: request.requestID, sessionID: request.sessionID,
+                    payload: StopSessionResponse(phase: .idle, summary: nil, details: nil))
+            default: throw UnexpectedCommand(command: command)
+            }
+        }
+        let manager = PrivilegedXrayRuntimeManager(
+            helperClient: PrivilegedHelperClient(transport: transport), paths: paths,
+            runtimeURLProvider: { URL(fileURLWithPath: "/tmp/test-xray") },
+            ensureHelperInstalled: { _, _ in }
+        )
+        let proxyService = SystemProxyService(processRunner: { try restore.run($0) },
+            fileManager: ReconnectFileManager(root: root))
+        let backend = XrayTunConnectionBackend(runtimeManager: manager,
+            routeInspector: XrayTunRouteInspector(runCommand: { executable, _ in
+                executable.hasSuffix("dscacheutil") ? nil : "interface: en0\n"
+            }), systemProxyService: proxyService, leakGuard: LeakGuardService(isEnabled: false))
+        let provider = BackendConnectionProvider(mode: .tun, backend: backend)
+        let ready = expectation(description: "Initial TUN state resolved")
+        let observation = Task {
+            for await state in provider.stateUpdates() where state == .idle {
+                ready.fulfill()
+                break
+            }
+        }
+        defer { observation.cancel() }
+        await fulfillment(of: [ready], timeout: 5)
+        // Create the old snapshot after initial resolution. All networksetup
+        // commands are intercepted, so this never changes the machine's proxies.
+        try FileManager.default.createDirectory(at: snapshot.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(#"{"createdAt":0,"endpoint":{"host":"127.0.0.1","httpPort":1087,"socksPort":1080},"services":[]}"#.utf8).write(to: snapshot)
+        let configuration = try ConnectionLinkParser().parse(
+            "vless://123e4567-e89b-12d3-a456-426614174000@next.invalid:443?security=none&type=tcp")
+        let request = ConnectionRequest(defaultConnection: .init(id: UUID(), configuration: configuration),
+            localProxy: .default, splitTunnelPolicy: .init(rules: [], defaultAction: .proxy))
+        let attempt = Task {
+            if cancelBeforeStart { withUnsafeCurrentTask { $0?.cancel() } }
+            try await provider.connect(request)
+        }
+        do { try await attempt.value; XCTFail("Expected failed startup") }
+        catch is CancellationError { XCTAssertTrue(cancelBeforeStart) }
+        catch { XCTAssertFalse(cancelBeforeStart) }
+        if case let .failed(failure) = await provider.currentState() {
+            XCTAssertTrue(failure.details?.contains("could not finish disconnecting") == true)
+            XCTAssertTrue(failure.details?.contains("Synthetic proxy restore failure") == true)
+        } else {
+            XCTFail("An un-restored TUN proxy snapshot must keep Disconnect available")
+        }
+        XCTAssertTrue(proxyService.hasSavedProxySnapshot())
+        if !cancelBeforeStart { XCTAssertNotNil(recovery.sessionID, "Old tunnel cleanup precedes DNS failure") }
+
+        restore.allowRestoration()
+        try await provider.disconnect()
+        let finalState = await provider.currentState()
+        XCTAssertEqual(finalState, .idle)
+        XCTAssertFalse(proxyService.hasSavedProxySnapshot(), "Disconnect must retry the real TUN proxy restoration")
+    }
+
+    @MainActor
     func testReconnectResolvesNewEndpointBeforeStoppingTunnelDNS() async throws {
         try await assertReconnectResolution(availableBeforeStop: true)
     }
@@ -1195,6 +1283,23 @@ final class PrivilegedHelperClientTests: XCTestCase {
             tunnelInterfaceName: "utun9",
             outboundInterface: "en0"
         )
+    }
+}
+
+private nonisolated final class ProxyRestoreProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fails = true
+
+    func allowRestoration() { lock.withLock { fails = false } }
+
+    func run(_ process: Process) throws {
+        if lock.withLock({ fails }) {
+            throw NSError(domain: "TeleportTests", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "Synthetic proxy restore failure"])
+        }
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/printf")
+        process.arguments = ["An asterisk denotes a disabled network service.\n"]
+        try process.run()
     }
 }
 

@@ -29,6 +29,9 @@ actor LeakGuardService {
     private var probeExemptions = ProbeHostExemptions()
     private var isEnabled: Bool
     private var renewalTask: Task<Void, Never>?
+    /// Last confirmed helper state, independent of the user's setting or wanted stage.
+    private var isGuardHeld = false
+    private var holdingContinuations: [UUID: AsyncStream<Bool>.Continuation] = [:]
 
     nonisolated static let subsystem = "leakguard"
 
@@ -85,6 +88,27 @@ actor LeakGuardService {
         isEnabled && stage != nil
     }
 
+    func holdingUpdates() -> AsyncStream<Bool> {
+        AsyncStream { continuation in
+            let id = UUID()
+            holdingContinuations[id] = continuation
+            continuation.yield(isGuardHeld)
+            continuation.onTermination = { [weak self] _ in
+                Task { await self?.removeHoldingContinuation(id) }
+            }
+        }
+    }
+
+    private func removeHoldingContinuation(_ id: UUID) {
+        holdingContinuations.removeValue(forKey: id)
+    }
+
+    private func updateHolding(_ held: Bool) {
+        guard isGuardHeld != held else { return }
+        isGuardHeld = held
+        for continuation in holdingContinuations.values { continuation.yield(held) }
+    }
+
     /// Opens the addresses of a server a health check is about to question, and
     /// closes them again when it is done.
     ///
@@ -122,7 +146,7 @@ actor LeakGuardService {
 
     /// The guard is no longer wanted at all: no stage is left to come back to.
     func disarm() async {
-        guard stage != nil else { return }
+        guard stage != nil || isGuardHeld else { return }
         stage = nil
         await releaseHeldGuard()
     }
@@ -132,6 +156,7 @@ actor LeakGuardService {
         renewalTask = nil
         do {
             try await client.releaseLeakGuard()
+            updateHolding(false)
         } catch {
             // The helper's lease releases it shortly anyway, which is the whole
             // reason the lease exists.
@@ -153,6 +178,7 @@ actor LeakGuardService {
             protectedHosts: probeExemptions.hostsForGuard(protectedHosts: protectedHosts),
             leaseSeconds: Self.leaseSeconds
         )
+        updateHolding(true)
         startRenewing()
     }
 

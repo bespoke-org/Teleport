@@ -75,10 +75,32 @@ struct ConnectionErrorBanner: View {
     @ObservedObject var viewModel: AppViewModel
 
     var body: some View {
-        if let error = viewModel.connectionError {
-            ConnectionErrorPopover(error: error, onDismiss: viewModel.dismissConnectionError)
-                .background(.regularMaterial)
-                .overlay(alignment: .top) { Divider() }
+        if viewModel.connectionError != nil || viewModel.canAllowDirectTraffic {
+            VStack(spacing: 0) {
+                if let error = viewModel.connectionError {
+                    ConnectionErrorPopover(error: error, onDismiss: viewModel.dismissConnectionError)
+                }
+                LeakGuardRecoveryControl(viewModel: viewModel)
+            }
+            .background(.regularMaterial)
+            .overlay(alignment: .top) { Divider() }
+        }
+    }
+}
+
+/// Stays available after the diagnostic is dismissed, while Connect retries.
+struct LeakGuardRecoveryControl: View {
+    @ObservedObject var viewModel: AppViewModel
+
+    var body: some View {
+        if viewModel.canAllowDirectTraffic {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Leak guard may still be blocking direct traffic.")
+                    .font(.caption)
+                Button("Allow direct traffic", action: viewModel.allowDirectTraffic)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(12)
         }
     }
 }

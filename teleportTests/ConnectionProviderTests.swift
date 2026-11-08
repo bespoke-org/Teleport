@@ -3,6 +3,142 @@ import Combine
 import XCTest
 
 final class ConnectionProviderTests: XCTestCase {
+    @MainActor
+    func testUnconfirmedGuardReleaseRemainsActionable() async throws {
+        let root = try makeIsolatedRoot("guard-release-failure")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let transport = GuardTransport()
+        let guardService = LeakGuardService(client: PrivilegedHelperClient(transport: transport))
+        let (model, store) = try makeLaunchFixture(root: root, mode: .tun, enabled: false,
+            backend: RecordingConnectionBackend(), leakGuard: guardService)
+        defer { store.deleteStoredDataForTesting() }
+        await waitUntil("ready") { await MainActor.run { model.canConnect } }
+        await guardService.armStandby()
+        await waitUntil("guard held") { await MainActor.run { model.canAllowDirectTraffic } }
+        transport.setReleaseFails(true)
+        model.allowDirectTraffic()
+        await waitUntil("failed release returns") { await MainActor.run { !model.isOperationPending } }
+        XCTAssertTrue(model.canAllowDirectTraffic, "An unconfirmed release must keep its recovery action")
+        XCTAssertTrue(model.canConnect, "A release failure must not prevent retrying the portal")
+        transport.setReleaseFails(false)
+        model.allowDirectTraffic()
+        await waitUntil("release retry succeeds") {
+            await MainActor.run { !model.isLeakGuardHoldingUplink && !model.isOperationPending }
+        }
+        XCTAssertEqual(transport.commands, [.engageLeakGuard, .releaseLeakGuard, .releaseLeakGuard])
+    }
+
+    @MainActor
+    func testReadinessFailureKeepsRetryAndExplicitGuardReleaseAfterDismissingError() async throws {
+        let root = try makeIsolatedRoot("guard-readiness")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let transport = GuardTransport()
+        let guardService = LeakGuardService(client: PrivilegedHelperClient(transport: transport))
+        let backend = RecordingConnectionBackend()
+        let failedOnce = Flag()
+        let (model, store) = try makeLaunchFixture(root: root, mode: .tun, enabled: false, backend: backend,
+            leakGuard: guardService, verifyConnection: { _ in
+                try await guardService.armForSession(tunnelInterface: "utun10", protectedHosts: ["192.0.2.1"])
+                if !failedOnce.isSet {
+                    failedOnce.set()
+                    throw ConnectionReadinessProbe.Failure(details: "Synthetic handshake failure")
+                }
+                backend.setRuntimeActive(true)
+            })
+        defer { store.deleteStoredDataForTesting() }
+        await waitUntil("ready") { await MainActor.run { model.canConnect } }
+        XCTAssertFalse(model.canAllowDirectTraffic, "Enabling the setting alone does not mean a guard is held")
+        model.connect()
+        await waitUntil("failed readiness leaves the guard held") {
+            await MainActor.run { model.connectionError != nil && model.canConnect && model.canAllowDirectTraffic }
+        }
+        XCTAssertFalse(model.canDisconnect, "The main power action must remain Connect for retry")
+        XCTAssertEqual(transport.commands, [.engageLeakGuard])
+        model.dismissConnectionError()
+        XCTAssertTrue(model.canAllowDirectTraffic, "Guard release must outlive the dismissed diagnostic")
+
+        await transport.releaseGate.enableBlocking()
+        model.allowDirectTraffic()
+        await transport.releaseGate.waitUntilEntered()
+        XCTAssertFalse(model.canConnect)
+        XCTAssertFalse(model.canDisconnect)
+        model.connect()
+        model.selectConnectionMode(.systemProxy)
+        XCTAssertEqual(model.connectionMode, .tun, "A mode change cannot race the pending guard release")
+        XCTAssertEqual(backend.recordedCalls(), ["start", "stop"], "A retry cannot race the pending guard release")
+        await transport.releaseGate.open()
+        await waitUntil("explicit direct traffic release finishes") {
+            await MainActor.run { model.canConnect && !model.isLeakGuardHoldingUplink }
+        }
+        XCTAssertEqual(transport.commands, [.engageLeakGuard, .releaseLeakGuard])
+
+        model.connect()
+        await waitUntil("retry succeeds") { await MainActor.run { model.isConnected && !model.isOperationPending } }
+        XCTAssertTrue(model.isLeakGuardHoldingUplink)
+        model.disconnect()
+        await waitUntil("cleanup releases guard") { await MainActor.run { !model.isOperationPending && !model.isLeakGuardHoldingUplink } }
+    }
+
+    @MainActor
+    func testRuntimeLossKeepsGuardUntilUserAllowsDirectTraffic() async throws {
+        let root = try makeIsolatedRoot("guard-runtime-loss")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let transport = GuardTransport()
+        let guardService = LeakGuardService(client: PrivilegedHelperClient(transport: transport))
+        let backend = RecordingConnectionBackend()
+        let (model, store) = try makeLaunchFixture(root: root, mode: .tun, enabled: false, backend: backend,
+            leakGuard: guardService, supervisionInterval: 0.01, verifyConnection: { _ in
+                try await guardService.armForSession(tunnelInterface: "utun10", protectedHosts: ["192.0.2.1"])
+                backend.setRuntimeActive(true)
+            })
+        defer { store.deleteStoredDataForTesting() }
+        await waitUntil("ready") { await MainActor.run { model.canConnect } }
+        model.connect()
+        await waitUntil("connected") { await MainActor.run { model.isConnected && !model.isOperationPending } }
+        backend.setRuntimeActive(false)
+        await waitUntil("runtime loss leaves an explicit release action") {
+            await MainActor.run { model.canConnect && model.canAllowDirectTraffic }
+        }
+        XCTAssertEqual(model.connectionError?.summary, "Xray stopped unexpectedly")
+        XCTAssertEqual(transport.commands, [.engageLeakGuard], "Runtime loss must preserve the kill switch")
+        model.dismissConnectionError()
+        model.allowDirectTraffic()
+        await waitUntil("guard released") { await MainActor.run { !model.isLeakGuardHoldingUplink && !model.isOperationPending } }
+        XCTAssertFalse(model.canAllowDirectTraffic)
+        XCTAssertTrue(model.canConnect)
+        XCTAssertEqual(transport.commands, [.engageLeakGuard, .releaseLeakGuard])
+    }
+
+    @MainActor
+    func testPortalReconnectPreservesHeldGuardAndHidesDirectTrafficAction() async throws {
+        let root = try makeIsolatedRoot("guard-reconnect")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let transport = GuardTransport()
+        let guardService = LeakGuardService(client: PrivilegedHelperClient(transport: transport))
+        let backend = RecordingConnectionBackend()
+        let (model, store) = try makeLaunchFixture(root: root, mode: .tun, enabled: false, backend: backend,
+            leakGuard: guardService, verifyConnection: { _ in
+                try await guardService.armForSession(tunnelInterface: "utun10", protectedHosts: ["192.0.2.1"])
+                backend.setRuntimeActive(true)
+            })
+        defer { store.deleteStoredDataForTesting() }
+        await waitUntil("ready") { await MainActor.run { model.canConnect } }
+        model.connect()
+        await waitUntil("connected") { await MainActor.run { model.isConnected && !model.isOperationPending } }
+        await backend.reconnectGate.enableBlocking()
+        model.selectConnection(id: try XCTUnwrap(model.savedConnections.first?.id))
+        await backend.reconnectGate.waitUntilEntered()
+        XCTAssertTrue(model.isLeakGuardHoldingUplink)
+        XCTAssertFalse(model.canAllowDirectTraffic)
+        model.allowDirectTraffic()
+        XCTAssertEqual(transport.commands, [.engageLeakGuard], "A transient reconnect must not release the guard")
+        await backend.reconnectGate.open()
+        await waitUntil("reconnected") { await MainActor.run { model.isConnected && !model.isOperationPending } }
+        XCTAssertEqual(transport.commands, [.engageLeakGuard, .engageLeakGuard])
+        model.disconnect()
+        await waitUntil("cleanup") { await MainActor.run { !model.isOperationPending && !model.isLeakGuardHoldingUplink } }
+    }
+
     func testFailedProxyHandshakeNeverPublishesConnected() async throws {
         let backend = RecordingConnectionBackend()
         let failedOnce = Flag()
@@ -341,7 +477,9 @@ final class ConnectionProviderTests: XCTestCase {
     @MainActor
     private func makeLaunchFixture(
         root: URL, mode: ConnectionMode, enabled: Bool,
-        backend: RecordingConnectionBackend, hasConnections: Bool = true
+        backend: RecordingConnectionBackend, hasConnections: Bool = true,
+        leakGuard: LeakGuardService? = nil, supervisionInterval: TimeInterval = 60,
+        verifyConnection: (@Sendable (ConnectionRequest) async throws -> Void)? = nil
     ) throws -> (AppViewModel, ConfigurationStore) {
         let fileManager = TempFileManager(root: root)
         let log = TeleportLog(directoryURL: root, fileName: "verify.log")
@@ -357,13 +495,15 @@ final class ConnectionProviderTests: XCTestCase {
         }
         try store.save(AppSnapshot(
             savedConnections: connections, selectedConnectionID: connections.last?.id,
-            proxyEndpoint: .default, connectionMode: mode, connectsOnLaunch: enabled
+            proxyEndpoint: .default, connectionMode: mode, connectsOnLaunch: enabled,
+            isLeakGuardEnabled: leakGuard != nil
         ))
-        let provider = BackendConnectionProvider(mode: mode, backend: backend, supervisionInterval: 60)
+        let provider = BackendConnectionProvider(mode: mode, backend: backend, supervisionInterval: supervisionInterval,
+                                                 verifyConnection: verifyConnection)
         let model = AppViewModel(
             parser: ConnectionLinkParser(), store: store,
             connectionProviderFactory: ConnectionProviderFactory(systemProxyProvider: { provider }, tunProvider: { provider }),
-            leakGuard: LeakGuardService(isEnabled: false, log: log),
+            leakGuard: leakGuard ?? LeakGuardService(isEnabled: false, log: log),
             subscriptionClient: SubscriptionClient(), healthProbeService: ConnectionHealthProbeService(),
             systemProxyService: SystemProxyService(fileManager: fileManager, log: log), log: log
         )
@@ -1185,6 +1325,40 @@ final class ConnectionProviderTests: XCTestCase {
             defer { lock.unlock() }
             return value
         }
+    }
+
+    private final class GuardTransport: TUNHelperTransport, @unchecked Sendable {
+        private let lock = NSLock()
+        private var recordedCommands: [TUNHelperCommand] = []
+        private var releaseFails = false
+        let releaseGate = Gate()
+
+        var commands: [TUNHelperCommand] { lock.withLock { recordedCommands } }
+
+        func setReleaseFails(_ fails: Bool) { lock.withLock { releaseFails = fails } }
+
+        func send(command: TUNHelperCommand, requestData: Data, timeout: TimeInterval) async throws -> Data {
+            lock.withLock { recordedCommands.append(command) }
+            let requestID: UUID
+            switch command {
+            case .engageLeakGuard:
+                let request: TUNHelperRequestEnvelope<EngageLeakGuardRequest> = try TUNHelperCodec.decodeRequest(requestData)
+                requestID = request.requestID
+            case .releaseLeakGuard:
+                let request: TUNHelperRequestEnvelope<ReleaseLeakGuardRequest> = try TUNHelperCodec.decodeRequest(requestData)
+                requestID = request.requestID
+                await releaseGate.enter()
+                if lock.withLock({ releaseFails }) { throw TestError.stopFailed }
+            default:
+                XCTFail("Unexpected guard command: \(command)")
+                throw TestError.startFailed
+            }
+            return try TUNHelperCodec.encodeResponse(TUNHelperResponseEnvelope(
+                revision: TUNHelperProtocol.revision, requestID: requestID, sessionID: nil,
+                payload: LeakGuardResponse(isEngaged: command == .engageLeakGuard), failure: nil))
+        }
+
+        func invalidate() {}
     }
 
     private final class RecordingConnectionBackend: ConnectionBackend, @unchecked Sendable {

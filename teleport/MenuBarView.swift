@@ -26,6 +26,7 @@ struct MenuBarView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(8)
             }
+            LeakGuardRecoveryControl(viewModel: viewModel)
         }
         .padding(8)
         .frame(width: 280)

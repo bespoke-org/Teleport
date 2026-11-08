@@ -21,13 +21,19 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
         self.leakGuard = leakGuard
     }
 
-    func hasRestorableState() -> Bool { false }
+    func hasRestorableState() -> Bool {
+        systemProxyService.hasSavedProxySnapshot()
+    }
 
     func hasActiveRuntimeSession() async -> Bool {
         await runtimeManager.isRunning()
     }
 
-    func restorePreviousState() throws {}
+    func restorePreviousState() async throws {
+        try await BlockingWork.run { [systemProxyService] in
+            try systemProxyService.restoreSavedProxyState()
+        }
+    }
 
     func start(_ request: ConnectionRequest, reportPhase: @escaping @Sendable (ConnectionState) -> Void) async throws {
         // A previous build may still own the default tunnel and no longer accept
