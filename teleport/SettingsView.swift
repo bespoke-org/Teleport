@@ -162,7 +162,6 @@ private struct GeneralSettingsView: View {
                         SettingsChoice(value: $0, title: $0.displayName)
                     }, acceptsSelection: viewModel.canChangeSelection)
                     .frame(width: 220, height: 28)
-                    .allowsHitTesting(viewModel.canChangeSelection)
                 } label: {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Connection mode")
