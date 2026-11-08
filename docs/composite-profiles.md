@@ -75,10 +75,9 @@ next connection. When `fallbackTag` is omitted, the first proxy member is the
 preferred fallback, even if it is outside the selector. If the preferred fallback
 is unavailable, a reachable selected member becomes the session's fallback. If
 neither a selected member nor the preferred fallback is reachable, the connection
-fails. Standalone portals still require a reachable endpoint. Health checks open
-temporary leak-guard exemptions for
-all members. If the helper's shared address budget is full, the check reports an
-unknown result and releases any exemptions already opened.
+fails. Standalone portals still require a reachable endpoint. While protected TUN
+mode is selected, automatic and manual server health probes are suppressed.
+Health checks do not open temporary firewall exemptions.
 
 The fixtures in `teleportTests/fixtures/subscriptions/balanced-*.json` use
 synthetic credentials and reserved example domains. Tests check import,

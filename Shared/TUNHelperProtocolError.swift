@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 nonisolated protocol TUNHelperClientPresentableError: Error, Sendable {
     var clientSummary: String { get }
@@ -50,6 +51,36 @@ private nonisolated protocol TUNHelperPayloadValidating {
 extension StatusRequest: TUNHelperPayloadValidating {
     fileprivate static let sessionRequirement: TUNHelperSessionRequirement = .absent
     fileprivate func validate() throws {}
+}
+
+extension ResolveEndpointRequest: TUNHelperPayloadValidating {
+    fileprivate static let sessionRequirement: TUNHelperSessionRequirement = .absent
+    fileprivate func validate() throws {
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-")
+        guard !host.isEmpty, host.count <= 253, !host.hasPrefix("-"),
+              host.unicodeScalars.allSatisfy({ allowed.contains($0) }),
+              !interface.isEmpty, interface.count <= 32,
+              interface.range(of: #"^[A-Za-z0-9._-]+$"#, options: .regularExpression) != nil,
+              !interface.hasPrefix("-") else {
+            throw protocolFailure(.malformedPayload, "Invalid proxy endpoint resolution request")
+        }
+    }
+}
+
+extension ResolveEndpointResponse: TUNHelperPayloadValidating {
+    fileprivate static let sessionRequirement: TUNHelperSessionRequirement = .absent
+    fileprivate func validate() throws {
+        guard addresses.count <= 16, addresses.allSatisfy(isNumericIPAddress) else {
+            throw protocolFailure(.malformedPayload, "Invalid endpoint address response")
+        }
+    }
+}
+
+nonisolated func isNumericIPAddress(_ address: String) -> Bool {
+    guard !address.isEmpty, address.count <= 45,
+          address.allSatisfy({ "0123456789abcdefABCDEF:.".contains($0) }) else { return false }
+    var v4 = in_addr(); var v6 = in6_addr()
+    return address.withCString { inet_pton(AF_INET, $0, &v4) == 1 || inet_pton(AF_INET6, $0, &v6) == 1 }
 }
 
 extension StartSessionRequest: TUNHelperPayloadValidating {
@@ -108,13 +139,36 @@ extension EngageLeakGuardRequest: TUNHelperPayloadValidating {
 
     fileprivate func validate() throws {
         if let tunnelInterfaceName {
-            try validateNonEmpty(tunnelInterfaceName, field: "tunnelInterfaceName")
+            guard tunnelInterfaceName.hasPrefix("utun"),
+                  !tunnelInterfaceName.dropFirst(4).isEmpty,
+                  tunnelInterfaceName.count <= 15,
+                  tunnelInterfaceName.dropFirst(4).allSatisfy({ $0.isASCII && $0.isNumber }) else {
+                throw protocolFailure(.malformedPayload, "Invalid tunnel interface")
+            }
         }
         guard protectedHosts.count <= TUNHelperProtocol.maximumProtectedHosts else {
             throw protocolFailure(.payloadTooLarge, "The leak guard exceeds the protected host limit")
         }
         for protectedHost in protectedHosts {
             try validateNonEmpty(protectedHost, field: "protectedHosts")
+        }
+        guard policy.endpoints.count <= TUNHelperProtocol.maximumProtectedHosts else {
+            throw protocolFailure(.payloadTooLarge, "Too many protected endpoints")
+        }
+        for endpoint in policy.endpoints {
+            guard isNumericIPAddress(endpoint.address), ["tcp", "udp"].contains(endpoint.transport),
+                  endpoint.ports.count <= 512, !endpoint.ports.isEmpty else {
+                throw protocolFailure(.malformedPayload, "Invalid protected endpoint")
+            }
+            for part in endpoint.ports.split(separator: ",", omittingEmptySubsequences: false) {
+                let values = part.split(separator: "-", omittingEmptySubsequences: false)
+                let ports = values.compactMap { Int($0) }
+                guard (1...2).contains(values.count), ports.count == values.count,
+                      values.allSatisfy({ !$0.isEmpty && $0.allSatisfy({ $0.isASCII && $0.isNumber }) }),
+                      ports.allSatisfy({ (1...65535).contains($0) }), ports.first! <= ports.last! else {
+                    throw protocolFailure(.malformedPayload, "Invalid protected port range")
+                }
+            }
         }
         guard leaseSeconds > 0, leaseSeconds <= TUNHelperProtocol.maximumLeakGuardLeaseSeconds else {
             throw protocolFailure(.malformedPayload, "The leak-guard lease is outside the permitted range")

@@ -60,7 +60,7 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
     /// which interface belongs to Teleport. Call after renewing helper approval.
     /// Returns whether a previous session's state was removed.
     @discardableResult
-    func recoverPreviousSession(existingVPNInterfaces: [String], beforeStopping: () async -> Void = {}) async throws -> Bool {
+    func recoverPreviousSession(existingVPNInterfaces: [String], beforeStopping: () async throws -> Void = {}) async throws -> Bool {
         try Task.checkCancellation()
         let status = try await helperClient.status()
         guard status.version == PrivilegedHelperClient.expectedVersion else {
@@ -83,7 +83,7 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
                 "Teleport could not identify its previous tunnel. Try connecting again after the helper finishes its current operation."
             )
         }
-        if status.phase == .running { await beforeStopping() }
+        if status.phase == .running { try await beforeStopping() }
         try Task.checkCancellation()
         // A restarted helper loses its in-memory UUID. Its root-owned config and
         // validated process identify the old session; this UUID identifies the

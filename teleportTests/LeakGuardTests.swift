@@ -1,186 +1,71 @@
 import Foundation
 import XCTest
 
-/// The pf ruleset that keeps traffic off the physical uplink between sessions.
-/// Exercising it for real means taking a machine off the network, so the ruleset
-/// is a pure function and this covers it directly — then hands the result to
-/// `pfctl -n`, which is the only authority on whether pf would accept it.
+/// Parse-only checks: never load rules, flush states or modify the host network.
 final class LeakGuardTests: XCTestCase {
-    private let standby = LeakGuardRuleset.rules(
-        stage: .standby,
-        protectedHosts: ["203.0.113.7"]
-    )
+    private let policy = LeakGuardPolicy(endpoints: [
+        .init(address: "203.0.113.7", transport: "tcp", ports: "443"),
+        .init(address: "2001:db8::1", transport: "udp", ports: "4000-4010,51820")
+    ])
 
-    private let session = LeakGuardRuleset.rules(
-        stage: .session(tunnelInterface: "utun10"),
-        protectedHosts: ["203.0.113.7", "2001:db8::1"]
-    )
-
-    /// Nothing is running that could own traffic on the uplink, so nothing is
-    /// entitled to any: the root exception exists only to keep a live Xray's direct
-    /// outbound working, and a tunnel pass would name an interface that is gone.
-    func testStandbyHasNoTunnelOrRootException() throws {
-        XCTAssert(!standby.contains("user root"), "a standby guard must not pass root traffic")
-        XCTAssert(!standby.contains(" on utun"), "a standby guard must not name a tunnel interface")
-        XCTAssert(standby.contains("pass quick on lo0 all"), "loopback is never filtered")
-        XCTAssert(
-            standby.contains("pass out quick inet to 203.0.113.7"),
-            "the proxy server stays reachable, or nothing could rebuild the session"
-        )
+    func testStandbyOnlyBootstrapsThroughIsolatedGroup() {
+        let rules = LeakGuardRuleset.rules(stage: .standby, runtimeGroupID: 555)
+        XCTAssert(rules.contains("to 1.1.1.1 port 443 group 555"))
+        XCTAssertFalse(rules.contains("user root"))
+        XCTAssertFalse(rules.contains(" on utun"))
+        XCTAssertFalse(rules.contains("192.168.0.0/16"))
+        XCTAssert(rules.contains("from any port 68 to any port 67"))
+        XCTAssert(rules.contains("icmp6-type { 133, 134, 135, 136 }"))
+        XCTAssert(rules.contains("block drop out quick proto { tcp, udp } to any port { 53, 853 }"))
     }
 
-    func testSessionPassesItsOwnTunnel() throws {
-        XCTAssert(session.contains("pass out quick on utun10 all"), "the session's tunnel carries traffic")
-        XCTAssert(!session.contains("utun11"), "only the session's own tunnel is passed")
-        XCTAssert(
-            session.contains("pass out quick all user root"),
-            "Xray's direct outbound leaves the uplink as root and is indistinguishable from a leak by address alone"
-        )
+    func testEndpointExceptionsRequireAddressPortProtocolAndGroup() {
+        let rules = LeakGuardRuleset.rules(stage: .session(tunnelInterface: "utun10"), policy: policy, runtimeGroupID: 555)
+        XCTAssert(rules.contains("pass out quick inet proto tcp from any to 203.0.113.7 port { 443 } group 555"))
+        XCTAssert(rules.contains("pass out quick inet6 proto udp from any to 2001:db8::1 port { 4000:4010,51820 } group 555"))
+        XCTAssert(rules.contains("pass out quick on utun10 all"))
+        XCTAssertFalse(rules.contains("all group"))
+        XCTAssertFalse(rules.contains("user root"))
     }
 
-    func testProtectedHostsKeepTheirFamily() throws {
-        XCTAssert(session.contains("pass out quick inet to 203.0.113.7"), "an IPv4 server is passed as inet")
-        XCTAssert(session.contains("pass out quick inet6 to 2001:db8::1"), "an IPv6 server is passed as inet6")
+    func testLANPermissionDoesNotReopenDNS() throws {
+        let rules = LeakGuardRuleset.rules(stage: .session(tunnelInterface: "utun10"), policy: .init(allowsDirect: true, allowsLAN: true))
+        let dnsBlock = try XCTUnwrap(rules.range(of: "block drop out quick proto"))
+        let lanPass = try XCTUnwrap(rules.range(of: "pass out quick inet to { 10.0.0.0/8"))
+        let directPass = try XCTUnwrap(rules.range(of: "pass out quick proto { tcp, udp } all group"))
+        XCTAssertLessThan(dnsBlock.lowerBound, lanPass.lowerBound)
+        XCTAssertLessThan(dnsBlock.lowerBound, directPass.lowerBound)
     }
 
-    /// pf takes the first `quick` match, so a block above a pass would swallow it.
-    /// IPv6 is blocked as deliberately as IPv4: an uplink that gains IPv6 after a
-    /// session was built is exactly the case a routing-only guard misses.
-    func testBothFamiliesAreBlockedLast() throws {
-        for rules in [standby, session] {
-            let lines = rules.split(separator: "\n").map(String.init)
-            guard let firstBlock = lines.firstIndex(where: { $0.hasPrefix("block") }),
-                  let lastPass = lines.lastIndex(where: { $0.hasPrefix("pass") }) else {
-                XCTFail("a ruleset must contain both pass and block rules")
-                return
+    func testRulesCannotLeavePermissiveStatesAfterNarrowing() {
+        for stage in [LeakGuardRuleset.Stage.standby, .session(tunnelInterface: "utun10")] {
+            let rules = LeakGuardRuleset.rules(stage: stage, policy: policy)
+            for line in rules.split(separator: "\n") where line.hasPrefix("pass") {
+                XCTAssert(line.hasSuffix("no state"), "stateful exception: \(line)")
             }
-            XCTAssert(lastPass < firstBlock, "every pass rule precedes the first block rule")
-            XCTAssert(rules.contains("block drop out quick inet all"), "IPv4 is blocked by default")
-            XCTAssert(rules.contains("block drop out quick inet6 all"), "IPv6 is blocked by default")
+            XCTAssert(rules.hasSuffix("block drop out quick inet all\nblock drop out quick inet6 all\n"))
         }
     }
 
-    /// A guard that blocked these would leave a machine unable to get an address or
-    /// resolve the server it is meant to reconnect to — permanently stuck rather
-    /// than briefly filtered.
-    func testTheMachineCanStillConfigureItself() throws {
-        XCTAssert(standby.contains("port { 67, 68 }"), "DHCP survives the guard")
-        XCTAssert(standby.contains("192.168.0.0/16"), "local networks survive the guard")
-        XCTAssert(standby.contains("port { 53, 853 }"), "name resolution survives the guard")
-        XCTAssert(standby.contains("fe80::/10"), "IPv6 neighbour discovery survives the guard")
-        for rules in [standby, session] {
-            XCTAssert(rules.contains("pass in quick all"), "connections from the local network can be answered")
+    func testPacketFilterAcceptsEveryPolicy() throws {
+        for stage in [LeakGuardRuleset.Stage.standby, .session(tunnelInterface: "utun10")] {
+            for direct in [false, true] {
+                for lan in [false, true] {
+                    var policy = policy
+                    policy.allowsDirect = direct; policy.allowsLAN = lan
+                    let path = FileManager.default.temporaryDirectory.appendingPathComponent("teleport-pf-\(UUID()).conf")
+                    try LeakGuardRuleset.rules(stage: stage, policy: policy).write(to: path, atomically: true, encoding: .utf8)
+                    defer { try? FileManager.default.removeItem(at: path) }
+                    let process = Process(), output = Pipe()
+                    process.executableURL = URL(fileURLWithPath: "/sbin/pfctl")
+                    process.arguments = ["-a", LeakGuardRuleset.anchorName, "-n", "-f", path.path]
+                    process.standardOutput = output; process.standardError = output
+                    try process.run()
+                    let data = output.fileHandleForReading.readDataToEndOfFile()
+                    process.waitUntilExit()
+                    XCTAssertEqual(process.terminationStatus, 0, String(decoding: data, as: UTF8.self))
+                }
+            }
         }
-    }
-
-    /// An empty entry would emit `pass out quick inet to ` — a rule pf rejects,
-    /// taking the whole guard down with it.
-    func testEmptyProtectedHostIsDropped() throws {
-        let rules = LeakGuardRuleset.rules(stage: .standby, protectedHosts: ["", "203.0.113.7"])
-        XCTAssert(!rules.contains("to \n"), "an empty protected host is dropped rather than emitted")
-    }
-
-    /// A health check questions a server the session does not carry, so it has to
-    /// be let out to that one address — and the path has to be gone again the
-    /// moment the check is over, or the guard is permanently wider than the session
-    /// it protects.
-    func testAProbeOpensItsServerAndClosesItAgain() throws {
-        var exemptions = ProbeHostExemptions()
-        XCTAssert(exemptions.addresses.isEmpty, "nothing is open before a check asks for it")
-        XCTAssert(exemptions.retain(["198.51.100.9"]), "opening a new address changes the ruleset")
-        XCTAssert(exemptions.addresses == ["198.51.100.9"], "the checked server is open")
-
-        let rules = LeakGuardRuleset.rules(
-            stage: .session(tunnelInterface: "utun10"),
-            protectedHosts: ["203.0.113.7"] + exemptions.addresses
-        )
-        XCTAssert(rules.contains("pass out quick inet to 198.51.100.9"), "the check can reach its server")
-
-        XCTAssert(exemptions.release(["198.51.100.9"]), "closing the last hold changes the ruleset")
-        XCTAssert(exemptions.addresses.isEmpty, "the path is gone once the check has its answer")
-    }
-
-    /// The queue runs several checks at once and two of them can name the same
-    /// address — one subscription publishing a server under two names, most often.
-    /// The first to finish must not pull the path out from under the second.
-    func testConcurrentProbesDoNotCloseEachOthersPath() throws {
-        var exemptions = ProbeHostExemptions()
-        XCTAssert(exemptions.retain(["198.51.100.9"]), "the first check opens the path")
-        XCTAssert(!exemptions.retain(["198.51.100.9"]), "the second check finds it already open")
-
-        XCTAssert(!exemptions.release(["198.51.100.9"]), "the first check to finish leaves the path open")
-        XCTAssert(exemptions.addresses == ["198.51.100.9"], "the check still running keeps its server reachable")
-
-        XCTAssert(exemptions.release(["198.51.100.9"]), "the last check to finish closes it")
-        XCTAssert(exemptions.addresses.isEmpty, "no path outlives the checks that asked for it")
-        XCTAssert(!exemptions.release(["198.51.100.9"]), "closing what was never opened changes nothing")
-    }
-
-    /// The helper refuses a request that names more hosts than it will route, and a
-    /// refused request leaves the guard unrenewed — so a full probe queue must not
-    /// be able to push the list past that bound and take the guard down with it.
-    func testProbeAddressesStayInsideTheHelpersBound() throws {
-        let perProbe = ProbeHostExemptions.maximumAddressesPerProbe
-        var exemptions = ProbeHostExemptions()
-        for probe in 0 ..< concurrentProbeLimit {
-            _ = exemptions.retain((0 ..< perProbe).map { "198.51.100.\(probe * perProbe + $0)" })
-        }
-        let sessionHosts = ["203.0.113.7", "203.0.113.8", "2001:db8::1"]
-        XCTAssert(
-            sessionHosts.count + exemptions.addresses.count <= TUNHelperProtocol.maximumProtectedHosts,
-            "a full probe queue plus the session's own servers has to fit in what the helper accepts"
-        )
-    }
-
-    func testCompositeProbeAdmissionRespectsSharedAddressBudget() {
-        var exemptions = ProbeHostExemptions()
-        let session = (1...20).map { "192.0.2.\($0)" }
-        let group = (1...44).map { "198.51.100.\($0)" }
-        XCTAssertTrue(exemptions.canRetain(group, protectedHosts: session))
-        _ = exemptions.retain(group)
-        XCTAssertTrue(exemptions.canRetain(group, protectedHosts: session), "Shared members need no extra budget")
-        XCTAssertFalse(exemptions.canRetain(["203.0.113.1"], protectedHosts: session))
-        XCTAssertEqual(exemptions.hostsForGuard(protectedHosts: session).count, 64)
-        _ = exemptions.release(group)
-        XCTAssertTrue(exemptions.canRetain(["203.0.113.1"], protectedHosts: session))
-    }
-
-    func testLargerSessionCannotPreventGuardRenewalDuringProbes() {
-        var exemptions = ProbeHostExemptions()
-        _ = exemptions.retain((1...50).map { "198.51.100.\($0)" })
-        let session = (1...30).map { "192.0.2.\($0)" }
-        let hosts = exemptions.hostsForGuard(protectedHosts: session)
-        XCTAssertEqual(hosts.count, TUNHelperProtocol.maximumProtectedHosts)
-        XCTAssertTrue(Set(session).isSubset(of: Set(hosts)))
-    }
-
-    /// `ConnectionHealthProbeQueue`'s fan-out, which cannot be imported here without
-    /// the whole view model behind it. Raising it there without raising what the
-    /// helper accepts is exactly what this check exists to catch.
-    private let concurrentProbeLimit = 10
-
-    func testPacketFilterAcceptsBothStages() throws {
-        for (name, rules) in [("standby", standby), ("session", session)] {
-            let result = parse(rules)
-            XCTAssert(result.accepted, "pfctl rejects the \(name) ruleset:\n\(result.output)")
-        }
-    }
-
-    /// Parse-only: nothing on the machine running this is changed.
-    private func parse(_ rules: String) -> (accepted: Bool, output: String) {
-        let path = NSTemporaryDirectory() + "teleport-verify-leak-guard.pf"
-        try? rules.write(toFile: path, atomically: true, encoding: .utf8)
-        defer { try? FileManager.default.removeItem(atPath: path) }
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/sbin/pfctl")
-        process.arguments = ["-a", LeakGuardRuleset.anchorName, "-n", "-f", path]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        guard (try? process.run()) != nil else { return (false, "pfctl could not be run") }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        return (process.terminationStatus == 0, String(decoding: data, as: UTF8.self))
     }
 }

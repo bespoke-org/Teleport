@@ -20,7 +20,7 @@ Teleport is a macOS menu bar client for the [Xray](https://github.com/XTLS/Xray-
 - Two connection modes: **System Proxy** (no administrator rights) and **TUN** (the whole machine is routed through a tunnel interface; needs a root helper).
 - Split routing: rules by domain, IP range, geosite category or geoip country, grouped in named profiles. A rule can send its traffic through a different saved connection, so one session can dial several servers.
 - Geodata (`geoip.dat`, `geosite.dat`) bundled, with optional downloads from a source of your choice.
-- An optional pf-based leak guard (off by default) that keeps traffic off the physical network while a TUN session is being rebuilt.
+- Persistent PF protection for TUN failures, enabled on new installations, with explicit DNS and local-network policies.
 - TCP latency checks for every connection, shown in the menu bar picker.
 
 ## Requirements
@@ -109,13 +109,19 @@ DNS is answered by Xray inside the tunnel; the helper publishes a resolver entry
 
 If another VPN owns the default `utun` route, Teleport refuses to start TUN mode. Disconnect it first, or use System Proxy mode.
 
-#### Leak guard (optional, off by default)
+#### DNS and leak protection
 
-Settings > General > Leak guard. When on, a pf ruleset (anchor `com.apple/dev.x.teleport`) drops any outbound traffic that would bypass the tunnel.
+Protection is enabled for new installations in Settings > General. Saved preferences are preserved. It applies to TUN mode; System Proxy cannot protect applications that ignore macOS proxy settings.
 
-- Allowed: loopback, the tunnel interface, DHCP, local and link-local destinations, DNS (ports 53 and 853), the servers of the current session, and root processes (Xray's `direct` outbound runs as root).
-- Everything else outbound, IPv4 and IPv6, is dropped. Inbound traffic is not filtered.
-- The guard is held on a lease: the app renews it every 45 seconds, the helper releases it after 180 seconds without renewal. A crashed app leaves the machine offline for at most three minutes. The helper also releases a guard it finds at its own start.
+- Public DNS, including names whose traffic is explicitly routed `direct`, uses DoH through the default proxy. There is no system-DNS fallback. WireGuard DNS stays within the selected peer; equal resolver IPs in different networks use distinct outbound tags. A failed query never crosses into another DNS group.
+- Local DNS is opt-in: enable **Allow local network access** and enter specific domain suffixes under **Local DNS zones**. Only those zones use the network's numeric resolvers. Local zones take precedence over split-routing DNS rules. IP-only routing rules cannot select a resolver before a name has been resolved.
+- Before resolving a proxy hostname, protection enters standby. The helper resolves only endpoint names through fixed-IP HTTPS (`1.1.1.1:443`), with system DNS and proxy settings disabled. This bootstrap service sees the endpoint names and the physical IP; it receives no ordinary browsing queries from Teleport. Failure aborts the connection.
+- PF allows loopback, DHCP/IPv6 neighbor discovery, the tunnel, and the selected endpoint ports/protocols for the helper's private `_teleport` group. Other root services receive no blanket exception. An explicit `direct` routing policy permits Xray's group to implement it. LAN access is separate and off by default; enabling it does not reopen arbitrary DNS on ports 53/853.
+- IPv4 and IPv6 outbound traffic outside these exceptions is blocked. Inbound filtering remains the responsibility of the macOS firewall. Automatic server probes are suppressed while protected TUN mode is selected. Protected sessions reject plaintext and disabled TLS verification.
+- The app renews the guard every 45 seconds. After 180 seconds without renewal the helper **tightens to standby**, keeping traffic blocked. A helper restart also restores standby. Manual Disconnect, normal Quit, turning protection off while disconnected, or uninstalling the helper releases it. General settings show the helper's protection status and offer **Disconnect and restore direct access** after a crash.
+- Enabling protection clears existing PF connection states once, which can interrupt existing connections. Heartbeats do not flush states. Rules use stateless exceptions so narrowing a policy cannot leave old exceptions in the state table.
+
+Protection requires the stock macOS PF root anchor. Custom root rules cause connection startup to fail instead of silently loading an unused anchor. Packet-level verification on a disposable dual-stack macOS system is still required before claiming leak resistance across OS versions, network changes and third-party networking software.
 
 If a connection fails, the guard keeps direct traffic blocked while Connect retries
 the portal. To stop trying and restore direct traffic, choose **Allow direct traffic**
@@ -127,7 +133,7 @@ in the menu bar or Settings. This action stays available after dismissing the er
 
 TUN mode installs a LaunchDaemon (`dev.x.teleport.PrivilegedHelper`) that runs as root and stays resident. Source: `TeleportPrivilegedHelper/`.
 
-- It can only: report status, start or stop a session, read its own logs, engage or release the leak guard.
+- It can only: report status, resolve a proxy endpoint over fixed-IP HTTPS, start or stop a session, read its own logs, engage or release the leak guard. The helper and its Xray child keep root privileges for TUN but use the dedicated primary group `_teleport`; the installer rejects groups with members or a shared ID.
 - Starting a session runs the root copy of Xray with the configuration the app sends, installs the routes above and publishes the DNS entry. The app passes data, never commands.
 - The caller must be the user at the console and match the app code-signing hash approved during installation. Approval is stored in a root-owned manifest; a changed build needs approval again.
 
@@ -142,13 +148,14 @@ Connection links, which contain credentials, are stored encrypted under `~/Libra
 
 If the app is already gone, run `scripts/uninstall.sh` from a checkout (or `just uninstall-helper`). It removes the same files and lists what Teleport keeps in your home folder: `~/Library/Application Support/teleport/` and the `dev.x.teleport.configuration` item in Keychain.
 
-If the machine has no network after a crash, the leak guard is still loaded. It expires within three minutes, or drop it now with `sudo pfctl -a com.apple/dev.x.teleport -F all`.
+If the machine has no network after a crash, reopen Teleport and use **Disconnect and restore direct access** in General. Protection does not expire open. If the helper cannot be reached or updated, use **Remove helper** or `just uninstall-helper`; uninstall removes both PF rules and the persistent marker. Flushing the anchor alone is temporary: the running app or a helper restart can restore it.
 
 ## Known limitations
 
 - No signed download yet, build from source.
 - Another VPN that owns the default `utun` route blocks TUN mode entirely.
-- The leak guard lets DNS queries reach any resolver, and during a session it passes traffic of any root process, not only Xray.
+- Protection begins when connecting. It is restored by launchd after a reboot, but does not guarantee blocking before launchd starts the helper. It is not a boundary against malicious root processes or other privileged software changing PF.
+- An explicitly direct route exposes the physical IP to its destination. A proxy does not prevent browser fingerprinting, account identification, or observation by the proxy operator.
 
 Bug reports: https://github.com/bespoke-org/Teleport/issues
 
