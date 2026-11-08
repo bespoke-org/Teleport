@@ -2,9 +2,10 @@ import SwiftUI
 
 /// Keep the native item list stable when pages change. Inserting and removing
 /// these items makes AppKit update the layout of the entire glass toolbar.
-struct PortalsToolbar: ToolbarContent {
+struct PortalsToolbar<ConnectionControl: View>: ToolbarContent {
     @Binding var state: PortalsState
     let isActive: Bool
+    let connection: ConnectionControl
 
     var body: some ToolbarContent {
         if #available(macOS 26.0, *) {
@@ -17,6 +18,9 @@ struct PortalsToolbar: ToolbarContent {
                     add
                         .buttonStyle(.plain)
                         .glassEffect(.regular.interactive(), in: Circle())
+                    connection
+                        .buttonStyle(.plain)
+                        .glassEffect(.regular.interactive(), in: Circle())
                 }
                 .padding(.trailing, 4)
                 .visibility(isActive)
@@ -26,6 +30,7 @@ struct PortalsToolbar: ToolbarContent {
             // Earlier macOS versions cannot hide an item's shared background.
             ToolbarItem(id: "portals.search", placement: .primaryAction) { search }
             ToolbarItem(id: "portals.add", placement: .primaryAction) { add }
+            ToolbarItem(id: "portals.connection", placement: .primaryAction) { connection }
         }
     }
 
@@ -45,6 +50,32 @@ struct PortalsToolbar: ToolbarContent {
         }
         .keyboardShortcut("n", modifiers: .command)
         .help("Add portal")
+    }
+}
+
+struct PortalsConnectionButton: View {
+    @ObservedObject var viewModel: AppViewModel
+
+    private var actionTitle: String { viewModel.canDisconnect ? "Disconnect" : "Connect" }
+
+    var body: some View {
+        Button {
+            if viewModel.canDisconnect {
+                viewModel.disconnect()
+            } else {
+                viewModel.connect()
+            }
+        } label: {
+            Label(actionTitle, systemImage: "power")
+                .labelStyle(.iconOnly)
+                .font(.system(size: 17))
+                .foregroundStyle(viewModel.isConnected || viewModel.proxyPhase == .enabled ? Color.green : .primary)
+                .frame(width: 36, height: 36)
+                .contentShape(Circle())
+        }
+        .disabled(!viewModel.canConnect && !viewModel.canDisconnect)
+        .help(actionTitle)
+        .accessibilityLabel(actionTitle)
     }
 }
 

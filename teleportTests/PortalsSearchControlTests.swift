@@ -103,7 +103,8 @@ private struct SearchFixture: View {
     var body: some View {
         Color.clear.frame(width: 700, height: 400)
             .toolbar {
-                PortalsToolbar(state: $state.portals, isActive: true)
+                PortalsToolbar(state: $state.portals, isActive: true,
+                               connection: Button("Connect", systemImage: "power") {})
             }
     }
 }

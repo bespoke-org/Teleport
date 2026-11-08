@@ -53,7 +53,8 @@ struct SettingsView: View {
                     Color.clear.frame(width: 1, height: 1)
                 }
             }
-            PortalsToolbar(state: $portalsState, isActive: navigation.section == .portals)
+            PortalsToolbar(state: $portalsState, isActive: navigation.section == .portals,
+                           connection: PortalsConnectionButton(viewModel: viewModel))
         }
         .focusedSceneValue(\.settingsNavigation, $navigation)
         .navigationSplitViewStyle(.balanced)
