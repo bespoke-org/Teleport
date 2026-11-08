@@ -11,7 +11,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Cover the oldest supported macOS and the release image on arm64. The macOS 15
+  # Cover the oldest supported macOS and both architectures on the release image.
+  # Intel catches AppKit presentation failures absent on arm64. The macOS 15
   # image also exercises selecting a non-default Xcode. Develop covers the remaining runners.
   test:
     uses: ./.github/workflows/test.yml
@@ -19,5 +20,6 @@ jobs:
       matrix: |
         [
           {"macos": 15, "arch": "arm64", "runner": "macos-15", "developer-dir": "/Applications/Xcode_26.3.app/Contents/Developer"},
-          {"macos": 26, "arch": "arm64", "runner": "macos-26", "developer-dir": "/Applications/Xcode.app/Contents/Developer"}
+          {"macos": 26, "arch": "arm64", "runner": "macos-26", "developer-dir": "/Applications/Xcode.app/Contents/Developer"},
+          {"macos": 26, "arch": "x86_64", "runner": "macos-26-intel", "developer-dir": "/Applications/Xcode.app/Contents/Developer"}
         ]
