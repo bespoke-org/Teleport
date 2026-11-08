@@ -3,6 +3,46 @@
 Format is based on [_Keep a changelog_](https://keepachangelog.com) and uses
 [_Semantic versioning_](https://semver.org).
 
+## [0.6.0-rc.3] - 2026-11-08
+### Features
+- New app icon with selectable color palettes
+- Add settings search and polish sidebar navigation (#57)
+- Import subscription routing headers
+- Redesign menu bar controls and quiet background refreshes
+- Move menu connection control into header (#62)
+- Add subscription-scoped Tunnel profiles and actionable helper errors
+- Support balanced subscription profiles and live refresh
+- Improve portal controls, subscription metadata, and connection recovery (#73)
+- Refine Routing settings and anchored selection controls
+
+### Bug fixes
+- Prevent settings tests from hanging in CI
+- Honor peer DNS in WireGuard outbounds
+- Recreate Unreleased when bumping Xray
+- Keep geodata failure summaries on one log line
+- Prevent cross-line geodata diagnostic leaks (#64)
+- Keep connection work responsive during menu tracking
+- Reconcile owned recovery state when startup is already cancelled
+- Isolate profile geodata and retain bundled categories
+- Retain routed portal identity across subscription refreshes
+
+### Documentation
+- Add before and after menu bar screenshots
+
+### Testing
+- Avoid IconServices lookup in removal alerts (#63)
+- Await subscription routing live apply instead of sleeping
+- Synchronize connection and routing checks with delivered state
+- Await AppKit state changes without animation delays
+- Gate committed reconnect scenarios before superseding them
+- Synchronize lifecycle and UI waits with observed state (#72)
+- Distinguish cached geodata from active runtime files
+- Check stale runtime files independently of profile cache status
+- Observe settings popover state instead of sleeping
+- Wait for updated error text before dismissing details
+- Traverse popover content for accessibility readiness
+- Inspect hosted error content through popover decoration views
+
 ## [0.6.0-rc.2] - 2026-11-07
 ### Features
 - New app icon with selectable color palettes
