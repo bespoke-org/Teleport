@@ -3,6 +3,103 @@ import Combine
 import XCTest
 
 final class ConnectionProviderTests: XCTestCase {
+    func testFailedProxyHandshakeNeverPublishesConnected() async throws {
+        let backend = RecordingConnectionBackend()
+        let failedOnce = Flag()
+        let provider = BackendConnectionProvider(mode: .tun, backend: backend, verifyConnection: { _ in
+            if !failedOnce.isSet {
+                failedOnce.set()
+                throw URLError(.secureConnectionFailed)
+            }
+        })
+        await awaitInitialState(provider)
+        let reader = collectStates(from: provider.stateUpdates(), count: 4)
+        do {
+            try await provider.connect(try makeRequest())
+            XCTFail("Starting the local runtime must not count as a successful remote handshake")
+        } catch let error as URLError {
+            XCTAssertEqual(error.code, .secureConnectionFailed)
+        }
+        let states = await reader.value
+        XCTAssertFalse(states.contains(where: \.isConnected))
+        XCTAssertEqual(backend.recordedCalls(), ["start", "stop"])
+        let state = await provider.currentState()
+        XCTAssertEqual(state, .idle)
+        try await provider.connect(try makeRequest())
+        let retriedState = await provider.currentState()
+        XCTAssertTrue(retriedState.isConnected)
+        XCTAssertEqual(backend.recordedCalls(), ["start", "stop", "start"])
+        try await provider.disconnect()
+    }
+
+    func testSuccessfulVerificationStaysConnectingUntilCheckFinishes() async throws {
+        let backend = RecordingConnectionBackend()
+        let gate = Gate()
+        await gate.enableBlocking()
+        let provider = BackendConnectionProvider(mode: .tun, backend: backend, verifyConnection: { _ in
+            await gate.enter()
+        })
+        await awaitInitialState(provider)
+        let task = Task { try await provider.connect(try makeRequest()) }
+        await gate.waitUntilEntered()
+        let checking = await provider.currentState()
+        XCTAssertEqual(checking, .connecting)
+        await gate.open()
+        try await task.value
+        let connected = await provider.currentState()
+        XCTAssertTrue(connected.isConnected)
+        XCTAssertEqual(backend.recordedCalls(), ["start"])
+        try await provider.disconnect()
+    }
+
+    func testDisconnectDuringVerificationStopsStartedSession() async throws {
+        let backend = RecordingConnectionBackend()
+        let entered = Flag()
+        let provider = BackendConnectionProvider(mode: .tun, backend: backend, verifyConnection: { _ in
+            entered.set()
+            while true { try await Task.sleep(for: .milliseconds(10)) }
+        })
+        await awaitInitialState(provider)
+        let task = Task { try await provider.connect(try makeRequest()) }
+        await waitUntil("verification started") { entered.isSet }
+        try await provider.disconnect()
+        do { try await task.value; XCTFail("Expected cancellation") }
+        catch is CancellationError {}
+        let state = await provider.currentState()
+        XCTAssertEqual(state, .idle)
+        XCTAssertEqual(backend.recordedCalls(), ["start", "stop"])
+    }
+
+    @MainActor
+    func testPowerButtonRetriesAfterFailedConnectionWithoutDisconnectClick() async throws {
+        for mode in [ConnectionMode.tun, .systemProxy] {
+            let root = try makeIsolatedRoot("power-button-retry")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let backend = RecordingConnectionBackend()
+            backend.startError = TestError.startFailed
+            let (model, store) = try makeLaunchFixture(root: root, mode: mode, enabled: false, backend: backend)
+            defer { store.deleteStoredDataForTesting() }
+            await waitUntil("ready") { await MainActor.run { model.canConnect } }
+            model.connect()
+            await waitUntil("failed attempt finishes") {
+                await MainActor.run { model.connectionError != nil && !model.isOperationPending }
+            }
+            XCTAssertEqual(model.connectionState, .idle)
+            XCTAssertFalse(model.canDisconnect, "The power button must offer Connect after a failed attempt")
+            XCTAssertFalse(model.hasActiveConnectionSession)
+            XCTAssertEqual(model.connectionError?.summary, TestError.startFailed.localizedDescription)
+
+            backend.startError = nil
+            // The same action used by the menu bar and Portals power buttons.
+            if model.canDisconnect { model.disconnect() } else { model.connect() }
+            await waitUntil("next power action finishes") { await MainActor.run { !model.isOperationPending } }
+            XCTAssertTrue(model.isConnected, "One click should retry, not merely acknowledge the failure")
+            XCTAssertEqual(backend.recordedCalls(), ["start", "start"])
+            model.disconnect()
+            await waitUntil("cleanup") { await MainActor.run { !model.isOperationPending } }
+        }
+    }
+
     @MainActor
     func testSettingsStatusRefreshDoesNotPublishUnchangedValues() throws {
         let root = try makeIsolatedRoot("settings-status")
@@ -499,7 +596,7 @@ final class ConnectionProviderTests: XCTestCase {
         // With no pending choice, failure still settles and permits a manual retry.
         viewModel.selectConnection(id: third)
         await waitUntil("a failed switch settles") {
-            await MainActor.run { viewModel.connectionPhase == .failed && !viewModel.isOperationPending }
+            await MainActor.run { viewModel.connectionState == .idle && !viewModel.isOperationPending }
         }
         XCTAssert(viewModel.selectedConnectionID == third)
         XCTAssert(viewModel.canChangeSelection && viewModel.canConnect && viewModel.lastError != nil)
@@ -621,12 +718,12 @@ final class ConnectionProviderTests: XCTestCase {
         XCTAssert(stateLabels([afterOneMissState]) == ["connected"], "one missed check failed the session")
         XCTAssert(backend.recordedCalls() == ["start"])
 
-        let failureReader = collectStates(from: provider.stateUpdates(), count: 2)
+        let failureReader = collectStates(from: provider.stateUpdates(), count: 3)
         backend.setRuntimeActive(false)
         let states = await failureReader.value
-        XCTAssert(stateLabels(states) == ["connected", "failed"], "expected a lost runtime to fail the session, got \(stateLabels(states))")
+        XCTAssert(stateLabels(states) == ["connected", "failed", "idle"], "expected a lost runtime to disconnect after cleanup, got \(stateLabels(states))")
 
-        // The teardown that restores proxy settings or routes follows the failure.
+        // The teardown completes before the session becomes disconnected.
         await waitUntil("the backend teardown runs after a lost runtime") { backend.recordedCalls() == ["start", "stop"] }
 
         // Only once: the supervisor stops with the session it was watching.
@@ -639,7 +736,7 @@ final class ConnectionProviderTests: XCTestCase {
         startBackend.startError = TestError.startFailed
         let startProvider = BackendConnectionProvider(mode: .systemProxy, backend: startBackend)
         await awaitInitialState(startProvider)
-        let startReader = collectStates(from: startProvider.stateUpdates(), count: 4)
+        let startReader = collectStates(from: startProvider.stateUpdates(), count: 5)
 
         do {
             try await startProvider.connect(try makeRequest())
@@ -649,9 +746,9 @@ final class ConnectionProviderTests: XCTestCase {
         }
 
         let startStates = await startReader.value
-        XCTAssert(stateLabels(startStates) == ["idle", "preparing", "connecting", "failed"])
-        guard case let .failed(failure) = startStates.last else {
-            XCTFail("expected failed terminal state")
+        XCTAssert(stateLabels(startStates) == ["idle", "preparing", "connecting", "failed", "idle"])
+        guard case let .failed(failure) = startStates[3] else {
+            XCTFail("expected failure diagnostics before returning to idle")
             return
         }
         XCTAssert(failure.summary == TestError.startFailed.localizedDescription)
@@ -677,6 +774,68 @@ final class ConnectionProviderTests: XCTestCase {
             return
         }
         XCTAssert(failure.summary == TestError.stopFailed.localizedDescription)
+    }
+
+    func testFailedStartRestoresRemainingSettingsBeforeBecomingIdle() async throws {
+        for restorationFails in [false, true] {
+            let backend = RecordingConnectionBackend()
+            let provider = BackendConnectionProvider(mode: .systemProxy, backend: backend)
+            await awaitInitialState(provider)
+            backend.startError = TestError.startFailed
+            backend.hasRestorableStateValue = true
+            backend.restoreError = restorationFails ? TestError.stopFailed : nil
+            await backend.restoreGate.enableBlocking()
+            let task = Task { try await provider.connect(try makeRequest()) }
+            await backend.restoreGate.waitUntilEntered()
+            let restoringState = await provider.currentState()
+            XCTAssertEqual(restoringState, .connecting, "Do not enable a retry while cleanup is still running")
+            await backend.restoreGate.open()
+            do {
+                try await task.value
+                XCTFail("Expected injected failure")
+            } catch TestError.startFailed {}
+            XCTAssertEqual(backend.recordedCalls(), ["start", "restore"])
+            let state = await provider.currentState()
+            if restorationFails {
+                guard case let .failed(failure) = state else { XCTFail("Cleanup failure must remain actionable"); continue }
+                XCTAssertEqual(failure.summary, TestError.startFailed.localizedDescription)
+                XCTAssertTrue(failure.details?.contains(TestError.stopFailed.localizedDescription) == true)
+                XCTAssertTrue(ConnectionPresentation(state: state, hasConfiguration: true).canDisconnect)
+            } else {
+                XCTAssertEqual(state, .idle)
+            }
+        }
+    }
+
+    func testFailedPreflightDoesNotBlindlyStopAnExistingRuntime() async throws {
+        let backend = RecordingConnectionBackend()
+        let provider = BackendConnectionProvider(mode: .tun, backend: backend)
+        await awaitInitialState(provider)
+        backend.startError = XrayTunConnectionError.existingVPNDetected("utun5")
+        backend.setRuntimeActive(true)
+        do {
+            try await provider.connect(try makeRequest())
+            XCTFail("Expected conflicting VPN failure")
+        } catch XrayTunConnectionError.existingVPNDetected {}
+        let state = await provider.currentState()
+        XCTAssertTrue(state.isTerminalFailure, "Do not claim disconnection while a runtime is still active")
+        XCTAssertEqual(backend.recordedCalls(), ["start"], "A failed preflight must not invoke unscoped cleanup")
+    }
+
+    func testRuntimeLossWithFailedCleanupDoesNotClaimDisconnection() async throws {
+        let backend = RecordingConnectionBackend()
+        let provider = BackendConnectionProvider(mode: .systemProxy, backend: backend, supervisionInterval: 0.01)
+        await awaitInitialState(provider)
+        backend.setRuntimeActive(true)
+        try await provider.connect(try makeRequest())
+        backend.stopError = TestError.stopFailed
+        backend.setRuntimeActive(false)
+        await waitUntil("cleanup fails") { await provider.currentState().isTerminalFailure }
+        let state = await provider.currentState()
+        guard case let .failed(failure) = state else { return XCTFail("Expected cleanup failure") }
+        XCTAssertEqual(failure.summary, "Xray stopped unexpectedly")
+        XCTAssertTrue(failure.details?.contains(TestError.stopFailed.localizedDescription) == true)
+        XCTAssertEqual(backend.recordedCalls(), ["start", "stop"])
     }
 
     func testProviderSerializesConcurrentConnects() async throws {
@@ -1036,6 +1195,7 @@ final class ConnectionProviderTests: XCTestCase {
         var failingConnectionID: UUID?
         var cancellableConnectionID: UUID?
         var stopError: Error?
+        var restoreError: Error?
         var hasRestorableStateValue = false
         var hasActiveRuntimeSessionValue = false
         private var inactiveChecks = 0
@@ -1070,6 +1230,7 @@ final class ConnectionProviderTests: XCTestCase {
         func restorePreviousState() async throws {
             record("restore")
             await restoreGate.enter()
+            if let restoreError { throw restoreError }
         }
 
         func start(_ request: ConnectionRequest, reportPhase: @escaping @Sendable (ConnectionState) -> Void) async throws {

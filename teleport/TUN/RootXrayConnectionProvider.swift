@@ -16,7 +16,8 @@ struct RootXrayConnectionProvider: ConnectionProvider, Sendable {
                 routeInspector: XrayTunRouteInspector(),
                 systemProxyService: SystemProxyService(),
                 leakGuard: leakGuard
-            )
+            ),
+            verifyConnection: { try await ConnectionReadinessProbe().verify($0) }
         )
     }
 
