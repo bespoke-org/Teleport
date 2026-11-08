@@ -1,37 +1,29 @@
 import SwiftUI
 
-/// Keep the native item list stable when pages change. Inserting and removing
-/// these items makes AppKit update the layout of the entire glass toolbar.
-struct PortalsToolbar<ConnectionControl: View>: ToolbarContent {
+/// The page controls stay mounted inside Settings' shared toolbar slot.
+struct PortalsToolbar<ConnectionControl: View>: View {
     @Binding var state: PortalsState
     let isActive: Bool
     let connection: ConnectionControl
 
-    var body: some ToolbarContent {
-        if #available(macOS 26.0, *) {
-            ToolbarItem(id: "portals.actions", placement: .primaryAction) {
-                // Own the gap between our custom glass shapes. Native toolbar
-                // spacers do not reliably separate items with hidden backgrounds.
-                HStack(spacing: 8) {
-                    search
-                        .glassEffect(.regular.interactive(), in: Capsule())
-                    add
-                        .buttonStyle(.plain)
-                        .glassEffect(.regular.interactive(), in: Circle())
-                    connection
-                        .buttonStyle(.plain)
-                        .glassEffect(.regular.interactive(), in: Circle())
-                }
-                .padding(.trailing, 4)
-                .settingsToolbarItemVisibility(isActive)
+    var body: some View {
+        HStack(spacing: 8) {
+            if #available(macOS 26.0, *) {
+                search
+                    .glassEffect(.regular.interactive(), in: Capsule())
+                add
+                    .buttonStyle(.plain)
+                    .glassEffect(.regular.interactive(), in: Circle())
+                connection
+                    .buttonStyle(.plain)
+                    .glassEffect(.regular.interactive(), in: Circle())
+            } else {
+                search
+                add
+                connection
             }
-            .sharedBackgroundVisibility(.hidden)
-        } else if isActive {
-            // Earlier macOS versions cannot hide an item's shared background.
-            ToolbarItem(id: "portals.search", placement: .primaryAction) { search }
-            ToolbarItem(id: "portals.add", placement: .primaryAction) { add }
-            ToolbarItem(id: "portals.connection", placement: .primaryAction) { connection }
         }
+        .settingsToolbarItemVisibility(isActive)
     }
 
     private var search: some View {
@@ -82,10 +74,9 @@ struct PortalsConnectionButton: View {
 extension View {
     func settingsToolbarItemVisibility(_ isActive: Bool) -> some View {
         opacity(isActive ? 1 : 0)
-            // Keep the item and search state alive without reserving the expanded
-            // search's width on other pages. AppKit cannot measure zero-size items.
+            // Collapse inactive controls inside the shared slot, retaining their state.
+            // Do not clip: interactive glass expands beyond the resting bounds.
             .frame(width: isActive ? nil : 1, height: 36)
-            .clipped()
             .disabled(!isActive)
             .allowsHitTesting(isActive)
             .accessibilityHidden(!isActive)

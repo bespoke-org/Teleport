@@ -4,6 +4,72 @@ import XCTest
 
 @MainActor
 final class SettingsToolbarLayoutTests: XCTestCase {
+    func testPortalFormsOnlyDisplayErrorsFromTheirOwnActions() async throws {
+        let provider = PendingProvider()
+        let fixture = try Fixture(withPortals: true, systemProxyProvider: provider)
+        defer { fixture.cleanUp() }
+        await awaitUIUpdate("Initial provider is ready") { fixture.model.canChangeSelection }
+        fixture.model.selectConnectionMode(.systemProxy)
+        let failure = ConnectionFailure(summary: "Could not verify the connection through this portal.", details: "Probe failed")
+
+        for editing in [false, true] {
+            fixture.model.clearError()
+            let connection = try XCTUnwrap(fixture.model.savedConnections.first)
+            func makeWindow() -> NSWindow {
+                let content = editing
+                    ? AnyView(EditConnectionSheet(viewModel: fixture.model, connection: connection))
+                    : AnyView(AddConnectionSheet(viewModel: fixture.model))
+                let window = NSWindow(contentViewController: NSHostingController(rootView: content))
+                window.isReleasedWhenClosed = false
+                window.makeKeyAndOrderFront(nil)
+                return window
+            }
+            let cleanWindow = makeWindow()
+            await awaitUIUpdate("Clean portal form is ready")
+            let cleanHeight = try XCTUnwrap(cleanWindow.contentView).fittingSize.height
+            cleanWindow.close()
+
+            provider.continuation.yield(.failed(failure))
+            await awaitUIUpdate("Connection failure is stored") { fixture.model.lastError == failure.summary }
+            let window = makeWindow()
+            defer { window.close() }
+            await awaitUIUpdate("Portal form opens after a connection failure")
+            let root = try XCTUnwrap(window.contentView)
+            XCTAssertEqual(root.fittingSize.height, cleanHeight,
+                           "Opening a form must not add a row for an earlier connection error")
+            XCTAssertEqual(fixture.model.lastError, failure.summary)
+
+            if editing {
+                let configuration = try XCTUnwrap(descendants(root).compactMap { $0 as? NSTextField }
+                    .first { $0.stringValue == connection.configuration.rawLink })
+                XCTAssertTrue(window.makeFirstResponder(configuration))
+            }
+            let field = try XCTUnwrap(window.firstResponder as? NSTextView)
+            XCTAssertTrue(window.makeFirstResponder(field))
+            field.selectAll(nil)
+            field.insertText("not-a-portal", replacementRange: field.selectedRange())
+            await awaitUIUpdate("Invalid draft is entered")
+            XCTAssertEqual(fixture.model.lastError, failure.summary, "Typing must preserve connection diagnostics")
+            let draftHeight = root.fittingSize.height
+            let submit = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "\r",
+                charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
+            XCTAssertTrue(window.performKeyEquivalent(with: submit))
+            await awaitUIUpdate("Validation adds an error row") {
+                fixture.model.lastError != nil && fixture.model.lastError != failure.summary
+                    && root.fittingSize.height > draftHeight
+            }
+            let validationHeight = root.fittingSize.height
+            provider.continuation.yield(.failed(ConnectionFailure(summary: String(repeating: "Background failure. ", count: 30), details: nil)))
+            await awaitUIUpdate("A new connection failure arrives") { fixture.model.lastError?.hasPrefix("Background failure.") == true }
+            XCTAssertEqual(root.fittingSize.height, validationHeight,
+                           "Background failures must not replace form validation")
+            field.insertText("x", replacementRange: field.selectedRange())
+            await awaitUIUpdate("Editing removes the validation row") { root.fittingSize.height == draftHeight }
+            XCTAssertTrue(fixture.model.lastError?.hasPrefix("Background failure.") == true)
+        }
+    }
+
     func testModeSwitchKeepsAppearanceAndLayoutStableWhileProviderStarts() async throws {
         let provider = PendingProvider()
         let fixture = try Fixture(systemProxyProvider: provider)
@@ -70,10 +136,17 @@ final class SettingsToolbarLayoutTests: XCTestCase {
         defer { fixture.cleanUp() }
         let window = fixture.window
         await awaitUIUpdate("Portals toolbar is attached") {
-            window.toolbar?.items.contains { $0.itemIdentifier.rawValue == "portals.actions" } == true
+            window.toolbar?.items.contains { $0.itemIdentifier.rawValue == "settings.pageActions" } == true
         }
         let toolbar = try XCTUnwrap(window.toolbar)
-        let portals = try XCTUnwrap(toolbar.items.first { $0.itemIdentifier.rawValue == "portals.actions" })
+        let portals = try XCTUnwrap(toolbar.items.first { $0.itemIdentifier.rawValue == "settings.pageActions" })
+        func assertTrailingInset(file: StaticString = #filePath, line: UInt = #line) throws {
+            let view = try XCTUnwrap(portals.view, file: file, line: line)
+            let inset = window.frame.width - view.convert(view.bounds, to: nil).maxX
+            XCTAssertGreaterThanOrEqual(inset, 0, file: file, line: line)
+            XCTAssertLessThanOrEqual(inset, 20, "Inactive toolbar items must not reserve trailing space", file: file, line: line)
+        }
+        try assertTrailingInset()
         XCTAssertFalse(toolbar.items.contains { $0.itemIdentifier.rawValue == "settings.error" },
                        "An empty error item must not reserve space beside the expanding search")
 
@@ -86,7 +159,8 @@ final class SettingsToolbarLayoutTests: XCTestCase {
             return opened && self.searchField(in: window)?.currentEditor() != nil
                 && (portals.view?.frame.width ?? 0) > 250
         }
-        XCTAssertTrue(isVisible("portals.actions", in: toolbar), "The expanded search, Add and Connect must stay visible")
+        XCTAssertTrue(isVisible("settings.pageActions", in: toolbar), "The expanded search, Add and Connect must stay visible")
+        try assertTrailingInset()
         let field = try XCTUnwrap(searchField(in: window))
         let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
         editor.insertText("Paris")
@@ -95,19 +169,42 @@ final class SettingsToolbarLayoutTests: XCTestCase {
         fixture.navigation.value.select(.logs)
         await awaitUIUpdate("Logs reclaim the hidden Portals toolbar space") {
             self.isVisible("logs.find", in: toolbar) && self.isVisible("logs.refresh", in: toolbar)
-                && self.isVisible("logs.actions", in: toolbar) && (portals.view?.frame.width ?? .infinity) <= 1
+                && self.isVisible("logs.actions", in: toolbar) && (portals.view?.frame.width ?? .infinity) <= 9
         }
         XCTAssertNil(field.currentEditor(), "Leaving Portals releases search focus")
-        XCTAssertTrue(portals === toolbar.items.first { $0.itemIdentifier.rawValue == "portals.actions" },
+        XCTAssertTrue(portals === toolbar.items.first { $0.itemIdentifier.rawValue == "settings.pageActions" },
                       "Keep the toolbar item mounted so its search state survives navigation")
 
         fixture.navigation.value.select(.portals)
         await awaitUIUpdate("Returning restores the expanded search and its query") {
-            self.isVisible("portals.actions", in: toolbar)
+            self.isVisible("settings.pageActions", in: toolbar)
                 && self.searchField(in: window)?.stringValue == "Paris"
                 && (portals.view?.frame.width ?? 0) > 250
         }
-        XCTAssertTrue(portals === toolbar.items.first { $0.itemIdentifier.rawValue == "portals.actions" })
+        XCTAssertTrue(portals === toolbar.items.first { $0.itemIdentifier.rawValue == "settings.pageActions" })
+        try assertTrailingInset()
+        window.setContentSize(NSSize(width: 1160, height: SettingsSidebarLayout.minimumContentSize.height))
+        await awaitUIUpdate("The resized toolbar settles")
+        try assertTrailingInset()
+    }
+
+    func testPageSwitchKeepsTheSameNativeToolbarItemsMounted() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        await awaitUIUpdate("Toolbar is attached") { fixture.window.toolbar != nil }
+        let toolbar = try XCTUnwrap(fixture.window.toolbar)
+        let item = try XCTUnwrap(toolbar.items.first { $0.itemIdentifier.rawValue == "settings.pageActions" })
+        let view = try XCTUnwrap(item.view)
+        let visibleIDs = toolbar.visibleItems?.map(\.itemIdentifier)
+        for section in [SettingsSection.tunnel, .general, .portals, .general, .tunnel, .portals] {
+            fixture.navigation.value.select(section)
+            await awaitUIUpdate("Toolbar switches to \(section)")
+            XCTAssertEqual(toolbar.visibleItems?.map(\.itemIdentifier), visibleIDs,
+                           "Page switches must not invoke AppKit's toolbar item show/hide transitions")
+            XCTAssertTrue(item === toolbar.items.first { $0.itemIdentifier.rawValue == "settings.pageActions" })
+            XCTAssertTrue(item.view === view, "Keep the same native host across pages")
+            XCTAssertGreaterThan(view.bounds.height, 36, "Leave room for pressed glass to expand")
+        }
     }
 
     func testErrorsDoNotAddToolbarItems() async throws {
@@ -135,30 +232,30 @@ final class SettingsToolbarLayoutTests: XCTestCase {
         let assignments = model.tunnelAssignments
         fixture.navigation.value.select(.tunnel)
         await awaitUIUpdate("Routing toolbar is visible") {
-            window.toolbar.map { self.isVisible("routing.toggle", in: $0) } == true
+            window.toolbar.map { self.isVisible("settings.pageActions", in: $0) } == true
         }
         let toolbar = try XCTUnwrap(window.toolbar)
-        let item = try XCTUnwrap(toolbar.items.first { $0.itemIdentifier.rawValue == "routing.toggle" })
+        let item = try XCTUnwrap(toolbar.items.first { $0.itemIdentifier.rawValue == "settings.pageActions" })
         let view = try XCTUnwrap(item.view)
         let frame = view.frame
         XCTAssertFalse(model.isSplitTunnelEnabled)
-        try click(in: window, at: view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil))
+        try click(in: window, at: view.convert(NSPoint(x: view.bounds.maxX - 45, y: view.bounds.midY), to: nil))
         await awaitUIUpdate("Routing turns on") { model.isSplitTunnelEnabled }
         XCTAssertEqual(view.frame, frame, "On and Off use the same toolbar bounds")
 
         fixture.navigation.value.select(.portals)
         await awaitUIUpdate("Assignments are visible for both owners") {
             self.routingPickers(in: window).count == 2
-                && (!toolbar.items.contains { $0 === item } || view.frame.width <= 1)
+                && view.frame.width < frame.width
         }
         XCTAssertEqual(model.tunnelAssignments, assignments)
         fixture.navigation.value.select(.tunnel)
         await awaitUIUpdate("Routing control is restored") {
-            self.isVisible("routing.toggle", in: toolbar)
-                && (toolbar.items.first { $0.itemIdentifier.rawValue == "routing.toggle" }?.view?.frame.width ?? 0) > 1
+            self.isVisible("settings.pageActions", in: toolbar)
+                && (toolbar.items.first { $0.itemIdentifier.rawValue == "settings.pageActions" }?.view?.frame.width ?? 0) > 1
         }
-        let restoredView = try XCTUnwrap(toolbar.items.first { $0.itemIdentifier.rawValue == "routing.toggle" }?.view)
-        try click(in: window, at: restoredView.convert(NSPoint(x: restoredView.bounds.midX, y: restoredView.bounds.midY), to: nil))
+        let restoredView = try XCTUnwrap(toolbar.items.first { $0.itemIdentifier.rawValue == "settings.pageActions" }?.view)
+        try click(in: window, at: restoredView.convert(NSPoint(x: restoredView.bounds.maxX - 45, y: restoredView.bounds.midY), to: nil))
         await awaitUIUpdate("Routing turns off") { !model.isSplitTunnelEnabled }
         fixture.navigation.value.select(.portals)
         await awaitUIUpdate("Disabled routing hides its assignment controls") {
@@ -231,12 +328,12 @@ final class SettingsToolbarLayoutTests: XCTestCase {
         fixture.navigation.value.select(.tunnel)
         await awaitUIUpdate("Profile menu and routing switch fit in the toolbar") {
             guard let toolbar = window.toolbar else { return false }
-            return self.isVisible("routing.profile", in: toolbar) && self.isVisible("routing.toggle", in: toolbar)
+            return self.isVisible("settings.pageActions", in: toolbar)
         }
-        let menu = try XCTUnwrap(window.toolbar?.items.first { $0.itemIdentifier.rawValue == "routing.profile" }?.view)
+        let menu = try XCTUnwrap(window.toolbar?.items.first { $0.itemIdentifier.rawValue == "settings.pageActions" }?.view)
         let frame = menu.frame
         let existingWindows = Set(NSApp.windows.map(\.windowNumber))
-        try click(in: window, at: menu.convert(NSPoint(x: menu.bounds.midX, y: menu.bounds.midY), to: nil))
+        try click(in: window, at: menu.convert(NSPoint(x: 94, y: menu.bounds.midY), to: nil))
         await awaitUIUpdate("Clicking the profile opens the manager directly") {
             NSApp.windows.contains { !existingWindows.contains($0.windowNumber) && $0.isVisible && $0.frame.height > 100 }
         }

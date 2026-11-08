@@ -1,34 +1,24 @@
 import SwiftUI
 
-struct RoutingToolbar: ToolbarContent {
+struct RoutingToolbar: View {
     let viewModel: AppViewModel
     let isActive: Bool
     let onNewProfile: () -> Void
 
-    var body: some ToolbarContent {
-        if #available(macOS 26.0, *) {
-            ToolbarItem(id: "routing.profile", placement: .primaryAction) {
+    var body: some View {
+        HStack(spacing: 8) {
+            if #available(macOS 26.0, *) {
                 RoutingEditorProfilePicker(viewModel: viewModel, onNewProfile: onNewProfile)
                     .glassEffect(.regular.interactive(), in: Capsule())
-                    .settingsToolbarItemVisibility(isActive)
-            }
-            .sharedBackgroundVisibility(.hidden)
-            ToolbarItem(id: "routing.toggle", placement: .primaryAction) {
                 RoutingToggleButton(viewModel: viewModel)
                     .buttonStyle(.plain)
                     .glassEffect(.regular.interactive(), in: Capsule())
-                    .padding(.leading, 8)
-                    .settingsToolbarItemVisibility(isActive)
-            }
-            .sharedBackgroundVisibility(.hidden)
-        } else if isActive {
-            ToolbarItem(id: "routing.profile", placement: .primaryAction) {
+            } else {
                 RoutingEditorProfilePicker(viewModel: viewModel, onNewProfile: onNewProfile)
-            }
-            ToolbarItem(id: "routing.toggle", placement: .primaryAction) {
                 RoutingToggleButton(viewModel: viewModel)
             }
         }
+        .settingsToolbarItemVisibility(isActive)
     }
 }
 

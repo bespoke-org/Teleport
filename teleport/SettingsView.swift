@@ -52,12 +52,16 @@ struct SettingsView: View {
                 }
             }
             SettingsRecoveryToolbar(viewModel: viewModel)
-            PortalsToolbar(state: $portalsState, isActive: navigation.section == .portals,
-                           connection: PortalsConnectionButton(viewModel: viewModel))
-            RoutingToolbar(viewModel: viewModel, isActive: navigation.section == .tunnel,
-                           onNewProfile: {
-                               routingNameFocusID = viewModel.addSplitTunnelProfile(name: "новый профиль")
-                           })
+            if #available(macOS 26.0, *) {
+                ToolbarItem(id: "settings.pageActions", placement: .primaryAction) {
+                    pageActions
+                }
+                .sharedBackgroundVisibility(.hidden)
+            } else {
+                ToolbarItem(id: "settings.pageActions", placement: .primaryAction) {
+                    pageActions
+                }
+            }
         }
         .focusedSceneValue(\.settingsNavigation, $navigation)
         .navigationSplitViewStyle(.balanced)
@@ -66,6 +70,24 @@ struct SettingsView: View {
             transaction.disablesAnimations = true
         }
         .frame(minHeight: SettingsSidebarLayout.minimumContentSize.height)
+    }
+
+    // One native item avoids AppKit's insertion/removal fades and leaves no gaps
+    // for inactive pages. Both sets of controls retain their native view state.
+    private var pageActions: some View {
+        ZStack(alignment: .trailing) {
+            PortalsToolbar(state: $portalsState, isActive: navigation.section == .portals,
+                           connection: PortalsConnectionButton(viewModel: viewModel))
+            RoutingToolbar(viewModel: viewModel, isActive: navigation.section == .tunnel,
+                           onNewProfile: {
+                               routingNameFocusID = viewModel.addSplitTunnelProfile(name: "новый профиль")
+                           })
+        }
+        .padding(4)
+        .transaction(value: navigation.section) {
+            $0.animation = nil
+            $0.disablesAnimations = true
+        }
     }
 
     private var detailContent: some View {
