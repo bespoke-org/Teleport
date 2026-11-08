@@ -256,6 +256,42 @@ final class SubscriptionRoutingTests: XCTestCase {
         XCTAssertNil(fixture.viewModel.geodataSettings.geositeURLString)
     }
 
+    @MainActor
+    func testRefreshingSameSourceURLsCachesNewDataAndActivatesItOnNextConnection() async throws {
+        let fixture = try ViewModelFixture()
+        defer { fixture.cleanUp() }
+        let model = fixture.viewModel
+        await waitUntil { model.canConnect }
+        let header = try link([
+            "Name": "Provider", "Geositeurl": "https://provider.example/geosite.dat",
+            "Geoipurl": "https://provider.example/geoip.dat", "DirectSites": ["geosite:provider-only"]
+        ])
+        model.refreshSubscription(id: fixture.source.id)
+        await waitUntil { await fixture.loader.requestCount == 1 }
+        await fixture.loader.complete(index: 0, header: header)
+        await waitUntil { fixture.geodata.requestedKinds.count == 2 }
+        let portal = try XCTUnwrap(model.savedConnections.first { $0.source?.subscriptionSourceID == fixture.source.id })
+        model.selectConnection(id: portal.id)
+        model.selectTunnelTarget(.subscription(fixture.source.id))
+        model.connect()
+        await waitUntil { model.isConnected && !model.isOperationPending }
+        XCTAssertEqual(fixture.geodata.activationCount, 2)
+        let previousDate = model.geodataSettings.geositeLastUpdatedAt
+        model.refreshSubscription(id: fixture.source.id)
+        await waitUntil { await fixture.loader.requestCount == 2 }
+        await fixture.loader.complete(index: 1, header: header)
+        await waitUntil { fixture.geodata.requestedKinds.count == 6 && model.updatingSelectedProfileGeodataKinds.isEmpty }
+        XCTAssertEqual(fixture.geodata.activationCount, 2)
+        XCTAssertEqual(model.geodataSettings.geositeLastUpdatedAt, previousDate)
+        let runningRequests = await fixture.provider.requests
+        XCTAssertEqual(runningRequests.count, 1)
+        model.connect()
+        await waitUntil { fixture.geodata.activationCount == 4 && !model.isOperationPending }
+        XCTAssertNotEqual(model.geodataSettings.geositeLastUpdatedAt, previousDate)
+        model.disconnect()
+        await waitUntil { model.connectionState == .idle && !model.isOperationPending }
+    }
+
     func testRefreshUpdatesOnlyOwningSubscriptionAndPreservesIdentity() throws {
         let sourceID = UUID()
         let otherSourceID = UUID()
