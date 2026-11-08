@@ -29,11 +29,14 @@ struct SplitTunnelTester: View {
             }
             .lineLimit(1)
             .frame(maxWidth: .infinity, alignment: .leading)
-            if viewModel.connectionMode != .tun {
-                warning("Preview only. Applies in TUN mode.")
-            } else if !viewModel.isSplitTunnelEnabled {
-                warning("Preview only. Split routing is off.")
+            ZStack {
+                if viewModel.connectionMode != .tun {
+                    warning("Preview only. Applies in TUN mode.")
+                } else if !viewModel.isSplitTunnelEnabled {
+                    warning("Preview only. Split routing is off.")
+                }
             }
+            .frame(width: 24, height: 24)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -41,7 +44,8 @@ struct SplitTunnelTester: View {
     private func warning(_ message: String) -> some View {
         Image(systemName: "exclamationmark.triangle")
             .foregroundStyle(.orange)
-            .help(message)
+            .frame(width: 24, height: 24)
+            .background(SettingsHoverHint(message: message))
             .accessibilityLabel(message)
     }
 
@@ -49,7 +53,9 @@ struct SplitTunnelTester: View {
         let match = viewModel.matchingSplitTunnelRule(for: destination)
         if viewModel.hasEnabledSplitTunnelGeodataRules, let error = viewModel.geodataProfileError {
             Label("Geodata unavailable", systemImage: "exclamationmark.triangle")
-                .foregroundStyle(.orange).help(error)
+                .foregroundStyle(.orange)
+                .background(SettingsHoverHint(message: error))
+                .accessibilityHint(error)
         } else if viewModel.hasEnabledSplitTunnelGeodataRules,
                   !viewModel.updatingSelectedProfileGeodataKinds.isEmpty || !viewModel.isSplitTunnelGeodataReady {
             ProgressView("Loading geodata…").controlSize(.small)
