@@ -50,9 +50,7 @@ struct SettingsView: View {
                     Color.clear.frame(width: 1, height: 1)
                 }
             }
-            ToolbarItem(id: "settings.error", placement: .primaryAction) {
-                SettingsErrorIndicator(viewModel: viewModel, onOpenLogs: { navigation.select(.logs) })
-            }
+            SettingsErrorToolbar(viewModel: viewModel, onOpenLogs: { navigation.select(.logs) })
             PortalsToolbar(state: $portalsState, isActive: navigation.section == .portals,
                            connection: PortalsConnectionButton(viewModel: viewModel))
         }

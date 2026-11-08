@@ -16,6 +16,21 @@ struct SettingsIssue: Equatable {
     }
 }
 
+/// An empty native toolbar item still reserves space and can push page actions
+/// into overflow. Observe errors here so the navigation shell stays unobserved.
+struct SettingsErrorToolbar: ToolbarContent {
+    @ObservedObject var viewModel: AppViewModel
+    let onOpenLogs: () -> Void
+
+    var body: some ToolbarContent {
+        if viewModel.lastError != nil || viewModel.connectionError != nil || viewModel.canAllowDirectTraffic {
+            ToolbarItem(id: "settings.error", placement: .primaryAction) {
+                SettingsErrorIndicator(viewModel: viewModel, onOpenLogs: onOpenLogs)
+            }
+        }
+    }
+}
+
 /// A persistent toolbar status. Opening or closing its details never acknowledges
 /// the failure; only Dismiss clears it, and only if it is still the same failure.
 struct SettingsErrorIndicator: View {
