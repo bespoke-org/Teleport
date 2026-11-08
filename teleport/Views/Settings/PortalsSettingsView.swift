@@ -105,6 +105,12 @@ struct PortalsSettingsView: View {
                                 }
                             }
                             .padding(.vertical, -7)
+                            // A header popover's dismissal can animate row insertion/removal
+                            // and leave SwiftUI's lazy layout spinning during expansion.
+                            .transaction { transaction in
+                                transaction.animation = nil
+                                transaction.disablesAnimations = true
+                            }
                         }
                     }
                 }
@@ -327,6 +333,12 @@ struct PortalsSettingsView: View {
                 .disabled(isSearching)
                 .accessibilityLabel("\(source.displayName), \(expanded ? "expanded" : "collapsed")")
                 .accessibilityValue(selected.map { "Selected portal: \($0.displayName)" } ?? "")
+                if let announcement = source.announcement {
+                    SubscriptionInfoButton(announcement: announcement)
+                }
+                if let usage = source.usage {
+                    SubscriptionUsageButton(usage: usage)
+                }
                 rowButton("Test all portals in subscription", icon: "waveform.path.ecg") {
                     viewModel.refreshSubscriptionHealth(id: source.id)
                 }

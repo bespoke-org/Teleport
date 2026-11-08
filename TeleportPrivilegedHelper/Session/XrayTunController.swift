@@ -41,11 +41,16 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
         // a session left by an earlier helper process, which nothing watches.
         let isRunning = supervisor.watchedProcessID != nil
             || managedProcess.isManagedXrayRunning(helperStateDirectoryPath: helperStateDirectoryPath)
+        // Keep reporting persisted ownership when the process has already exited:
+        // an interrupted helper may have left its DNS and physical routes behind.
+        let interfaces = XrayTunRuntimeInterfaces.load(helperStateDirectoryPath: helperStateDirectoryPath)
         return StatusResponse(
             helperVersion: helperVersion,
             phase: isRunning ? .running : .idle,
             summary: nil,
-            details: nil
+            details: nil,
+            tunnelInterfaceName: interfaces?.tunnel,
+            outboundInterface: interfaces?.outbound
         )
     }
 

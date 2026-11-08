@@ -69,6 +69,7 @@ nonisolated struct SubscriptionImportProcessor {
         case .invalidWireGuardKey: return "Invalid WireGuard key"
         case .multipleWireGuardPeers: return "WireGuard configurations with more than one peer are not supported"
         case .missingPassword: return "Missing Trojan password"
+        case .invalidFinalMask: return "Unsupported or invalid FinalMask settings"
         case .invalidXrayJSON: return "Invalid Xray JSON configuration"
         case .invalidHysteria(let reason): return reason
         default: return "Invalid connection settings"

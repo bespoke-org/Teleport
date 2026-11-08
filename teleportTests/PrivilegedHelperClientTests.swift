@@ -173,6 +173,94 @@ private final class LostStopReplyConnectionFactory: @unchecked Sendable {
 
 final class PrivilegedHelperClientTests: XCTestCase {
     @MainActor
+    func testFailedTUNRecoveryKeepsProxyRestorationFailureActionable() async throws {
+        try await assertTUNProxyRestorationFailure(cancelBeforeStart: false)
+    }
+
+    @MainActor
+    func testCancelledTUNStartKeepsProxyRestorationFailureActionable() async throws {
+        try await assertTUNProxyRestorationFailure(cancelBeforeStart: true)
+    }
+
+    @MainActor
+    private func assertTUNProxyRestorationFailure(cancelBeforeStart: Bool) async throws {
+        let paths = try temporaryRuntimePaths(named: "tun-proxy-restore")
+        defer { removeTemporaryRuntimePaths(paths) }
+        let root = paths.sessionStateFileURL.deletingLastPathComponent()
+        let snapshot = root.appendingPathComponent("teleport/system-proxy-snapshot.json")
+        let recovery = RecoveryProbe()
+        let restore = ProxyRestoreProbe()
+        let transport = ScriptedTransport { command, data, _, _ in
+            switch command {
+            case .status:
+                let request: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(data)
+                let hasOldConfig = recovery.sessionID == nil
+                return try response(requestID: request.requestID, sessionID: nil,
+                    payload: StatusResponse(helperVersion: PrivilegedHelperClient.expectedVersion,
+                        phase: .idle, summary: nil, details: nil,
+                        tunnelInterfaceName: hasOldConfig ? "utun10" : nil,
+                        outboundInterface: hasOldConfig ? "en0" : nil))
+            case .stopSession:
+                let request: TUNHelperRequestEnvelope<StopSessionRequest> = try TUNHelperCodec.decodeRequest(data)
+                recovery.record(sessionID: try XCTUnwrap(request.sessionID))
+                return try response(requestID: request.requestID, sessionID: request.sessionID,
+                    payload: StopSessionResponse(phase: .idle, summary: nil, details: nil))
+            default: throw UnexpectedCommand(command: command)
+            }
+        }
+        let manager = PrivilegedXrayRuntimeManager(
+            helperClient: PrivilegedHelperClient(transport: transport), paths: paths,
+            runtimeURLProvider: { URL(fileURLWithPath: "/tmp/test-xray") },
+            ensureHelperInstalled: { _, _ in }
+        )
+        let proxyService = SystemProxyService(processRunner: { try restore.run($0) },
+            fileManager: ReconnectFileManager(root: root))
+        let backend = XrayTunConnectionBackend(runtimeManager: manager,
+            routeInspector: XrayTunRouteInspector(runCommand: { executable, _ in
+                executable.hasSuffix("dscacheutil") ? nil : "interface: en0\n"
+            }), systemProxyService: proxyService, leakGuard: LeakGuardService(isEnabled: false))
+        let provider = BackendConnectionProvider(mode: .tun, backend: backend)
+        let ready = expectation(description: "Initial TUN state resolved")
+        let observation = Task {
+            for await state in provider.stateUpdates() where state == .idle {
+                ready.fulfill()
+                break
+            }
+        }
+        defer { observation.cancel() }
+        await fulfillment(of: [ready], timeout: 5)
+        // Create the old snapshot after initial resolution. All networksetup
+        // commands are intercepted, so this never changes the machine's proxies.
+        try FileManager.default.createDirectory(at: snapshot.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(#"{"createdAt":0,"endpoint":{"host":"127.0.0.1","httpPort":1087,"socksPort":1080},"services":[]}"#.utf8).write(to: snapshot)
+        let configuration = try ConnectionLinkParser().parse(
+            "vless://123e4567-e89b-12d3-a456-426614174000@next.invalid:443?security=none&type=tcp")
+        let request = ConnectionRequest(defaultConnection: .init(id: UUID(), configuration: configuration),
+            localProxy: .default, splitTunnelPolicy: .init(rules: [], defaultAction: .proxy))
+        let attempt = Task {
+            if cancelBeforeStart { withUnsafeCurrentTask { $0?.cancel() } }
+            try await provider.connect(request)
+        }
+        do { try await attempt.value; XCTFail("Expected failed startup") }
+        catch is CancellationError { XCTAssertTrue(cancelBeforeStart) }
+        catch { XCTAssertFalse(cancelBeforeStart) }
+        if case let .failed(failure) = await provider.currentState() {
+            XCTAssertTrue(failure.details?.contains("could not finish disconnecting") == true)
+            XCTAssertTrue(failure.details?.contains("Synthetic proxy restore failure") == true)
+        } else {
+            XCTFail("An un-restored TUN proxy snapshot must keep Disconnect available")
+        }
+        XCTAssertTrue(proxyService.hasSavedProxySnapshot())
+        if !cancelBeforeStart { XCTAssertNotNil(recovery.sessionID, "Old tunnel cleanup precedes DNS failure") }
+
+        restore.allowRestoration()
+        try await provider.disconnect()
+        let finalState = await provider.currentState()
+        XCTAssertEqual(finalState, .idle)
+        XCTAssertFalse(proxyService.hasSavedProxySnapshot(), "Disconnect must retry the real TUN proxy restoration")
+    }
+
+    @MainActor
     func testReconnectResolvesNewEndpointBeforeStoppingTunnelDNS() async throws {
         try await assertReconnectResolution(availableBeforeStop: true)
     }
@@ -239,6 +327,239 @@ final class PrivilegedHelperClientTests: XCTestCase {
         XCTAssertEqual(network.events.first, cancelBeforeReconnect ? "stop" : "resolve")
         XCTAssertTrue(network.events.contains("stop"))
         XCTAssertEqual(network.events.filter { $0 == "resolve" }.count, cancelBeforeReconnect ? 0 : (availableBeforeStop ? 1 : 2))
+    }
+
+    @MainActor
+    func testConnectRecoversOwnedTunnelBeforeCheckingForVPNConflicts() async throws {
+        let paths = try temporaryRuntimePaths(named: "connect-recovery")
+        defer { removeTemporaryRuntimePaths(paths) }
+        let sessionID = UUID()
+        let probe = RecoveryProbe()
+        let transport = ScriptedTransport { command, data, _, _ in
+            switch command {
+            case .status:
+                let request: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(data)
+                return try response(requestID: request.requestID, sessionID: sessionID,
+                    payload: StatusResponse(helperVersion: PrivilegedHelperClient.expectedVersion,
+                        phase: .running, summary: nil, details: nil,
+                        tunnelInterfaceName: "utun10", outboundInterface: "en0"))
+            case .stopSession:
+                XCTAssertGreaterThan(probe.installCount, 0, "Renew helper approval before trying to stop an older build's tunnel")
+                let request: TUNHelperRequestEnvelope<StopSessionRequest> = try TUNHelperCodec.decodeRequest(data)
+                XCTAssertEqual(request.sessionID, sessionID)
+                probe.record(sessionID: sessionID)
+                return try response(requestID: request.requestID, sessionID: sessionID,
+                    payload: StopSessionResponse(phase: .idle, summary: nil, details: nil))
+            default:
+                throw UnexpectedCommand(command: command)
+            }
+        }
+        let manager = PrivilegedXrayRuntimeManager(
+            helperClient: PrivilegedHelperClient(transport: transport), paths: paths,
+            runtimeURLProvider: { URL(fileURLWithPath: "/tmp/test-xray") },
+            ensureHelperInstalled: { _, _ in probe.recordInstall() }
+        )
+        let backend = XrayTunConnectionBackend(runtimeManager: manager,
+            routeInspector: XrayTunRouteInspector(runCommand: { executable, _ in
+                // End at DNS, before touching any actual network settings.
+                if executable.hasSuffix("dscacheutil") { return nil }
+                return probe.sessionID == nil ? "interface: utun10\n" : "interface: en0\n"
+            }),
+            systemProxyService: SystemProxyService(fileManager: ReconnectFileManager(root: paths.sessionStateFileURL.deletingLastPathComponent())),
+            leakGuard: LeakGuardService(isEnabled: false))
+        let configuration = try ConnectionLinkParser().parse(
+            "vless://123e4567-e89b-12d3-a456-426614174000@next.invalid:443?security=none&type=tcp")
+        let request = ConnectionRequest(defaultConnection: .init(id: UUID(), configuration: configuration),
+            localProxy: .default, splitTunnelPolicy: .init(rules: [], defaultAction: .proxy))
+        do {
+            try await backend.start(request, reportPhase: { _ in })
+            XCTFail("Expected the synthetic DNS lookup to fail")
+        } catch XrayTunConnectionError.proxyAddressResolutionFailed {
+            // Reaching DNS proves the old TUN no longer blocks the VPN preflight.
+        } catch {
+            XCTFail("Connect did not recover its own old tunnel: \(error)")
+        }
+        XCTAssertEqual(probe.sessionID, sessionID)
+    }
+
+    @MainActor
+    func testConnectRecoveryRetainsDNSFromPreviousTunnel() async throws {
+        let paths = try temporaryRuntimePaths(named: "recovery-dns")
+        defer { removeTemporaryRuntimePaths(paths) }
+        let network = ReconnectDNSProbe(availableBeforeStop: true)
+        let sessionID = UUID()
+        let transport = ScriptedTransport { command, data, _, _ in
+            switch command {
+            case .status:
+                let request: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(data)
+                return try response(requestID: request.requestID, sessionID: sessionID,
+                    payload: StatusResponse(helperVersion: PrivilegedHelperClient.expectedVersion, phase: .running,
+                        summary: nil, details: nil, tunnelInterfaceName: "utun10", outboundInterface: "en0"))
+            case .stopSession:
+                let request: TUNHelperRequestEnvelope<StopSessionRequest> = try TUNHelperCodec.decodeRequest(data)
+                network.stopTunnel()
+                return try response(requestID: request.requestID, sessionID: sessionID,
+                    payload: StopSessionResponse(phase: .idle, summary: nil, details: nil))
+            default: throw UnexpectedCommand(command: command)
+            }
+        }
+        let manager = PrivilegedXrayRuntimeManager(helperClient: PrivilegedHelperClient(transport: transport), paths: paths,
+            runtimeURLProvider: { URL(fileURLWithPath: "/tmp/test-xray") }, ensureHelperInstalled: { _, _ in })
+        let backend = XrayTunConnectionBackend(runtimeManager: manager,
+            routeInspector: XrayTunRouteInspector(runCommand: { executable, arguments in
+                if executable.hasSuffix("dscacheutil") { return network.command(executable, arguments) }
+                // Stop at the route lookup after DNS; never mutate host networking.
+                return network.events.contains("stop") ? nil : "interface: utun10\n"
+            }),
+            systemProxyService: SystemProxyService(fileManager: ReconnectFileManager(root: paths.sessionStateFileURL.deletingLastPathComponent())),
+            leakGuard: LeakGuardService(isEnabled: false))
+        let configuration = try ConnectionLinkParser().parse(
+            "vless://123e4567-e89b-12d3-a456-426614174000@next.invalid:443?security=none&type=tcp")
+        let request = ConnectionRequest(defaultConnection: .init(id: UUID(), configuration: configuration),
+            localProxy: .default, splitTunnelPolicy: .init(rules: [], defaultAction: .proxy))
+        do {
+            try await backend.start(request, reportPhase: { _ in })
+            XCTFail("Expected to stop at the synthetic route failure")
+        } catch XrayTunConnectionError.proxyRouteUnavailable {
+            // The cached answer reached routing despite DNS disappearing on stop.
+        } catch { XCTFail("Recovery lost the previous tunnel's DNS answer: \(error)") }
+        XCTAssertEqual(network.events, ["resolve", "stop"])
+    }
+
+    func testConnectRecoveryUsesHelperOwnershipAfterHelperRestart() async throws {
+        // Both a missing UUID after helper restart and a newer observed UUID must
+        // take precedence over the stale app cache. Ordinary Disconnect still
+        // requires the known session identity (covered separately below).
+        for observedSessionID in [nil, UUID()] as [UUID?] {
+            let paths = try temporaryRuntimePaths(named: "restarted-helper")
+            defer { removeTemporaryRuntimePaths(paths) }
+            let cachedSessionID = UUID()
+            let state = XrayTunSessionState(sessionID: cachedSessionID, pid: nil, protectedHosts: ["192.0.2.1"],
+                tunnelInterfaceName: "utun9", outboundInterface: "en9", configPath: paths.configFileURL.path, startedAt: Date())
+            try JSONEncoder().encode(state).write(to: paths.sessionStateFileURL)
+            let transport = ScriptedTransport { command, data, _, _ in
+                switch command {
+                case .status:
+                    let request: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(data)
+                    return try response(requestID: request.requestID, sessionID: observedSessionID,
+                        payload: StatusResponse(helperVersion: PrivilegedHelperClient.expectedVersion,
+                            phase: .running, summary: nil, details: nil, tunnelInterfaceName: "utun10", outboundInterface: "en0"))
+                case .stopSession:
+                    let request: TUNHelperRequestEnvelope<StopSessionRequest> = try TUNHelperCodec.decodeRequest(data)
+                    XCTAssertNotNil(request.sessionID)
+                    XCTAssertNotEqual(request.sessionID, cachedSessionID)
+                    if let observedSessionID { XCTAssertEqual(request.sessionID, observedSessionID) }
+                    XCTAssertEqual(request.payload.outboundInterface, "en0")
+                    XCTAssertNil(request.payload.protectedHosts, "Use the helper's root-owned route records")
+                    return try response(requestID: request.requestID, sessionID: request.sessionID,
+                        payload: StopSessionResponse(phase: .idle, summary: nil, details: nil))
+                default: throw UnexpectedCommand(command: command)
+                }
+            }
+            let manager = PrivilegedXrayRuntimeManager(helperClient: PrivilegedHelperClient(transport: transport), paths: paths)
+            try await manager.recoverPreviousSession(existingVPNInterfaces: ["utun10"])
+            XCTAssertEqual(transport.calls.map(\.0), [.status, .stopSession])
+            XCTAssertFalse(FileManager.default.fileExists(atPath: paths.sessionStateFileURL.path))
+        }
+    }
+
+    func testConnectRecoveryPreservesOtherVPNsAndUncertainSessions() async throws {
+        let scenarios: [(TUNHelperSessionPhase, String?, [String], String)] = [
+            (.running, "utun10", ["utun5"], PrivilegedHelperClient.expectedVersion),
+            (.running, "utun10", ["utun10", "utun5"], PrivilegedHelperClient.expectedVersion),
+            (.running, nil, ["utun10"], PrivilegedHelperClient.expectedVersion),
+            (.running, nil, [], PrivilegedHelperClient.expectedVersion),
+            (.starting, "utun10", [], PrivilegedHelperClient.expectedVersion),
+            (.stopping, "utun10", [], PrivilegedHelperClient.expectedVersion),
+            (.unknown, "utun10", [], PrivilegedHelperClient.expectedVersion),
+            (.running, "utun10", ["utun10"], "old")
+        ]
+        for (phase, tunnel, routes, version) in scenarios {
+            let paths = try temporaryRuntimePaths(named: "unsafe-recovery")
+            defer { removeTemporaryRuntimePaths(paths) }
+            let cache = Data("cached state must survive failed recovery".utf8)
+            try cache.write(to: paths.sessionStateFileURL)
+            let transport = ScriptedTransport { command, data, _, _ in
+                guard command == .status else { XCTFail("Unsafe cleanup attempted"); throw UnexpectedCommand(command: command) }
+                let request: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(data)
+                return try response(requestID: request.requestID, sessionID: UUID(),
+                    payload: StatusResponse(helperVersion: version, phase: phase, summary: nil, details: nil,
+                        tunnelInterfaceName: tunnel, outboundInterface: "en0"))
+            }
+            let manager = PrivilegedXrayRuntimeManager(helperClient: PrivilegedHelperClient(transport: transport), paths: paths)
+            do {
+                try await manager.recoverPreviousSession(existingVPNInterfaces: routes)
+                XCTFail("Unsafe recovery accepted: \(phase), \(routes)")
+            } catch {
+                XCTAssertEqual(transport.calls.map(\.0), [.status])
+                XCTAssertEqual(try Data(contentsOf: paths.sessionStateFileURL), cache)
+            }
+        }
+    }
+
+    func testIdleHelperClearsStaleCacheWithoutStoppingAnything() async throws {
+        let paths = try temporaryRuntimePaths(named: "idle-recovery")
+        defer { removeTemporaryRuntimePaths(paths) }
+        try Data("stale state".utf8).write(to: paths.sessionStateFileURL)
+        let transport = ScriptedTransport { command, data, _, _ in
+            guard command == .status else { throw UnexpectedCommand(command: command) }
+            let request: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(data)
+            return try response(requestID: request.requestID, sessionID: nil,
+                payload: StatusResponse(helperVersion: PrivilegedHelperClient.expectedVersion, phase: .idle, summary: nil, details: nil))
+        }
+        let manager = PrivilegedXrayRuntimeManager(helperClient: PrivilegedHelperClient(transport: transport), paths: paths)
+        try await manager.recoverPreviousSession(existingVPNInterfaces: [])
+        XCTAssertEqual(transport.calls.map(\.0), [.status])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.sessionStateFileURL.path))
+    }
+
+    func testConnectCleansRootStateEvenWhenOldProcessAndAppCacheAreGone() async throws {
+        let paths = try temporaryRuntimePaths(named: "orphaned-root-state")
+        defer { removeTemporaryRuntimePaths(paths) }
+        let transport = ScriptedTransport { command, data, _, _ in
+            switch command {
+            case .status:
+                let request: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(data)
+                return try response(requestID: request.requestID, sessionID: nil,
+                    payload: StatusResponse(helperVersion: PrivilegedHelperClient.expectedVersion, phase: .idle,
+                        summary: nil, details: nil, tunnelInterfaceName: "utun10", outboundInterface: "en0"))
+            case .stopSession:
+                let request: TUNHelperRequestEnvelope<StopSessionRequest> = try TUNHelperCodec.decodeRequest(data)
+                XCTAssertNotNil(request.sessionID)
+                XCTAssertEqual(request.payload.outboundInterface, "en0")
+                XCTAssertNil(request.payload.protectedHosts)
+                return try response(requestID: request.requestID, sessionID: request.sessionID,
+                    payload: StopSessionResponse(phase: .idle, summary: nil, details: nil))
+            default: throw UnexpectedCommand(command: command)
+            }
+        }
+        let manager = PrivilegedXrayRuntimeManager(helperClient: PrivilegedHelperClient(transport: transport), paths: paths)
+        let recovered = try await manager.recoverPreviousSession(existingVPNInterfaces: [])
+        XCTAssertTrue(recovered)
+        XCTAssertEqual(transport.calls.map(\.0), [.status, .stopSession])
+    }
+
+    func testRecoveryDoesNotClearCacheWhenStopFails() async throws {
+        let paths = try temporaryRuntimePaths(named: "failed-recovery")
+        defer { removeTemporaryRuntimePaths(paths) }
+        let cache = Data("keep the previous session".utf8)
+        try cache.write(to: paths.sessionStateFileURL)
+        let transport = ScriptedTransport { command, data, _, _ in
+            if command == .stopSession { throw PrivilegedHelperClientError.commandFailed("stop failed", nil) }
+            guard command == .status else { throw UnexpectedCommand(command: command) }
+            let request: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(data)
+            return try response(requestID: request.requestID, sessionID: UUID(),
+                payload: StatusResponse(helperVersion: PrivilegedHelperClient.expectedVersion, phase: .running,
+                    summary: nil, details: nil, tunnelInterfaceName: "utun10", outboundInterface: "en0"))
+        }
+        let manager = PrivilegedXrayRuntimeManager(helperClient: PrivilegedHelperClient(transport: transport), paths: paths)
+        do {
+            try await manager.recoverPreviousSession(existingVPNInterfaces: ["utun10"])
+            XCTFail("Expected stop failure")
+        } catch {
+            XCTAssertEqual(transport.calls.map(\.0), [.status, .stopSession])
+            XCTAssertEqual(try Data(contentsOf: paths.sessionStateFileURL), cache)
+        }
     }
 
     func testEveryProtocolFailureHasAnActionableSummaryAndPreservesDetailsForUI() async throws {
@@ -962,6 +1283,23 @@ final class PrivilegedHelperClientTests: XCTestCase {
             tunnelInterfaceName: "utun9",
             outboundInterface: "en0"
         )
+    }
+}
+
+private nonisolated final class ProxyRestoreProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fails = true
+
+    func allowRestoration() { lock.withLock { fails = false } }
+
+    func run(_ process: Process) throws {
+        if lock.withLock({ fails }) {
+            throw NSError(domain: "TeleportTests", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "Synthetic proxy restore failure"])
+        }
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/printf")
+        process.arguments = ["An asterisk denotes a disabled network service.\n"]
+        try process.run()
     }
 }
 

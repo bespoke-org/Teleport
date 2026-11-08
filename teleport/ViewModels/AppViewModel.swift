@@ -47,6 +47,7 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var lastErrorDetails: String?
     /// Connection diagnostics survive unrelated import, edit, and persistence actions.
     @Published private(set) var connectionError: ConnectionFailure?
+    @Published private(set) var isLeakGuardHoldingUplink = false
     @Published private(set) var proxyEndpoint: ProxyEndpoint
     @Published private(set) var connectionMode: ConnectionMode
     @Published private(set) var subscriptionConnectionSort: SubscriptionConnectionSort
@@ -137,6 +138,8 @@ final class AppViewModel: ObservableObject {
     )
     private var autoRefreshTimerCancellable: AnyCancellable?
     private var connectionStateTask: Task<Void, Never>?
+    private var leakGuardStateTask: Task<Void, Never>?
+    private var isAllowingDirectTraffic = false
     private var deferredProxyRestoreTask: Task<Void, Never>?
     private var deferredProxyRestoreFailedAt: SuspendingClock.Instant?
     private var pendingOperationCount = 0
@@ -278,6 +281,7 @@ final class AppViewModel: ObservableObject {
         }
         prepareSplitTunnelGeodataMatcher()
         observeConnectionState()
+        observeLeakGuardState()
         observeNetworkPath()
         observeSystemWake()
         syncLeakGuardSetting()
@@ -285,6 +289,10 @@ final class AppViewModel: ObservableObject {
         updateMenuBarAnimation()
         scheduleInitialHealthRefresh()
         refreshUnfetchedSubscriptionsIfNeeded()
+    }
+
+    deinit {
+        leakGuardStateTask?.cancel()
     }
 
     var selectedConnection: SavedConnection? {
@@ -348,8 +356,13 @@ final class AppViewModel: ObservableObject {
 
     var canDisconnect: Bool {
         !isTerminating
+            && !isAllowingDirectTraffic
             && hasObservedInitialConnectionState
             && (isOperationPending || connectionPresentation.canDisconnect)
+    }
+
+    var canAllowDirectTraffic: Bool {
+        !isTerminating && !isOperationPending && connectionState == .idle && isLeakGuardHoldingUplink
     }
 
     var canChangeSelection: Bool {
@@ -745,6 +758,8 @@ final class AppViewModel: ObservableObject {
                     source.lastError = nil
                     source.lastRefreshedAt = nil
                     source.lastSkippedCount = 0
+                    source.usage = nil
+                    source.announcement = nil
                 }
             }
 
@@ -1403,6 +1418,24 @@ final class AppViewModel: ObservableObject {
         tearDownSession()
     }
 
+    /// A failed attempt still holds the guard until the user explicitly asks to
+    /// route directly. Finish its release before accepting a replacement session.
+    func allowDirectTraffic() {
+        guard canAllowDirectTraffic else { return }
+        isLaunchConnectionPending = false
+        awaitsUplinkToReconnect = false
+        pendingConnectionSelectionID = nil
+        isAllowingDirectTraffic = true
+        beginConnectionOperation()
+        let operationID = UUID()
+        let leakGuard = leakGuard
+        Task { @MainActor [weak self] in
+            await leakGuard.disarm()
+            self?.isAllowingDirectTraffic = false
+            self?.finishConnectionOperation(operationID)
+        }
+    }
+
     /// The same teardown without touching the guard, for the paths that tear a
     /// session down in order to build another one. Releasing and re-arming around
     /// those would open the window the guard exists to close — and, since both are
@@ -1724,6 +1757,16 @@ final class AppViewModel: ObservableObject {
         }
     }
 
+    private func observeLeakGuardState() {
+        let leakGuard = leakGuard
+        leakGuardStateTask = Task { @MainActor [weak self] in
+            for await held in await leakGuard.holdingUpdates() {
+                guard !Task.isCancelled else { break }
+                self?.isLeakGuardHoldingUplink = held
+            }
+        }
+    }
+
     private func applyConnectionState(_ state: ConnectionState) {
         let isInitialState = !hasObservedInitialConnectionState
         hasObservedInitialConnectionState = true
@@ -1852,7 +1895,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private func startConnection(using configuration: ConnectionConfiguration, afterUplinkChange: Bool = false) {
-        guard !isTerminating else { return }
+        guard !isTerminating, !isAllowingDirectTraffic else { return }
         // A new connection captures all current settings, including imports.
         hasDeferredSubscriptionRoutingChanges = false
 
@@ -2102,6 +2145,8 @@ final class AppViewModel: ObservableObject {
                     skippedCount: importResult.skippedCount,
                     importStatus: importStatus.isEmpty ? nil : importStatus,
                     routing: fetched.routing,
+                    usage: fetched.usage,
+                    announcement: fetched.announcement,
                     to: source.id,
                     fetchedAt: Date(),
                     autoSelectFirstImported: autoSelectFirstImported,
@@ -2137,6 +2182,8 @@ final class AppViewModel: ObservableObject {
         skippedCount: Int,
         importStatus: String?,
         routing: SubscriptionRoutingImport?,
+        usage: SubscriptionUsage?,
+        announcement: String?,
         to sourceID: UUID,
         fetchedAt: Date,
         autoSelectFirstImported: Bool,
@@ -2187,6 +2234,8 @@ final class AppViewModel: ObservableObject {
         normalizeTunnelTarget()
 
         updateSubscriptionSource(sourceID) {
+            $0.usage = usage
+            $0.announcement = announcement
             $0.lastRefreshedAt = fetchedAt
             $0.lastSkippedCount = skippedCount
             $0.lastError = importStatus

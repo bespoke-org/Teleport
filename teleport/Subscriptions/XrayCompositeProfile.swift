@@ -10,6 +10,8 @@ nonisolated struct XrayJSONObject: Codable, Equatable, Sendable {
         data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
     }
 
+    var jsonString: String { String(decoding: data, as: UTF8.self) }
+
     var object: [String: Any] {
         (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
     }

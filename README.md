@@ -102,6 +102,10 @@ Settings > General > Leak guard. When on, a pf ruleset (anchor `com.apple/dev.x.
 - Everything else outbound, IPv4 and IPv6, is dropped. Inbound traffic is not filtered.
 - The guard is held on a lease: the app renews it every 45 seconds, the helper releases it after 180 seconds without renewal. A crashed app leaves the machine offline for at most three minutes. The helper also releases a guard it finds at its own start.
 
+If a connection fails, the guard keeps direct traffic blocked while Connect retries
+the portal. To stop trying and restore direct traffic, choose **Allow direct traffic**
+in the menu bar or Settings. This action stays available after dismissing the error.
+
 ## Security model
 
 ### What runs as root

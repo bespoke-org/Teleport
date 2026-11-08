@@ -14,7 +14,8 @@ struct SystemProxyConnectionProvider: ConnectionProvider, Sendable {
             backend: SystemProxyConnectionBackend(
                 runtimeManager: XrayRuntimeManager(),
                 proxyService: SystemProxyService()
-            )
+            ),
+            verifyConnection: { try await ConnectionReadinessProbe().verify($0) }
         )
     }
 

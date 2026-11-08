@@ -102,10 +102,16 @@ final class MenuBarContextMenuController: NSObject {
     static func statusItem(for button: NSStatusBarButton) -> NSStatusItem? {
         // SwiftUI does not expose its NSStatusItem. Guard this AppKit lookup and
         // verify ownership before temporarily assigning the native menu.
-        let selector = NSSelectorFromString("statusItem")
-        guard let window = button.window, window.responds(to: selector),
-              let item = window.perform(selector)?.takeUnretainedValue() as? NSStatusItem,
+        guard let window = button.window, let item = statusItem(for: window),
               item.button === button else { return nil }
+        return item
+    }
+
+    static func statusItem(for window: NSWindow) -> NSStatusItem? {
+        let selector = NSSelectorFromString("statusItem")
+        guard window.responds(to: selector),
+              let item = window.perform(selector)?.takeUnretainedValue() as? NSStatusItem,
+              item.button?.window === window else { return nil }
         return item
     }
 

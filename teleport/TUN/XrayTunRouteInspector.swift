@@ -74,6 +74,10 @@ nonisolated struct XrayTunRouteInspector: Sendable {
     }
 
     func existingVPNDefaultRouteInterface() -> String? {
+        existingVPNDefaultRouteInterfaces().first
+    }
+
+    func existingVPNDefaultRouteInterfaces() -> [String] {
         // macOS commonly publishes interface-scoped IPv6 `default` entries for
         // system utun devices even when they are not usable as a global route.
         // Ask the kernel which route it would actually select for addresses in
@@ -91,7 +95,7 @@ nonisolated struct XrayTunRouteInspector: Sendable {
                 ["-n", "get"] + probe.familyArguments + [probe.address]
             )
         }
-        return Self.detectedVPNInterface(inRouteLookups: outputs)
+        return outputs.compactMap { Self.detectedVPNInterface(inRouteLookups: [$0]) }
     }
 
     static func detectedVPNInterface(inRouteLookups outputs: [String]) -> String? {

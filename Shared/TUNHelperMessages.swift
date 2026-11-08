@@ -130,6 +130,8 @@ nonisolated struct StatusResponse: Codable, Sendable, Equatable {
     let phase: TUNHelperSessionPhase
     let summary: String?
     let details: String?
+    var tunnelInterfaceName: String? = nil
+    var outboundInterface: String? = nil
 }
 
 nonisolated struct StartSessionResponse: Codable, Sendable, Equatable {

@@ -11,6 +11,7 @@ nonisolated final class BackendConnectionProvider: ConnectionProvider, @unchecke
     private let stateStore: ConnectionStateStore
     private let operationQueue: ConnectionOperationQueue
     private let supervisionInterval: TimeInterval
+    private let verifyConnection: (@Sendable (ConnectionRequest) async throws -> Void)?
     private let supervisionLock = NSLock()
     private var supervisionTask: Task<Void, Never>?
     /// The connect currently queued or running, so a disconnect can cancel it.
@@ -21,10 +22,12 @@ nonisolated final class BackendConnectionProvider: ConnectionProvider, @unchecke
 
     /// `supervisionInterval` is how often a connected session is checked against
     /// the backend's runtime. Overridable so a check can drive it quickly.
-    init(mode: ConnectionMode, backend: ConnectionBackend, supervisionInterval: TimeInterval = 2) {
+    init(mode: ConnectionMode, backend: ConnectionBackend, supervisionInterval: TimeInterval = 2,
+         verifyConnection: (@Sendable (ConnectionRequest) async throws -> Void)? = nil) {
         self.mode = mode
         self.backend = backend
         self.supervisionInterval = supervisionInterval
+        self.verifyConnection = verifyConnection
         // Where the backend stands can only be answered asynchronously (TUN mode
         // asks the privileged helper over XPC), so the provider starts out
         // resolving and publishes the answer as the first queued operation.
@@ -127,13 +130,22 @@ nonisolated final class BackendConnectionProvider: ConnectionProvider, @unchecke
             try? await operationQueue.enqueue {
                 // A disconnect that was already queued behind the check wins.
                 guard case .connected = stateStore.current() else { return }
-                stateStore.update(.failed(ConnectionFailure(
+                let failure = ConnectionFailure(
                     summary: "Xray stopped unexpectedly",
                     details: mode == .tun
                         ? "The tunnel's routes were removed so the machine routes directly. Reconnect to start it again."
                         : "System proxy settings were restored so the machine routes directly. Reconnect to start it again."
-                )))
-                try? await backend.stop()
+                )
+                do {
+                    try await backend.stop()
+                    stateStore.update(.failed(failure))
+                    stateStore.update(.idle)
+                } catch {
+                    stateStore.update(.failed(ConnectionFailure(
+                        summary: failure.summary,
+                        details: "Teleport could not finish disconnecting: \(error.localizedDescription)"
+                    )))
+                }
             }
         }
     }
@@ -144,7 +156,7 @@ nonisolated final class BackendConnectionProvider: ConnectionProvider, @unchecke
 
     func connect(_ request: ConnectionRequest) async throws {
         stopSupervising()
-        let task = await operationQueue.register { [weak self, backend, stateStore, mode] in
+        let task = await operationQueue.register { [weak self, backend, stateStore, mode, verifyConnection] in
             let previousState = stateStore.current()
             stateStore.update(.preparing)
             stateStore.update(.connecting)
@@ -156,24 +168,53 @@ nonisolated final class BackendConnectionProvider: ConnectionProvider, @unchecke
                 guard phase == .awaitingUserApproval || phase == .connecting else { return }
                 stateStore.update(phase)
             }
+            var startedSession = false
             do {
                 if case .connected = previousState {
                     try await backend.reconnect(request, reportPhase: reportPhase)
                 } else {
                     try await backend.start(request, reportPhase: reportPhase)
                 }
+                startedSession = true
+                try await verifyConnection?(request)
                 stateStore.update(
                     .connected(ConnectionSession(id: UUID(), mode: mode, connectedAt: Date()))
                 )
                 self?.superviseRuntime()
-            } catch is CancellationError {
-                // The backend put back whatever it had touched, so there is nothing
-                // to report as failed; the disconnect queued behind this sees idle
-                // and returns.
-                stateStore.update(.idle)
-                throw CancellationError()
             } catch {
-                stateStore.update(.failed(ConnectionFailure(error: error)))
+                // Start/reconnect own rollback. A completed rollback is a
+                // disconnected session with an error to display, not a session
+                // requiring an extra Disconnect click before another attempt.
+                // Do not stop blindly here: a preflight may have rejected another
+                // VPN before this attempt changed anything on the machine.
+                var failure = ConnectionFailure(error: error)
+                var cleanupError: Error?
+                if startedSession {
+                    // This attempt owns a started session. A failed or cancelled
+                    // traffic check must tear it down before allowing a retry.
+                    do { try await backend.stop() }
+                    catch { cleanupError = error }
+                }
+                var disconnected = !(await backend.hasActiveRuntimeSession()) && cleanupError == nil
+                if disconnected, await backend.hasRestorableState() {
+                    do {
+                        try await backend.restorePreviousState()
+                    } catch {
+                        disconnected = false
+                        cleanupError = error
+                    }
+                }
+                if let cleanupError {
+                    failure = ConnectionFailure(summary: failure.summary, details: [
+                        failure.details,
+                        "Teleport could not finish disconnecting: \(cleanupError.localizedDescription)"
+                    ].compactMap { $0 }.joined(separator: "\n"))
+                }
+                // Subscribers retain the diagnostic when idle clears the session.
+                if !(error is CancellationError) || !disconnected {
+                    stateStore.update(.failed(failure))
+                }
+                if disconnected { stateStore.update(.idle) }
                 throw error
             }
         }

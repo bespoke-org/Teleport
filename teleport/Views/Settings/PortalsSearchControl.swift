@@ -4,7 +4,7 @@ import SwiftUI
 struct PortalsSearchControl: View {
     @Binding var query: String
     var isAvailable: Bool
-    // Leave room for Add at the minimum Settings window width.
+    // Leave room for Connect and Add at the minimum Settings window width.
     private static let searchFieldWidth: CGFloat = 170
     @State private var isSearchExpanded = false
     @State private var focusRequest = 0

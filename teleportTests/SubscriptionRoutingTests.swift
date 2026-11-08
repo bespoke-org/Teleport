@@ -479,6 +479,64 @@ final class SubscriptionRoutingTests: XCTestCase {
     }
 
     @MainActor
+    func testMetadataRefreshPersistenceFailureAndRemoval() async throws {
+        let fixture = try ViewModelFixture()
+        defer { fixture.cleanUp() }
+        let model = fixture.viewModel
+        await waitUntil { model.canConnect }
+        let usage = SubscriptionUsage.parse("upload=1; download=2; total=100")
+        model.refreshSubscription(id: fixture.source.id)
+        await waitUntil { await fixture.loader.requestCount == 1 }
+        await fixture.loader.complete(index: 0, usageHeader: "upload=1; download=2; total=100", announcement: "Original announcement")
+        await waitUntil { !model.isRefreshingSubscription(fixture.source.id) }
+        XCTAssertEqual(model.subscriptionSources.first?.usage, usage)
+        XCTAssertEqual(model.subscriptionSources.first?.announcement, "Original announcement")
+        await waitUntil { fixture.store.load().subscriptionSources.first?.usage == usage }
+        XCTAssertEqual(fixture.store.load().subscriptionSources.first?.announcement, "Original announcement")
+
+        model.refreshSubscription(id: fixture.source.id)
+        await waitUntil { await fixture.loader.requestCount == 2 }
+        await fixture.loader.fail(index: 1)
+        await waitUntil { !model.isRefreshingSubscription(fixture.source.id) }
+        XCTAssertEqual(model.subscriptionSources.first?.usage, usage)
+        XCTAssertEqual(model.subscriptionSources.first?.announcement, "Original announcement")
+
+        model.refreshSubscription(id: fixture.source.id)
+        await waitUntil { await fixture.loader.requestCount == 3 }
+        await fixture.loader.complete(index: 2)
+        await waitUntil { !model.isRefreshingSubscription(fixture.source.id) }
+        XCTAssertNil(model.subscriptionSources.first?.usage)
+        XCTAssertNil(model.subscriptionSources.first?.announcement)
+    }
+
+    @MainActor
+    func testChangingSubscriptionURLClearsMetadataAndIgnoresOlderResponse() async throws {
+        let fixture = try ViewModelFixture()
+        defer { fixture.cleanUp() }
+        let model = fixture.viewModel
+        await waitUntil { model.canConnect }
+        model.refreshSubscription(id: fixture.source.id)
+        await waitUntil { await fixture.loader.requestCount == 1 }
+        await fixture.loader.complete(index: 0, usageHeader: "upload=1; download=2; total=100", announcement: "Original announcement")
+        await waitUntil { !model.isRefreshingSubscription(fixture.source.id) }
+        XCTAssertNotNil(model.subscriptionSources.first?.usage)
+        model.refreshSubscription(id: fixture.source.id)
+        await waitUntil { await fixture.loader.requestCount == 2 }
+        model.updateSubscriptionSettings(id: fixture.source.id, customName: "Provider", urlString: "https://other.invalid/sub",
+                                         autoUpdateIntervalMinutes: nil, filterDuplicateImports: true)
+        XCTAssertNil(model.subscriptionSources.first?.usage)
+        XCTAssertNil(model.subscriptionSources.first?.announcement)
+        await waitUntil { await fixture.loader.requestCount == 3 }
+        await fixture.loader.complete(index: 2, usageHeader: "upload=4; download=5; total=200", announcement: "New announcement")
+        await waitUntil { !model.isRefreshingSubscription(fixture.source.id) }
+        await fixture.loader.complete(index: 1, usageHeader: "upload=1; download=2; total=100", announcement: "Original announcement")
+        // Allow the obsolete request to finish its detached decoding and main-actor callback.
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(model.subscriptionSources.first?.usage?.totalBytes, 200)
+        XCTAssertEqual(model.subscriptionSources.first?.announcement, "New announcement")
+    }
+
+    @MainActor
     private func waitUntil(file: StaticString = #filePath, line: UInt = #line, _ condition: () async -> Bool) async {
         let deadline = ContinuousClock.now + .seconds(2)
         while ContinuousClock.now < deadline {
@@ -573,9 +631,12 @@ final class SubscriptionRoutingTests: XCTestCase {
             }
         }
 
-        func complete(index: Int, header: String) {
+        func complete(index: Int, header: String = "", usageHeader: String? = nil, announcement: String? = nil) {
             guard let (url, continuation) = pending.removeValue(forKey: index) else { return }
-            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Routing": header])!
+            var headers = ["Routing": header]
+            headers["Subscription-Userinfo"] = usageHeader
+            headers["Announce"] = announcement
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: headers)!
             let body = Data("vless://123e4567-e89b-12d3-a456-426614174000@imported.invalid:443?security=tls#Imported".utf8)
             continuation.resume(returning: (body, response))
         }

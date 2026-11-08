@@ -19,6 +19,13 @@ nonisolated struct ConnectionLinkParser {
             return try wireGuardParser.parseConfigurationFile(trimmed)
         }
 
+        // Other protocol parsers must not silently discard a behavioral mask.
+        if let url = URLComponents(string: trimmed),
+           url.queryItems?.contains(where: { $0.name == "fm" }) == true,
+           !["vless", "trojan"].contains(url.scheme?.lowercased() ?? "") {
+            throw ConfigurationError.invalidFinalMask
+        }
+
         if trimmed.lowercased().hasPrefix("hy2://") || trimmed.lowercased().hasPrefix("hysteria2://") {
             return try HysteriaConfigurationParser().parseLink(trimmed)
         }
@@ -121,7 +128,8 @@ nonisolated struct ConnectionLinkParser {
             trojanPassword: nil,
             allowsInsecureTLS: parseAllowsInsecureTLS(query: query),
             grpcServiceName: query["serviceName"],
-            transportMode: query["mode"]
+            transportMode: query["mode"],
+            finalMask: try FinalMaskConfiguration.parse(query["fm"], transport: transport, security: security)
         )
     }
 
@@ -185,7 +193,8 @@ nonisolated struct ConnectionLinkParser {
             trojanPassword: password,
             allowsInsecureTLS: parseAllowsInsecureTLS(query: query),
             grpcServiceName: query["serviceName"],
-            transportMode: query["mode"]
+            transportMode: query["mode"],
+            finalMask: try FinalMaskConfiguration.parse(query["fm"], transport: transport, security: security)
         )
     }
 

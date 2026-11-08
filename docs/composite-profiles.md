@@ -36,6 +36,35 @@ refreshing and restarting preserve them. Duplicate filtering compares the whole
 profile without its display name, so two names for the same group count as one
 portal when filtering is enabled.
 
+## FinalMask fragmentation
+
+VLESS and Trojan over TCP/RAW with TLS or REALITY accept `fm` in share links
+and `streamSettings.finalmask` in Xray JSON, including balanced-profile members.
+The supported subset is `tcp` masks of type `fragment`. Teleport validates
+`packets`, `length`/`lengths`, `delay`/`delays`, and `maxSplit` against the
+[bundled Xray schema](https://github.com/XTLS/Xray-core/blob/v26.10.21/infra/conf/transport_finalmask.go).
+`tlshello` fragments the opening TLS handshake; positive packet ranges select
+TCP writes. Omitted fields retain Xray's defaults. Length and delay arrays must
+be nonempty, the final length range must start above zero, and a singular field
+cannot be supplied alongside its array form.
+
+Fragmentation survives saving, renaming, sharing, subscription refresh and
+restart. Duplicate filtering keeps otherwise identical portals with different
+mask settings. System Proxy, TUN and health-probe configurations all carry the
+same mask. No new dialer or endpoint is introduced, and physical-uplink socket
+options remain in place.
+
+Other masks, UDP/QUIC options in VLESS/Trojan FinalMask, incompatible transports,
+and malformed values are rejected instead of ignored. Hysteria's existing JSON
+mask support remains as described in [hysteria2.md](hysteria2.md); arbitrary `fm`
+on Hysteria or WireGuard share links is rejected.
+
+Run `just test-case FinalMaskTests` for import/persistence/refresh checks,
+bundled-Xray configuration validation, and a loopback test that observes the
+ClientHello split into the configured 10–20 byte fragments. The latter also
+runs without the mask to verify that it detects the unfragmented handshake.
+It does not establish connectivity through a particular network's filters.
+
 ## TUN and health checks
 
 Before installing TUN routes, Teleport resolves every member and pins each usable

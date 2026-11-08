@@ -40,7 +40,9 @@ nonisolated struct PrivilegedHelperClient: Sendable {
                 phase: payload.phase,
                 sessionID: response.sessionID,
                 summary: payload.summary,
-                details: payload.details
+                details: payload.details,
+                tunnelInterfaceName: payload.tunnelInterfaceName,
+                outboundInterface: payload.outboundInterface
             )
         } catch {
             throw mapClientError(error)
@@ -380,6 +382,8 @@ nonisolated struct PrivilegedHelperStatus: Sendable, Equatable {
     let sessionID: UUID?
     let summary: String?
     let details: String?
+    var tunnelInterfaceName: String? = nil
+    var outboundInterface: String? = nil
     var success: Bool { true }
 }
 
