@@ -19,7 +19,9 @@ final class SettingsSelectionTests: XCTestCase {
                 return options
             }) {
                 Text("Choose route").frame(width: 200, height: 40).contentShape(Rectangle())
-            }.buttonStyle(.plain).frame(width: 360, height: 160)
+            }.buttonStyle(.plain)
+                .keyboardShortcut("p", modifiers: .command)
+                .frame(width: 360, height: 160)
         )
         let window = NSWindow(contentViewController: host)
         window.isReleasedWhenClosed = false
@@ -28,13 +30,12 @@ final class SettingsSelectionTests: XCTestCase {
         await awaitUIUpdate("Picker window is presented") { window.isVisible && host.view.window != nil }
         let existing = Set(NSApp.windows.map(\.windowNumber))
 
-        try click(in: window)
+        try await openPicker(in: window, expectedOpens: 1, opens: { opens })
         await awaitUIUpdate("First selection popover has laid out its rows") {
             NSApp.windows.contains { !existing.contains($0.windowNumber) && $0.isVisible && $0.frame.height > 100 }
         }
-        print("[DEBUG-selection] opens=\(opens) active=\(NSApp.isActive) key=\(window.isKeyWindow) host=\(host.view.frame) windows=\(NSApp.windows.map { "\($0.windowNumber):\($0.isVisible):\($0.frame):existing=\(existing.contains($0.windowNumber))" })")
         let first = try XCTUnwrap(NSApp.windows.first { !existing.contains($0.windowNumber) && $0.isVisible })
-        XCTAssertGreaterThan(first.frame.height, 100, "The first click must show rows, not an empty glass strip")
+        XCTAssertGreaterThan(first.frame.height, 100, "The first activation must show rows, not an empty glass strip")
         XCTAssertEqual(opens, 1)
         try key("\u{F701}", code: 125, in: first)
         await awaitUIUpdate("Keyboard highlight is applied")
@@ -49,7 +50,7 @@ final class SettingsSelectionTests: XCTestCase {
             GlassSelectionOption(id: "last", title: "Last portal")
         ]
         window.makeKeyAndOrderFront(nil)
-        try click(in: window)
+        try await openPicker(in: window, expectedOpens: 2, opens: { opens })
         await awaitUIUpdate("Selection popover is presented") {
             NSApp.windows.contains { !existing.contains($0.windowNumber) && $0.isVisible && $0.frame.height > 100 }
         }
@@ -64,7 +65,7 @@ final class SettingsSelectionTests: XCTestCase {
         XCTAssertFalse(second.isVisible)
 
         window.makeKeyAndOrderFront(nil)
-        try click(in: window)
+        try await openPicker(in: window, expectedOpens: 3, opens: { opens })
         await awaitUIUpdate("Selection popover is presented") {
             NSApp.windows.contains { !existing.contains($0.windowNumber) && $0.isVisible && $0.frame.height > 100 }
         }
@@ -110,7 +111,23 @@ final class SettingsSelectionTests: XCTestCase {
         XCTAssertEqual(selected, 1)
     }
 
-    private func click(in window: NSWindow, at point: NSPoint = NSPoint(x: 180, y: 80)) throws {
+    // Hostless xctest is not a reliably active application. Use a shortcut on
+    // the real SwiftUI button rather than a first mouse click that AppKit may
+    // consume for activation. Wait for registration, dispatch once, then observe
+    // onOpen so a missing action fails here instead of as a missing popover.
+    private func openPicker(in window: NSWindow, expectedOpens: Int, opens: @escaping () -> Int) async throws {
+        let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+            timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "p",
+            charactersIgnoringModifiers: "p", isARepeat: false, keyCode: 35))
+        var accepted = false
+        await awaitUIUpdate("Rendered picker accepts its action and captures fresh options") {
+            if !accepted { accepted = window.performKeyEquivalent(with: event) }
+            return accepted && opens() == expectedOpens
+        }
+        XCTAssertEqual(opens(), expectedOpens)
+    }
+
+    private func click(in window: NSWindow, at point: NSPoint) throws {
         func event(_ type: NSEvent.EventType) throws -> NSEvent {
             try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: 0,
                 windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
@@ -118,9 +135,7 @@ final class SettingsSelectionTests: XCTestCase {
         NSApp.postEvent(try event(.leftMouseUp), atStart: true)
         window.sendEvent(try event(.leftMouseDown))
         if let pending = NSApp.nextEvent(matching: .leftMouseUp, until: .distantPast, inMode: .default, dequeue: true) {
-            // The down event goes straight to the fixture window. Deliver its
-            // matching up there too, even when the hostless app is inactive.
-            window.sendEvent(pending)
+            NSApp.sendEvent(pending)
         }
     }
 
