@@ -24,6 +24,12 @@ final class SettingsToolbarLayoutTests: XCTestCase {
         XCTAssertEqual(order.convert(order.bounds, to: nil), originalFrame,
                        "Waiting for the provider must not move Menu bar and Dock")
         XCTAssertFalse(mode.isAccessibilityEnabled())
+        let lockedPoint = NSPoint(x: mode.frame.midX, y: mode.frame.midY)
+        XCTAssertNil(mode.hitTest(lockedPoint), "Provider startup must block pointer input without changing the glass")
+        let tunPoint = mode.convert(NSPoint(x: mode.bounds.width * 0.75, y: mode.bounds.midY), to: nil)
+        try click(in: fixture.window, at: tunPoint)
+        XCTAssertEqual(fixture.model.connectionMode, .systemProxy)
+        XCTAssertEqual(mode.selectedSegment, 0)
         mode.selectedSegment = 1
         mode.sendAction(try XCTUnwrap(mode.action), to: mode.target)
         XCTAssertEqual(fixture.model.connectionMode, .systemProxy, "Input must stay blocked during provider startup")
