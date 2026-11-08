@@ -347,7 +347,7 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         case .tunnel:
             return InterfaceSymbol.routing
         case .advanced:
-            return "slider.horizontal.3"
+            return "eyeglasses"
         case .logs:
             return "doc.text.magnifyingglass"
         case .about:
