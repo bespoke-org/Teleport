@@ -4,6 +4,7 @@ import SwiftUI
 struct SettingsCommands: Commands {
     @Binding var settingsNavigation: SettingsNavigation
     @Environment(\.openWindow) private var openWindow
+    @FocusedValue(\.findPortals) private var findPortals
     @FocusedValue(\.toggleSettingsSidebar) private var toggleSidebar
     @FocusedBinding(\.settingsNavigation) private var navigation
 
@@ -21,6 +22,12 @@ struct SettingsCommands: Commands {
                 openWindow(id: "settings")
             }
             .keyboardShortcut(",", modifiers: .command)
+        }
+        CommandGroup(after: .textEditing) {
+            if let findPortals {
+                Button("Find Portals", action: findPortals)
+                    .keyboardShortcut("f", modifiers: .command)
+            }
         }
         CommandMenu("Go") {
             Button("Back") {
@@ -67,7 +74,16 @@ private struct SettingsNavigationKey: FocusedValueKey {
     typealias Value = Binding<SettingsNavigation>
 }
 
+private struct FindPortalsKey: FocusedValueKey {
+    typealias Value = () -> Void
+}
+
 extension FocusedValues {
+    var findPortals: (() -> Void)? {
+        get { self[FindPortalsKey.self] }
+        set { self[FindPortalsKey.self] = newValue }
+    }
+
     var settingsNavigation: Binding<SettingsNavigation>? {
         get { self[SettingsNavigationKey.self] }
         set { self[SettingsNavigationKey.self] = newValue }

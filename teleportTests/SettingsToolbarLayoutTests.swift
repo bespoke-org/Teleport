@@ -130,16 +130,17 @@ final class SettingsToolbarLayoutTests: XCTestCase {
         XCTAssertEqual(order.convert(order.bounds, to: nil), originalFrame)
     }
 
-    func testExpandedPortalSearchReleasesSpaceForLogsAndSurvivesNavigation() async throws {
+    func testPortalSearchReleasesSpaceForLogsAndSurvivesNavigation() async throws {
         guard #available(macOS 26.0, *) else { throw XCTSkip("Shared glass toolbar is macOS 26+") }
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
         let window = fixture.window
         await awaitUIUpdate("Portals toolbar is attached") {
-            window.toolbar?.items.contains { $0.itemIdentifier.rawValue == "settings.pageActions" } == true
+            self.searchField(in: window) != nil
         }
         let toolbar = try XCTUnwrap(window.toolbar)
         let portals = try XCTUnwrap(toolbar.items.first { $0.itemIdentifier.rawValue == "settings.pageActions" })
+        let nativeField = try XCTUnwrap(searchField(in: window))
         func assertTrailingInset(file: StaticString = #filePath, line: UInt = #line) throws {
             let view = try XCTUnwrap(portals.view, file: file, line: line)
             let inset = window.frame.width - view.convert(view.bounds, to: nil).maxX
@@ -147,21 +148,24 @@ final class SettingsToolbarLayoutTests: XCTestCase {
             XCTAssertLessThanOrEqual(inset, 20, "Inactive toolbar items must not reserve trailing space", file: file, line: line)
         }
         try assertTrailingInset()
+        let groupFrame = try XCTUnwrap(portals.view).convert(portals.view!.bounds, to: nil)
+        let searchFrame = nativeField.convert(nativeField.bounds, to: nil)
+        XCTAssertLessThanOrEqual(abs(searchFrame.minX - groupFrame.minX), 5,
+                                 "Search must be first, before Add and Power")
+        XCTAssertGreaterThan(groupFrame.maxX - searchFrame.maxX, 80,
+                             "Leave room for Add and Power to the right of Search")
         XCTAssertFalse(toolbar.items.contains { $0.itemIdentifier.rawValue == "settings.error" },
-                       "An empty error item must not reserve space beside the expanding search")
+                       "An empty error item must not reserve space beside search")
 
-        let commandF = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
-            timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "f",
-            charactersIgnoringModifiers: "f", isARepeat: false, keyCode: 3))
-        var opened = false
-        await awaitUIUpdate("Search expands and receives focus") {
-            if !opened { opened = window.performKeyEquivalent(with: commandF) }
-            return opened && self.searchField(in: window)?.currentEditor() != nil
-                && (portals.view?.frame.width ?? 0) > 250
+        window.makeFirstResponder(nativeField)
+        await awaitUIUpdate("Native search receives focus") {
+            self.searchField(in: window)?.currentEditor() != nil
+                && self.searchField(in: window)!.frame.width > 36
         }
-        XCTAssertTrue(isVisible("settings.pageActions", in: toolbar), "The expanded search, Add and Connect must stay visible")
+        XCTAssertTrue(isVisible("settings.pageActions", in: toolbar), "Search, Add and Connect must stay visible")
         try assertTrailingInset()
         let field = try XCTUnwrap(searchField(in: window))
+        XCTAssertTrue(field === nativeField, "Keep the native search field mounted with the page actions")
         let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
         editor.insertText("Paris")
         await awaitUIUpdate("Search text reaches its binding") { field.stringValue == "Paris" }
@@ -176,16 +180,47 @@ final class SettingsToolbarLayoutTests: XCTestCase {
                       "Keep the toolbar item mounted so its search state survives navigation")
 
         fixture.navigation.value.select(.portals)
-        await awaitUIUpdate("Returning restores the expanded search and its query") {
+        await awaitUIUpdate("Returning restores search and its query") {
             self.isVisible("settings.pageActions", in: toolbar)
                 && self.searchField(in: window)?.stringValue == "Paris"
-                && (portals.view?.frame.width ?? 0) > 250
+                && self.searchField(in: window)!.frame.width > 36
         }
         XCTAssertTrue(portals === toolbar.items.first { $0.itemIdentifier.rawValue == "settings.pageActions" })
+        XCTAssertTrue(searchField(in: window) === nativeField)
+        XCTAssertNil(nativeField.currentEditor(), "Returning to Portals must not start a search interaction")
         try assertTrailingInset()
         window.setContentSize(NSSize(width: 1160, height: SettingsSidebarLayout.minimumContentSize.height))
         await awaitUIUpdate("The resized toolbar settles")
         try assertTrailingInset()
+    }
+
+    func testNativeSearchKeepsItsSizeWhenFocusChanges() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let window = fixture.window
+        await awaitUIUpdate("Native search is attached") {
+            self.searchField(in: window) != nil
+        }
+        let toolbar = try XCTUnwrap(window.toolbar)
+        let field = try XCTUnwrap(searchField(in: window))
+        let actions = try XCTUnwrap(toolbar.items.first { $0.itemIdentifier.rawValue == "settings.pageActions" }?.view)
+        for width in [SettingsSidebarLayout.minimumContentSize.width, 1160] {
+            window.makeFirstResponder(nil)
+            window.setContentSize(NSSize(width: width, height: 500))
+            try await Task.sleep(for: .milliseconds(400))
+            let restingFrame = field.convert(field.bounds, to: nil)
+            let actionsFrame = actions.convert(actions.bounds, to: nil)
+            window.makeFirstResponder(field)
+            try await Task.sleep(for: .milliseconds(400))
+            XCTAssertNotNil(field.currentEditor())
+            XCTAssertEqual(field.convert(field.bounds, to: nil), restingFrame,
+                           "Focusing the search field must not resize it")
+            XCTAssertEqual(actions.convert(actions.bounds, to: nil), actionsFrame,
+                           "Search focus must not shift neighboring toolbar buttons")
+            window.makeFirstResponder(nil)
+            try await Task.sleep(for: .milliseconds(400))
+            XCTAssertEqual(field.convert(field.bounds, to: nil), restingFrame)
+        }
     }
 
     func testPageSwitchKeepsTheSameNativeToolbarItemsMounted() async throws {
@@ -200,7 +235,7 @@ final class SettingsToolbarLayoutTests: XCTestCase {
             fixture.navigation.value.select(section)
             await awaitUIUpdate("Toolbar switches to \(section)")
             XCTAssertEqual(toolbar.visibleItems?.map(\.itemIdentifier), visibleIDs,
-                           "Page switches must not invoke AppKit's toolbar item show/hide transitions")
+                           "Page switches must retain the same native toolbar items")
             XCTAssertTrue(item === toolbar.items.first { $0.itemIdentifier.rawValue == "settings.pageActions" })
             XCTAssertTrue(item.view === view, "Keep the same native host across pages")
             XCTAssertGreaterThan(view.bounds.height, 36, "Leave room for pressed glass to expand")
@@ -246,7 +281,7 @@ final class SettingsToolbarLayoutTests: XCTestCase {
         fixture.navigation.value.select(.portals)
         await awaitUIUpdate("Assignments are visible for both owners") {
             self.routingPickers(in: window).count == 2
-                && view.frame.width < frame.width
+                && self.searchField(in: window)?.isEnabled == true
         }
         XCTAssertEqual(model.tunnelAssignments, assignments)
         fixture.navigation.value.select(.tunnel)

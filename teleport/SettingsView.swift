@@ -8,6 +8,7 @@ struct SettingsView: View {
     @Binding var navigation: SettingsNavigation
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var portalsState = PortalsState()
+    @State private var portalSearchFocusRequest = 0
     @State private var routingNameFocusID: UUID?
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -39,18 +40,6 @@ struct SettingsView: View {
                 }
                 .controlGroupStyle(.navigation)
             }
-            // A principal item keeps page actions trailing in a SwiftUI Window.
-            // Give it a real size so AppKit can measure it without warnings.
-            if #available(macOS 26.0, *) {
-                ToolbarItem(id: "settings.titleSpacer", placement: .principal) {
-                    Color.clear.frame(width: 1, height: 1)
-                }
-                .sharedBackgroundVisibility(.hidden)
-            } else {
-                ToolbarItem(id: "settings.titleSpacer", placement: .principal) {
-                    Color.clear.frame(width: 1, height: 1)
-                }
-            }
             SettingsRecoveryToolbar(viewModel: viewModel)
             if #available(macOS 26.0, *) {
                 ToolbarItem(id: "settings.pageActions", placement: .primaryAction) {
@@ -63,6 +52,9 @@ struct SettingsView: View {
                 }
             }
         }
+        .focusedSceneValue(\.findPortals, navigation.section == .portals ? {
+            portalSearchFocusRequest += 1
+        } : nil)
         .focusedSceneValue(\.settingsNavigation, $navigation)
         .navigationSplitViewStyle(.balanced)
         .transaction(value: navigation.section) { transaction in
@@ -77,6 +69,7 @@ struct SettingsView: View {
     private var pageActions: some View {
         ZStack(alignment: .trailing) {
             PortalsToolbar(state: $portalsState, isActive: navigation.section == .portals,
+                           searchFocusRequest: portalSearchFocusRequest,
                            connection: PortalsConnectionButton(viewModel: viewModel))
             RoutingToolbar(viewModel: viewModel, isActive: navigation.section == .tunnel,
                            onNewProfile: {

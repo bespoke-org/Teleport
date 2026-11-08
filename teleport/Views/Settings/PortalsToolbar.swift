@@ -4,13 +4,13 @@ import SwiftUI
 struct PortalsToolbar<ConnectionControl: View>: View {
     @Binding var state: PortalsState
     let isActive: Bool
+    var searchFocusRequest = 0
     let connection: ConnectionControl
 
     var body: some View {
         HStack(spacing: 8) {
             if #available(macOS 26.0, *) {
-                search
-                    .glassEffect(.regular.interactive(), in: Capsule())
+                search.glassEffect(.regular, in: Capsule())
                 add
                     .buttonStyle(.plain)
                     .glassEffect(.regular.interactive(), in: Circle())
@@ -27,7 +27,8 @@ struct PortalsToolbar<ConnectionControl: View>: View {
     }
 
     private var search: some View {
-        PortalsSearchControl(query: $state.query, isAvailable: isActive)
+        PortalsSearchControl(query: $state.query, isActive: isActive, focusRequest: searchFocusRequest)
+            .frame(width: 240, height: 36)
     }
 
     private var add: some View {

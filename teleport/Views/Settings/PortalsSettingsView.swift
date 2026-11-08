@@ -107,12 +107,6 @@ struct PortalsSettingsView: View {
                                 }
                             }
                             .padding(.vertical, -7)
-                            // A header popover's dismissal can animate row insertion/removal
-                            // and leave SwiftUI's lazy layout spinning during expansion.
-                            .transaction { transaction in
-                                transaction.animation = nil
-                                transaction.disablesAnimations = true
-                            }
                         }
                     }
                 }
