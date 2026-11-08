@@ -257,10 +257,10 @@ class Lab:
                 e["host"] == "1.1.1.1" and e["port"] == 443 for e in self.events), self.events
             self.results.append({"mode": "production DoH TLS failure", "outbound": "proxy", "plaintext_queries": 0})
         else:
-            zones = [("public.test", "proxy"), ("direct.test", "direct"),
+            zones = [("public.test", "proxy"), ("direct.test", "proxy"),
                      ("home.arpa", "direct"), ("first.test", "proxy-1"),
                      ("second.test", "proxy-2"), ("overlap.test", "proxy-2")]
-            zones.append(("unmatched.test", "direct" if self.name == "direct-default" else "proxy"))
+            zones.append(("unmatched.test", "proxy"))
             if self.name == "full-proxy":
                 zones = [("public.test", "proxy"), ("home.arpa", "proxy")]
             if self.name == "default-peer":

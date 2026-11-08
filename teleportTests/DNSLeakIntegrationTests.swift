@@ -31,7 +31,6 @@ final class DNSLeakIntegrationTests: XCTestCase {
         }
         let first = try peer("1.1.1.1"), second = try peer("1.1.1.1")
         let rules: [SplitTunnelRule] = [
-            .init(value: "home.arpa", kind: .domain, action: .direct),
             .init(value: "direct.test", kind: .domain, action: .direct),
             .init(value: "public.test", kind: .domain, action: .proxy),
             .init(value: "first.test", kind: .domain, action: .proxy, connectionID: first.connectionID),
@@ -42,10 +41,10 @@ final class DNSLeakIntegrationTests: XCTestCase {
         ]
         let writer = XrayConfigurationWriter(proxyEndpoint: .default)
         func config(_ outbounds: [RoutedProxyOutbound], remote: String, defaultAction: SplitTunnelRuleAction = .proxy,
-                    splitRules: [SplitTunnelRule]? = nil) throws -> Any {
+                    splitRules: [SplitTunnelRule]? = nil, localDomains: [String] = ["domain:home.arpa"]) throws -> Any {
             let data = try writer.tunnelConfigData(for: outbounds, interfaceName: "utun99",
                 splitTunnelRules: splitRules ?? rules, defaultAction: defaultAction,
-                dnsPolicy: .init(localResolvers: ["1.1.1.1"], remoteResolver: remote))
+                dnsPolicy: .init(localResolvers: ["1.1.1.1"], remoteResolver: remote, localDomains: localDomains))
             return try JSONSerialization.jsonObject(with: data)
         }
         let outbounds = [publicConnection, first, second]
@@ -55,8 +54,8 @@ final class DNSLeakIntegrationTests: XCTestCase {
             "udp": try config(outbounds, remote: "1.1.1.1"),
             "tcp": try config(outbounds, remote: "tcp://1.1.1.1"),
             "direct-default": try config(outbounds, remote: "1.1.1.1", defaultAction: .direct),
-            "full-proxy": try config(outbounds, remote: "1.1.1.1", splitRules: []),
-            "default-peer": try config([peer("1.1.1.1, 1.0.0.1")], remote: "1.1.1.1", splitRules: []),
+            "full-proxy": try config(outbounds, remote: "1.1.1.1", splitRules: [], localDomains: []),
+            "default-peer": try config([peer("1.1.1.1, 1.0.0.1")], remote: "1.1.1.1", splitRules: [], localDomains: []),
             "doh-failure": try config(outbounds, remote: TunnelDNSPolicy.defaultRemoteResolver)
         ]
         let configURL = directory.appendingPathComponent("generated.json")
