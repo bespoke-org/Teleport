@@ -103,9 +103,14 @@ nonisolated struct XraySubscriptionProfileParser {
         }
         let transportKey = network + "Settings"
         let securityKey = security + "Settings"
-        try checkKeys(stream, allowed: ["network", "security", transportKey, securityKey, "sockopt"], section: "stream settings")
+        try checkKeys(stream, allowed: ["network", "security", transportKey, securityKey, "sockopt", "finalmask"], section: "stream settings")
         let socketOptions = try optionalObject(stream, "sockopt")
         try checkKeys(socketOptions, allowed: [], section: "socket options")
+        if let mask = stream["finalmask"] {
+            let validated = try FinalMaskConfiguration.validate(mask, transport: ConnectionTransport(rawValue: network)!,
+                                                                security: ConnectionSecurity(rawValue: security)!)
+            query["fm"] = validated.jsonString
+        }
         query["type"] = network
         query["security"] = security
         let transport = try optionalObject(stream, transportKey)

@@ -720,6 +720,8 @@ nonisolated struct XrayConfigurationWriter {
             "security": configuration.security.rawValue
         ]
 
+        streamSettings["finalmask"] = configuration.finalMask?.object
+
         if configuration.transport == .ws {
             var wsSettings: [String: Any] = [
                 "path": configuration.path ?? "/"

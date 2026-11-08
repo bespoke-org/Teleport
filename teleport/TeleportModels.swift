@@ -259,6 +259,7 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
     let hysteria: HysteriaParameters?
     var outboundMux: XrayJSONObject?
     var xhttpExtra: XrayJSONObject?
+    var finalMask: XrayJSONObject?
     var composite: XrayCompositeProfile?
 
     /// Every remote endpoint that must bypass the TUN and leak guard.
@@ -357,6 +358,7 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
             allowsInsecureTLS ? "1" : "0",
             grpcServiceName ?? "",
             transportMode?.lowercased() ?? "",
+            finalMask?.jsonString ?? "",
             wireguard?.peerPublicKey ?? "",
             wireguard?.addresses.joined(separator: ",") ?? "",
             // Peers at the same endpoint can have different credentials and
@@ -402,6 +404,7 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
             hysteria: hysteria,
             outboundMux: outboundMux,
             xhttpExtra: xhttpExtra,
+            finalMask: finalMask,
             composite: composite
         )
     }
@@ -449,6 +452,7 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
         case hysteria
         case outboundMux
         case xhttpExtra
+        case finalMask
         case composite
     }
 
@@ -478,6 +482,7 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
         hysteria: HysteriaParameters? = nil,
         outboundMux: XrayJSONObject? = nil,
         xhttpExtra: XrayJSONObject? = nil,
+        finalMask: XrayJSONObject? = nil,
         composite: XrayCompositeProfile? = nil
     ) {
         self.rawLink = rawLink
@@ -505,6 +510,7 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
         self.hysteria = hysteria
         self.outboundMux = outboundMux
         self.xhttpExtra = xhttpExtra
+        self.finalMask = finalMask
         self.composite = composite
     }
 
@@ -535,6 +541,7 @@ nonisolated struct ConnectionConfiguration: Codable, Equatable {
         hysteria = try container.decodeIfPresent(HysteriaParameters.self, forKey: .hysteria)
         outboundMux = try container.decodeIfPresent(XrayJSONObject.self, forKey: .outboundMux)
         xhttpExtra = try container.decodeIfPresent(XrayJSONObject.self, forKey: .xhttpExtra)
+        finalMask = try container.decodeIfPresent(XrayJSONObject.self, forKey: .finalMask)
         composite = try container.decodeIfPresent(XrayCompositeProfile.self, forKey: .composite)
     }
 }
@@ -1078,6 +1085,7 @@ enum ConfigurationError: LocalizedError, Equatable {
     case multipleWireGuardPeers
     case invalidXrayJSON
     case invalidHysteria(String)
+    case invalidFinalMask
 
     var errorDescription: String? {
         switch self {
@@ -1109,6 +1117,8 @@ enum ConfigurationError: LocalizedError, Equatable {
             return "WireGuard configurations with more than one peer are not supported"
         case .invalidXrayJSON:
             return "Invalid Xray JSON configuration"
+        case .invalidFinalMask:
+            return "Unsupported or invalid FinalMask settings; supported masks are TCP fragmentation for VLESS/Trojan over TCP/RAW with TLS or REALITY"
         case let .invalidHysteria(reason):
             return reason
         }
