@@ -194,6 +194,60 @@ final class MCPTests: XCTestCase {
         XCTAssertEqual(fixture.model.splitTunnelProfiles.first { $0.id == active.id }, active)
     }
 
+    func testDeletingInactiveProfilePreservesDeferredSubscriptionRouting() async throws {
+        try await assertDeferredRoutingPreserved(operation: "delete")
+    }
+
+    func testSelectingAssignedProfilePreservesDeferredSubscriptionRouting() async throws {
+        try await assertDeferredRoutingPreserved(operation: "select")
+    }
+
+    func testInheritingAlreadyInheritedProfilePreservesDeferredSubscriptionRouting() async throws {
+        try await assertDeferredRoutingPreserved(operation: "inherit")
+    }
+
+    private func assertDeferredRoutingPreserved(operation: String) async throws {
+        let payload = try JSONSerialization.data(withJSONObject: ["Name": "Updated provider", "DirectSites": ["new.example"]])
+        let fixture = try MCPFixture(connected: true, providerProfile: true, extraTarget: true,
+                                     routingHeader: "happ://routing/onadd/" + payload.base64EncodedString())
+        defer { fixture.cleanUp() }
+        let model = fixture.model
+        let connectedDeadline = Date().addingTimeInterval(3)
+        while !model.isConnected && Date() < connectedDeadline { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertTrue(model.isConnected)
+        XCTAssertEqual(model.mcpRoutingApplicationState["savedRulesMatchAcknowledgedPolicy"] as? Bool, true)
+
+        model.performScheduledSubscriptionRefreshes()
+        let refreshDeadline = Date().addingTimeInterval(3)
+        while model.refreshingSubscriptionIDs.contains(fixture.sourceID) && Date() < refreshDeadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertNil(model.subscriptionSources.first { $0.id == fixture.sourceID }?.lastError)
+        XCTAssertEqual(model.selectedSplitTunnelProfile?.rules.first?.value, "new.example")
+        XCTAssertEqual(model.mcpRoutingApplicationState["deferredSubscriptionChanges"] as? Bool, true)
+        XCTAssertEqual(model.mcpRoutingApplicationState["savedRulesMatchAcknowledgedPolicy"] as? Bool, false)
+
+        let inactive = try XCTUnwrap(model.personalTunnelProfiles.first { $0.name == "Other" })
+        if operation == "select" { model.selectTunnelTarget(.subscription(fixture.otherSourceID)) }
+        var arguments: [String: Any] = ["operation": operation, "expectedRevision": fixture.service.revision]
+        if operation != "inherit" { arguments["profileID"] = inactive.id.uuidString }
+        let preview = try await fixture.call("manage_routing_profile", arguments)
+        XCTAssertEqual(preview["mayReconnect"] as? Bool, false)
+        arguments["dryRun"] = false // Deliberately no allowReconnect.
+        let result = try await fixture.call("manage_routing_profile", arguments)
+        XCTAssertEqual(result["status"] as? String, "accepted")
+        XCTAssertEqual(model.mcpRoutingApplicationState["deferredSubscriptionChanges"] as? Bool, true)
+        if operation == "delete" { XCTAssertFalse(model.splitTunnelProfiles.contains { $0.id == inactive.id }) }
+
+        // Also observe the provider beyond the 0.7 s live-apply debounce: an
+        // accepted unrelated edit must neither discard deferral nor reconnect.
+        try await Task.sleep(for: .milliseconds(1000))
+        XCTAssertEqual(fixture.provider.connectCount, 0)
+        XCTAssertEqual(fixture.provider.disconnectCount, 0)
+        XCTAssertEqual(model.mcpRoutingApplicationState["deferredSubscriptionChanges"] as? Bool, true)
+        XCTAssertEqual(model.mcpRoutingApplicationState["savedRulesMatchAcknowledgedPolicy"] as? Bool, false)
+    }
+
     func testMCPRequestCrossesSocketAndReturnsModelState() async throws {
         let fixture = try MCPFixture()
         defer { fixture.cleanUp() }
@@ -237,29 +291,37 @@ private final class MCPFixture {
     let otherSourceID = UUID()
     let model: AppViewModel
     let store: ConfigurationStore
+    let provider: MCPTestProvider
     var access = MCPAccess.readWrite
     lazy var service = TeleportMCPService(model: model, access: { [unowned self] in self.access }, loadAudit: { RoutingAudit(sites: [:], ips: [:]) })
 
-    init(connected: Bool = false, providerProfile: Bool = false, extraTarget: Bool = false) throws {
+    init(connected: Bool = false, providerProfile: Bool = false, extraTarget: Bool = false, routingHeader: String? = nil) throws {
         let manager = MCPTestFileManager(root: root)
         let log = TeleportLog(directoryURL: root, fileName: "test.log")
         store = ConfigurationStore(fileManager: manager, keychainService: "dev.x.teleport.mcp-test-\(UUID())", keychainAccount: "snapshot", log: log)
         let config = try ConnectionLinkParser().parse("vless://123e4567-e89b-12d3-a456-426614174000@127.0.0.1:9?security=none&type=tcp#Test")
-        let connection = SavedConnection(id: UUID(), configuration: config, savedAt: Date(), source: .init(subscriptionSourceID: sourceID, subscriptionEntryID: "private-key"),
+        let connection = SavedConnection(id: UUID(), configuration: config, savedAt: Date(), source: .init(subscriptionSourceID: sourceID, subscriptionEntryID: config.duplicateFilterIdentity),
                                          healthCheck: .init(state: .reachable, checkedAt: Date(), latencyMilliseconds: 1, latencyKind: .tcpConnect, failureSummary: nil))
-        let source = SubscriptionSource(id: sourceID, urlString: "https://example.test/secret-token", title: "Test", savedAt: Date(), lastRefreshedAt: Date())
+        let source = SubscriptionSource(id: sourceID, urlString: "https://example.test/secret-token", title: "Test", savedAt: Date(), autoUpdateIntervalMinutes: routingHeader == nil ? nil : 1,
+                                        lastRefreshedAt: routingHeader == nil ? Date() : .distantPast)
         let personal = SplitTunnelProfile(name: "Personal", geodataSources: GeodataSources())
         let other = SplitTunnelProfile(name: "Other", geodataSources: GeodataSources())
         let provided = SplitTunnelProfile(name: "Provider", subscriptionSourceID: sourceID, geodataSources: GeodataSources())
         let otherSource = SubscriptionSource(id: otherSourceID, urlString: "https://other.test/sub", title: "Other", savedAt: Date(), lastRefreshedAt: Date())
         let profiles = [personal] + (providerProfile ? [provided] : []) + (extraTarget ? [other] : [])
-        let assignments: [TunnelProfileAssignment] = extraTarget ? [.init(target: .subscription(sourceID), personalProfileID: personal.id), .init(target: .subscription(otherSourceID), personalProfileID: other.id)] : []
+        let assignments: [TunnelProfileAssignment] = extraTarget ? [.init(target: .subscription(sourceID), personalProfileID: providerProfile ? nil : personal.id), .init(target: .subscription(otherSourceID), personalProfileID: other.id)] : []
         try store.save(AppSnapshot(savedConnections: [connection], subscriptionSources: [source] + (extraTarget ? [otherSource] : []), selectedConnectionID: connection.id, proxyEndpoint: .default, connectionMode: .tun, splitTunnelProfiles: profiles, tunnelAssignments: assignments))
-        let provider = MCPTestProvider(connected: connected)
+        provider = MCPTestProvider(connected: connected)
+        let provider = self.provider
+        let responseData = Data(config.rawLink.utf8)
+        let responseURL = URL(string: source.urlString)!
         model = AppViewModel(parser: ConnectionLinkParser(), store: store,
                              connectionProviderFactory: .init(systemProxyProvider: { provider }, tunProvider: { provider }),
                              leakGuard: LeakGuardService(isEnabled: false, log: log),
-                             subscriptionClient: SubscriptionClient(loadResponse: { _ in throw SubscriptionError.networkFailure("Offline fixture") }),
+                             subscriptionClient: SubscriptionClient(loadResponse: { _ in
+                                 guard let routingHeader else { throw SubscriptionError.networkFailure("Offline fixture") }
+                                 return (responseData, HTTPURLResponse(url: responseURL, statusCode: 200, httpVersion: nil, headerFields: ["routing": routingHeader])!)
+                             }),
                              healthProbeService: ConnectionHealthProbeService(), systemProxyService: SystemProxyService(fileManager: manager, log: log),
                              geodataUpdateCoordinator: GeodataUpdateCoordinator(service: GeodataUpdateService(fileManager: manager)), log: log)
     }
@@ -291,9 +353,14 @@ private final class MCPTestFileManager: FileManager, @unchecked Sendable {
 
 private final class MCPTestProvider: ConnectionProvider, @unchecked Sendable {
     let state: ConnectionState
+    private let lock = NSLock()
+    private var connects = 0
+    private var disconnects = 0
+    var connectCount: Int { lock.withLock { connects } }
+    var disconnectCount: Int { lock.withLock { disconnects } }
     init(connected: Bool) { state = connected ? .connected(.init(id: UUID(), mode: .tun, connectedAt: Date())) : .idle }
     func currentState() async -> ConnectionState { state }
     func stateUpdates() -> AsyncStream<ConnectionState> { AsyncStream { $0.yield(state); $0.finish() } }
-    func connect(_ request: ConnectionRequest) async throws {}
-    func disconnect() async throws {}
+    func connect(_ request: ConnectionRequest) async throws { lock.withLock { connects += 1 } }
+    func disconnect() async throws { lock.withLock { disconnects += 1 } }
 }
