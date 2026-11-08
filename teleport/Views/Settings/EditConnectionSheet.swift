@@ -13,6 +13,7 @@ struct EditConnectionSheet: View {
 
     @State private var nameDraft: String
     @State private var configurationDraft: String
+    @State private var importError: String?
     @FocusState private var isNameFieldFocused: Bool
 
     init(viewModel: AppViewModel, connection: SavedConnection) {
@@ -36,12 +37,10 @@ struct EditConnectionSheet: View {
                 .font(.caption.monospaced())
                 .lineLimit(6...16)
                 .onChange(of: configurationDraft) { _, _ in
-                    if viewModel.lastError != nil {
-                        viewModel.clearError()
-                    }
+                    importError = nil
                 }
 
-            if let error = viewModel.lastError {
+            if let error = importError {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(.red)
@@ -56,7 +55,6 @@ struct EditConnectionSheet: View {
                 Spacer()
 
                 Button("Cancel") {
-                    viewModel.clearError()
                     dismiss()
                 }
                 .keyboardShortcut(.cancelAction)
@@ -87,6 +85,9 @@ struct EditConnectionSheet: View {
 
         if viewModel.updateConnection(id: connection.id, from: configurationDraft) {
             dismiss()
+        } else {
+            // Capture this synchronous edit's error, not later connection failures.
+            importError = viewModel.lastError
         }
     }
 
@@ -103,7 +104,7 @@ struct EditConnectionSheet: View {
         }
 
         guard let contents = try? String(contentsOf: url, encoding: .utf8) else {
-            viewModel.reportImportFailure("That file is not readable as text")
+            importError = "That file is not readable as text"
             return
         }
 
