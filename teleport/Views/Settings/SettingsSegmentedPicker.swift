@@ -14,8 +14,17 @@ struct SettingsSegmentedPicker<Value: Hashable>: NSViewRepresentable {
         let control = NSSegmentedControl()
         control.trackingMode = .selectOne
         control.segmentDistribution = .fillEqually
+        control.segmentStyle = .texturedRounded
         control.controlSize = .regular
         control.font = .systemFont(ofSize: 13)
+        if #available(macOS 26.0, *) {
+            control.borderShape = .capsule
+        }
+        if #available(macOS 27.0, *), control.responds(to: NSSelectorFromString("setRole:")) {
+            // NSSegmentedControl.Role.tabs keeps the neutral glass selection.
+            // Use KVC so builds with the macOS 26 SDK also adopt it on macOS 27.
+            control.setValue(1, forKey: "role")
+        }
         control.target = context.coordinator
         control.action = #selector(SettingsSegmentedPickerCoordinator.select(_:))
         return control
