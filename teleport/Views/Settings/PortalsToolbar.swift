@@ -23,7 +23,7 @@ struct PortalsToolbar<ConnectionControl: View>: ToolbarContent {
                         .glassEffect(.regular.interactive(), in: Circle())
                 }
                 .padding(.trailing, 4)
-                .visibility(isActive)
+                .settingsToolbarItemVisibility(isActive)
             }
             .sharedBackgroundVisibility(.hidden)
         } else if isActive {
@@ -79,9 +79,13 @@ struct PortalsConnectionButton: View {
     }
 }
 
-private extension View {
-    func visibility(_ isActive: Bool) -> some View {
+extension View {
+    func settingsToolbarItemVisibility(_ isActive: Bool) -> some View {
         opacity(isActive ? 1 : 0)
+            // Keep the item and search state alive without reserving the expanded
+            // search's width on other pages. AppKit cannot measure zero-size items.
+            .frame(width: isActive ? nil : 1, height: 36)
+            .clipped()
             .disabled(!isActive)
             .allowsHitTesting(isActive)
             .accessibilityHidden(!isActive)
