@@ -157,9 +157,10 @@ private struct GeneralSettingsView: View {
                 } label: {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Connection mode")
-                        Text(modeDescription(for: viewModel.connectionMode))
-                            .font(.caption).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                        stableModeDescription(
+                            tun: modeDescription(for: .tun),
+                            systemProxy: modeDescription(for: .systemProxy)
+                        )
                     }
                 }
                 .disabled(!viewModel.canChangeSelection || viewModel.hasActiveConnectionSession)
@@ -170,10 +171,13 @@ private struct GeneralSettingsView: View {
                         set: { viewModel.setLeakGuardEnabled($0) }
                     )
                 ) {
-                    Text("Protect traffic during tunnel interruptions")
-                    Text(viewModel.connectionMode == .tun
-                        ? "Blocks apps from using your regular internet connection while the tunnel reconnects. Local network access and DNS remain available."
-                        : "Available in TUN mode.")
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Protect traffic during tunnel interruptions")
+                        stableModeDescription(
+                            tun: "Blocks apps from using your regular internet connection while the tunnel reconnects. Local network access and DNS remain available.",
+                            systemProxy: "Available in TUN mode."
+                        )
+                    }
                 }
                 .disabled(viewModel.connectionMode != .tun)
                 .help("If a hotel or airport sign-in page will not load, temporarily turn off tunnel protection.")
@@ -247,6 +251,21 @@ private struct GeneralSettingsView: View {
         }
         .formStyle(.grouped)
         .padding(.top, -20)
+    }
+
+    private func stableModeDescription(tun: String, systemProxy: String) -> some View {
+        // Measure both descriptions at the actual row width. Switching modes
+        // changes the visible text without shifting the sections below it.
+        ZStack(alignment: .topLeading) {
+            Text(tun)
+                .opacity(viewModel.connectionMode == .tun ? 1 : 0)
+                .accessibilityHidden(viewModel.connectionMode != .tun)
+            Text(systemProxy)
+                .opacity(viewModel.connectionMode == .systemProxy ? 1 : 0)
+                .accessibilityHidden(viewModel.connectionMode != .systemProxy)
+        }
+        .font(.caption).foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private func modeDescription(for mode: ConnectionMode) -> String {
