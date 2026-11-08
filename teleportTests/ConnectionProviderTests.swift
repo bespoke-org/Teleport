@@ -366,7 +366,7 @@ final class ConnectionProviderTests: XCTestCase {
             await waitUntil("ready") { await MainActor.run { model.canConnect } }
             model.connect()
             await waitUntil("failed attempt finishes") {
-                await MainActor.run { model.connectionError != nil && !model.isOperationPending }
+                await MainActor.run { model.connectionError != nil && !model.isOperationPending && model.connectionState == .idle }
             }
             XCTAssertEqual(model.connectionState, .idle)
             XCTAssertFalse(model.canDisconnect, "The power button must offer Connect after a failed attempt")
@@ -376,7 +376,7 @@ final class ConnectionProviderTests: XCTestCase {
             backend.startError = nil
             // The same action used by the menu bar and Portals power buttons.
             if model.canDisconnect { model.disconnect() } else { model.connect() }
-            await waitUntil("next power action finishes") { await MainActor.run { !model.isOperationPending } }
+            await waitUntil("next power action finishes") { await MainActor.run { model.isConnected && !model.isOperationPending } }
             XCTAssertTrue(model.isConnected, "One click should retry, not merely acknowledge the failure")
             XCTAssertEqual(backend.recordedCalls(), ["start", "start"])
             model.disconnect()
@@ -436,7 +436,7 @@ final class ConnectionProviderTests: XCTestCase {
             await waitUntil("ready") { await MainActor.run { model.canConnect } }
             model.connect()
             await waitUntil("failure displayed") {
-                await MainActor.run { model.connectionError != nil && !model.isOperationPending }
+                await MainActor.run { model.connectionError != nil && !model.isOperationPending && model.connectionState == .idle }
             }
             XCTAssertEqual(model.connectionError, ConnectionFailure(error: error))
             XCTAssertEqual(model.lastError, model.connectionError?.summary)
@@ -455,7 +455,7 @@ final class ConnectionProviderTests: XCTestCase {
             // The same failure on a later attempt must be visible again.
             model.connect()
             await waitUntil("repeated failure displayed") {
-                await MainActor.run { model.connectionError != nil && !model.isOperationPending }
+                await MainActor.run { model.connectionError != nil && !model.isOperationPending && model.connectionState == .idle }
             }
             backend.startError = nil
             model.connect()

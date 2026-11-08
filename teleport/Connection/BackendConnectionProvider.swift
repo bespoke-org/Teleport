@@ -142,7 +142,6 @@ nonisolated final class BackendConnectionProvider: ConnectionProvider, @unchecke
     }
 
     func connect(_ request: ConnectionRequest) async throws {
-        try Task.checkCancellation()
         stopSupervising()
         // Register cancellation ownership before the queue's first suspension.
         let id = UUID()
@@ -151,7 +150,6 @@ nonisolated final class BackendConnectionProvider: ConnectionProvider, @unchecke
         defer { _ = connectLock.withLock { connectAttempts.removeValue(forKey: id) } }
         try await withTaskCancellationHandler {
             let task = await operationQueue.register { [weak self, backend, stateStore, mode, verifyConnection] in
-                try attempt.checkCancellation()
                 let previousState = stateStore.current()
                 stateStore.update(.preparing)
                 stateStore.update(.connecting)
@@ -165,6 +163,9 @@ nonisolated final class BackendConnectionProvider: ConnectionProvider, @unchecke
                 }
                 var startedSession = false
                 do {
+                    // Even an already-cancelled attempt must reconcile an owned
+                    // recovery snapshot through the failure cleanup below.
+                    try attempt.checkCancellation()
                     if case .connected = previousState {
                         try await backend.reconnect(request, reportPhase: reportPhase)
                     } else {
