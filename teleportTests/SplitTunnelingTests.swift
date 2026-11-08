@@ -886,6 +886,11 @@ final class SplitTunnelingTests: XCTestCase {
         XCTAssert(XrayTunRouteInspector.detectedVPNInterface(inRouteLookups: [physicalLookup]) == nil)
         XCTAssert(XrayTunRouteInspector.detectedVPNInterface(inRouteLookups: [physicalLookup, splitVPNLookup]) == "utun4")
         XCTAssert(XrayTunRouteInspector.detectedVPNInterface(inRouteLookups: [ipv6VPNLookup]) == "utun7")
+        let inspector = XrayTunRouteInspector(runCommand: { _, arguments in
+            arguments.contains("-inet6") ? ipv6VPNLookup : splitVPNLookup
+        })
+        XCTAssertEqual(Set(inspector.existingVPNDefaultRouteInterfaces()), ["utun4", "utun7"],
+            "Recovery must see a second VPN even when Teleport owns the first matching route")
     }
 
     func testTunnelSniffingIncludesQUIC() throws {

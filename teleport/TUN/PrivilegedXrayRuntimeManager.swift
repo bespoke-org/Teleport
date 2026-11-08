@@ -55,6 +55,45 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
         try await ensureHelperInstalled(runtimeURL, onInstallingHelper)
     }
 
+    /// Explicit Connect may replace a session left by a previous app/helper.
+    /// The authenticated helper's root-owned state, not the app's cache, decides
+    /// which interface belongs to Teleport. Call after renewing helper approval.
+    /// Returns whether a previous session's state was removed.
+    @discardableResult
+    func recoverPreviousSession(existingVPNInterfaces: [String], beforeStopping: () async -> Void = {}) async throws -> Bool {
+        try Task.checkCancellation()
+        let status = try await helperClient.status()
+        guard status.version == PrivilegedHelperClient.expectedVersion else {
+            throw PrivilegedHelperClientError.incompatibleService("Update Teleport's privileged helper before connecting.", nil)
+        }
+        if let existingVPNInterface = existingVPNInterfaces.first(where: {
+            status.phase != .running || status.tunnelInterfaceName != $0
+        }) {
+            throw XrayTunConnectionError.existingVPNDetected(existingVPNInterface)
+        }
+        if status.phase == .idle && status.tunnelInterfaceName == nil && status.outboundInterface == nil {
+            let hadCachedSession = fileManager.fileExists(atPath: paths.sessionStateFileURL.path)
+            removeSessionState()
+            return hadCachedSession
+        }
+        guard status.phase == .running || status.phase == .idle,
+              status.tunnelInterfaceName != nil,
+              let outboundInterface = status.outboundInterface else {
+            throw PrivilegedHelperClientError.indeterminateStatus(
+                "Teleport could not identify its previous tunnel. Try connecting again after the helper finishes its current operation."
+            )
+        }
+        if status.phase == .running { await beforeStopping() }
+        try Task.checkCancellation()
+        // A restarted helper loses its in-memory UUID. Its root-owned config and
+        // validated process identify the old session; this UUID identifies the
+        // cleanup request. The dispatcher rejects it if a newer session began.
+        let sessionID = status.sessionID ?? UUID()
+        TeleportLog.shared.info(Self.subsystem, "recovering a previous Teleport tunnel before connecting")
+        try await stopSession(sessionID: sessionID, protectedHosts: nil, outboundInterface: outboundInterface)
+        return true
+    }
+
     func start(session: XrayTunLaunchSession) async throws {
         try fileManager.createDirectory(at: paths.stateDirectoryURL, withIntermediateDirectories: true)
 

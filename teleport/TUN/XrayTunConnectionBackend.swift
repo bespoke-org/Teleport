@@ -30,10 +30,35 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
     func restorePreviousState() throws {}
 
     func start(_ request: ConnectionRequest, reportPhase: @escaping @Sendable (ConnectionState) -> Void) async throws {
-        try await start(request, resolvedEndpoints: [:], reportPhase: reportPhase)
+        // A previous build may still own the default tunnel and no longer accept
+        // this app's signature. Repair authorization before treating that tunnel
+        // as a VPN conflict, then let the helper tear down only its own session.
+        try Task.checkCancellation()
+        try await runtimeManager.prepareHelper { reportPhase(.awaitingUserApproval) }
+        reportPhase(.connecting)
+        try Task.checkCancellation()
+        let existingVPNInterfaces = await BlockingWork.run { [routeInspector] in
+            routeInspector.existingVPNDefaultRouteInterfaces()
+        }
+        var resolvedEndpoints: [String: [String]] = [:]
+        let recovered = try await runtimeManager.recoverPreviousSession(existingVPNInterfaces: existingVPNInterfaces) {
+            resolvedEndpoints = await self.resolveEndpointsBeforeStopping(request)
+        }
+        do {
+            try await start(request, resolvedEndpoints: resolvedEndpoints, helperPrepared: true, reportPhase: reportPhase)
+        } catch {
+            // Recovery removed the old tunnel even if DNS/preflight or cancellation
+            // prevents its replacement. Release that session's proxy snapshot too.
+            if recovered {
+                try? await BlockingWork.run { [systemProxyService] in
+                    try systemProxyService.restoreSavedProxyState()
+                }
+            }
+            throw error
+        }
     }
 
-    private func start(_ request: ConnectionRequest, resolvedEndpoints: [String: [String]],
+    private func start(_ request: ConnectionRequest, resolvedEndpoints: [String: [String]], helperPrepared: Bool = false,
                        reportPhase: @escaping @Sendable (ConnectionState) -> Void) async throws {
         // The pre-flight below reads routes and resolves names but changes nothing
         // on the machine, so a disconnect or quit that arrives meanwhile may cancel
@@ -97,13 +122,14 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
             cancellation.cancel()
         }
 
-        // Still before the commit point: an installed helper is not session state
-        // and needs no undoing, and the administrator prompt it may put up is a
-        // wait the user can cancel out of. After the route checks, so a network
-        // that cannot reach the server does not ask for a password first.
+        // Connect prepared the helper before recovery. Reconnect has already
+        // stopped its identified session, so it can defer preparation until here.
+        // The administrator prompt is still a wait the user can cancel out of.
         try Task.checkCancellation()
-        try await runtimeManager.prepareHelper {
-            reportPhase(.awaitingUserApproval)
+        if !helperPrepared {
+            try await runtimeManager.prepareHelper {
+                reportPhase(.awaitingUserApproval)
+            }
         }
         reportPhase(.connecting)
 
@@ -144,13 +170,30 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
     }
 
     func reconnect(_ request: ConnectionRequest, reportPhase: @escaping @Sendable (ConnectionState) -> Void) async throws {
+        let resolvedEndpoints = await resolveEndpointsBeforeStopping(request)
+        // Cancellation still tears down the old session before the provider
+        // reports idle. start() observes cancellation before any new mutation.
+        try await runtimeManager.stop()
+        do {
+            try await start(request, resolvedEndpoints: resolvedEndpoints, reportPhase: reportPhase)
+        } catch is CancellationError {
+            // The old tunnel is already gone and its proxy snapshot still held, so
+            // a cancelled pre-flight here has something to put back after all.
+            try? await BlockingWork.run { [systemProxyService] in
+                try systemProxyService.restoreSavedProxyState()
+            }
+            throw CancellationError()
+        }
+    }
+
+    private func resolveEndpointsBeforeStopping(_ request: ConnectionRequest) async -> [String: [String]] {
         // The running tunnel owns the system's preferred resolver. Resolve the
         // next endpoints while that resolver can still answer, then retain those
         // answers for this attempt. macOS may keep querying the old resolver
         // briefly after the helper removes it. Routes must still be inspected
         // after teardown so none of the old tunnel's routes are reused.
         let cancellation = CancellationFlag()
-        let resolvedEndpoints = await withTaskCancellationHandler {
+        return await withTaskCancellationHandler {
             await BlockingWork.run { [routeInspector] in
                 var answers: [String: [String]] = [:]
                 var seen: Set<String> = []
@@ -169,19 +212,6 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
             }
         } onCancel: {
             cancellation.cancel()
-        }
-        // Cancellation still tears down the old session before the provider
-        // reports idle. start() observes cancellation before any new mutation.
-        try await runtimeManager.stop()
-        do {
-            try await start(request, resolvedEndpoints: resolvedEndpoints, reportPhase: reportPhase)
-        } catch is CancellationError {
-            // The old tunnel is already gone and its proxy snapshot still held, so
-            // a cancelled pre-flight here has something to put back after all.
-            try? await BlockingWork.run { [systemProxyService] in
-                try systemProxyService.restoreSavedProxyState()
-            }
-            throw CancellationError()
         }
     }
 
