@@ -118,7 +118,9 @@ final class SettingsSelectionTests: XCTestCase {
         NSApp.postEvent(try event(.leftMouseUp), atStart: true)
         window.sendEvent(try event(.leftMouseDown))
         if let pending = NSApp.nextEvent(matching: .leftMouseUp, until: .distantPast, inMode: .default, dequeue: true) {
-            NSApp.sendEvent(pending)
+            // The down event goes straight to the fixture window. Deliver its
+            // matching up there too, even when the hostless app is inactive.
+            window.sendEvent(pending)
         }
     }
 
