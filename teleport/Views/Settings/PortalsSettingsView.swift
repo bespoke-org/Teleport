@@ -380,7 +380,7 @@ struct PortalsSettingsView: View {
                     }
                 }
             }
-            if let error = viewModel.subscriptionGeodataError(source.id) ?? source.lastError {
+            if expanded, let error = viewModel.subscriptionGeodataError(source.id) ?? source.lastError {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(.orange)
