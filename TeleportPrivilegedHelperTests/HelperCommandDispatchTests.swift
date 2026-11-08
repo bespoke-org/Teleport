@@ -627,6 +627,8 @@ final class HelperCommandDispatchTests: XCTestCase {
 
     private func assertMalformedFailure(_ data: Data, command: TUNHelperCommand) throws {
         switch command {
+        case .resolveEndpoint:
+            try assertFailure(data, as: ResolveEndpointResponse.self, code: .malformedPayload)
         case .status:
             try assertFailure(data, as: StatusResponse.self, code: .malformedPayload)
         case .startSession:

@@ -938,6 +938,8 @@ struct AppSnapshot: Codable, Equatable {
     /// session is meant to be carrying it. On by default: the windows it covers
     /// open without the user doing anything.
     var isLeakGuardEnabled: Bool
+    var allowsLocalNetwork: Bool
+    var localDNSDomains: [String]
     var geodataSettings: GeodataSourceSettings
     var tunnelAssignments: [TunnelProfileAssignment]
 
@@ -955,7 +957,9 @@ struct AppSnapshot: Codable, Equatable {
         splitTunnelProfiles: [SplitTunnelProfile] = [SplitTunnelProfile(name: "Default")],
         selectedSplitTunnelProfileID: UUID? = nil,
         isSplitTunnelEnabled: Bool = false,
-        isLeakGuardEnabled: Bool = false,
+        isLeakGuardEnabled: Bool = true,
+        allowsLocalNetwork: Bool = false,
+        localDNSDomains: [String] = [],
         geodataSettings: GeodataSourceSettings = GeodataSourceSettings(),
         tunnelAssignments: [TunnelProfileAssignment]? = nil
     ) {
@@ -973,6 +977,8 @@ struct AppSnapshot: Codable, Equatable {
         self.selectedSplitTunnelProfileID = selectedSplitTunnelProfileID ?? splitTunnelProfiles.first?.id
         self.isSplitTunnelEnabled = isSplitTunnelEnabled
         self.isLeakGuardEnabled = isLeakGuardEnabled
+        self.allowsLocalNetwork = allowsLocalNetwork
+        self.localDNSDomains = localDNSDomains
         self.geodataSettings = geodataSettings
         self.tunnelAssignments = tunnelAssignments ?? []
         if tunnelAssignments == nil {
@@ -999,6 +1005,8 @@ struct AppSnapshot: Codable, Equatable {
         case selectedSplitTunnelProfileID
         case isSplitTunnelEnabled
         case isLeakGuardEnabled
+        case allowsLocalNetwork
+        case localDNSDomains
         case geodataSettings
         case tunnelAssignments
     }
@@ -1031,8 +1039,10 @@ struct AppSnapshot: Codable, Equatable {
         }
 
         isSplitTunnelEnabled = try container.decodeIfPresent(Bool.self, forKey: .isSplitTunnelEnabled) ?? false
-        // A snapshot written before the guard existed gets it off, like a fresh one.
+        // Keep legacy protection preferences; fresh installations default to on.
         isLeakGuardEnabled = try container.decodeIfPresent(Bool.self, forKey: .isLeakGuardEnabled) ?? false
+        allowsLocalNetwork = try container.decodeIfPresent(Bool.self, forKey: .allowsLocalNetwork) ?? false
+        localDNSDomains = try container.decodeIfPresent([String].self, forKey: .localDNSDomains) ?? []
         geodataSettings = try container.decodeIfPresent(GeodataSourceSettings.self, forKey: .geodataSettings) ?? GeodataSourceSettings()
         tunnelAssignments = try container.decodeIfPresent([TunnelProfileAssignment].self, forKey: .tunnelAssignments) ?? []
         if !container.contains(.tunnelAssignments) {

@@ -45,6 +45,10 @@ private final class FakeProxy: NSObject, TUNHelperXPCProtocol {
         return commands
     }
 
+    func resolveEndpoint(_ request: Data, withReply reply: @escaping (Data?, NSError?) -> Void) {
+        invoke(.resolveEndpoint, request: request, reply: reply)
+    }
+
     func getStatus(_ request: Data, withReply reply: @escaping (Data?, NSError?) -> Void) {
         invoke(.status, request: request, reply: reply)
     }
@@ -119,6 +123,9 @@ private final class FakeConnection: TUNHelperXPCConnection, @unchecked Sendable 
         defer { lock.unlock() }
         guard let configuredInterface else { return false }
         let methods = [
+            #selector(TUNHelperXPCProtocol.resolveEndpoint(_:withReply:)),
+            #selector(TUNHelperXPCProtocol.engageLeakGuard(_:withReply:)),
+            #selector(TUNHelperXPCProtocol.releaseLeakGuard(_:withReply:)),
             #selector(TUNHelperXPCProtocol.getStatus(_:withReply:)),
             #selector(TUNHelperXPCProtocol.startSession(_:withReply:)),
             #selector(TUNHelperXPCProtocol.stopSession(_:withReply:)),

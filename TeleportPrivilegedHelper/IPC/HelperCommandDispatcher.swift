@@ -103,6 +103,13 @@ actor HelperCommandDispatcher {
 
         do {
             switch command {
+            case .resolveEndpoint:
+                let request: TUNHelperRequestEnvelope<ResolveEndpointRequest> = try TUNHelperCodec.decodeRequest(requestData)
+                return try await execute(command: command, requestID: request.requestID,
+                                         responseSessionID: nil, usesObservedSessionID: false,
+                                         successfulSessionID: nil, fingerprint: fingerprint) { [executor] in
+                    try executor.resolveEndpoint(request: request.payload)
+                }
             case .status:
                 let request: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(requestData)
                 let projectedSessionID = queuedSessionID ?? observedSessionID
@@ -350,6 +357,8 @@ actor HelperCommandDispatcher {
         let requestID = metadata?.requestID ?? UUID()
         let sessionID = metadata?.sessionID
         switch command {
+        case .resolveEndpoint:
+            return Self.encodeFailure(requestID: requestID, sessionID: sessionID, payloadType: ResolveEndpointResponse.self, failure: failure)
         case .status:
             return Self.encodeFailure(requestID: requestID, sessionID: sessionID, payloadType: StatusResponse.self, failure: failure)
         case .startSession:
@@ -415,6 +424,8 @@ actor HelperCommandDispatcher {
 
         let allowedPayloadKeys: Set<String>
         switch command {
+        case .resolveEndpoint:
+            allowedPayloadKeys = ["host", "interface"]
         case .status:
             allowedPayloadKeys = []
         case .startSession:
@@ -432,7 +443,7 @@ actor HelperCommandDispatcher {
         case .readDiagnostics:
             allowedPayloadKeys = ["log", "maximumBytes"]
         case .engageLeakGuard:
-            allowedPayloadKeys = ["tunnelInterfaceName", "protectedHosts", "leaseSeconds"]
+            allowedPayloadKeys = ["tunnelInterfaceName", "protectedHosts", "leaseSeconds", "policy"]
         case .releaseLeakGuard:
             allowedPayloadKeys = []
         }

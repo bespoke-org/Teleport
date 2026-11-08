@@ -12,7 +12,7 @@ import Foundation
 /// so.
 ///
 /// One owner of the stage and one renewal loop: the guard the helper holds always
-/// matches the last stage set here, and the helper releases it if this loop stops.
+/// matches the last stage set here. Missed heartbeats tighten it to standby.
 actor LeakGuardService {
     /// Comfortably inside the helper's lease, so an ordinary hiccup — a busy
     /// machine, one dropped XPC call — never expires a guard that is still wanted.
@@ -23,11 +23,9 @@ actor LeakGuardService {
     private let log: TeleportLog
     private var stage: LeakGuardRuleset.Stage?
     private var protectedHosts: [String] = []
-    /// Servers opened for the duration of a health check. Held apart from
-    /// `protectedHosts` so that re-arming a stage never inherits them and a probe
-    /// that ends always takes its own path back down with it.
-    private var probeExemptions = ProbeHostExemptions()
+    private var policy = LeakGuardPolicy()
     private var isEnabled: Bool
+    private(set) var lastError: String?
     private var renewalTask: Task<Void, Never>?
     /// Last confirmed helper state, independent of the user's setting or wanted stage.
     private var isGuardHeld = false
@@ -41,52 +39,52 @@ actor LeakGuardService {
         self.log = log
     }
 
-    /// Turning the guard off releases whatever is held now: a user who switches it
-    /// off while a session runs is asking for the machine to stop being filtered,
-    /// not for the change to take effect at some later reconnect.
-    func setEnabled(_ isEnabled: Bool) async {
-        guard self.isEnabled != isEnabled else { return }
-        self.isEnabled = isEnabled
-        if isEnabled {
-            // The stage survived being turned off, so turning it back on protects
-            // the session already running rather than only the next one.
-            if stage != nil { try? await engage() }
-        } else {
-            await releaseHeldGuard()
+    /// Loading a preference must never release protection left by a crashed app.
+    func configure(isEnabled: Bool) { self.isEnabled = isEnabled }
+
+    func setEnabled(_ enabled: Bool) async {
+        isEnabled = enabled
+        if !enabled { await disarm() }
+    }
+
+    /// Required before resolving endpoints or changing routes. Failure aborts start.
+    func armBootstrap() async throws {
+        stage = .standby
+        policy = .init()
+        guard isEnabled else { return }
+        try await engage()
+    }
+
+    func armStandby() async {
+        do { try await armBootstrap() }
+        catch {
+            lastError = error.localizedDescription
+            log.error(Self.subsystem, "could not arm protection: \(LogFormat.error(error))")
         }
     }
 
-    /// The tunnel that existed has just been torn down, or is about to be. The
-    /// proxy servers stay allowed: a standby exists between two sessions to the
-    /// same servers, and blocking them would leave nothing able to rebuild one.
-    ///
-    /// Failure is logged rather than thrown — this runs on teardown paths with no
-    /// operation to fail, and the connect that follows fails closed on its own.
-    func armStandby() async {
-        stage = .standby
-        guard isEnabled else { return }
-        do {
-            try await engage()
-        } catch {
-            log.error(Self.subsystem, "could not arm the leak guard: \(LogFormat.error(error))")
-        }
+    func resolveEndpoint(host: String, interface: String) async throws -> [String] {
+        try await client.resolveEndpoint(host: host, interface: interface)
+    }
+
+    func status() async throws -> Bool {
+        let held = try await client.status().isLeakGuardEngaged
+        updateHolding(held)
+        return held
     }
 
     /// A session is about to own `tunnelInterface`. Throws so the connect that asked
     /// for it fails: a guard that silently did not engage is worse than none, because
     /// the user believes the window is closed.
-    func armForSession(tunnelInterface: String, protectedHosts: [String]) async throws {
+    func armForSession(tunnelInterface: String, protectedHosts: [String], policy: LeakGuardPolicy = .init()) async throws {
+        self.policy = policy
         self.protectedHosts = protectedHosts
         stage = .session(tunnelInterface: tunnelInterface)
         guard isEnabled else { return }
         try await engage()
     }
 
-    /// Whether the uplink is filtered right now, which is what makes a health probe
-    /// need a path opened before it can ask anything.
-    var isHoldingUplink: Bool {
-        isEnabled && stage != nil
-    }
+    var isHoldingUplink: Bool { isGuardHeld || (isEnabled && stage != nil) }
 
     func holdingUpdates() -> AsyncStream<Bool> {
         AsyncStream { continuation in
@@ -109,44 +107,10 @@ actor LeakGuardService {
         for continuation in holdingContinuations.values { continuation.yield(held) }
     }
 
-    /// Opens the addresses of a server a health check is about to question, and
-    /// closes them again when it is done.
-    ///
-    /// Failure is logged rather than thrown: a check is diagnostics, and must not
-    /// fail the app over a path it could not open. A path that could not be closed
-    /// is bounded by the helper's lease, which the renewal loop re-establishes from
-    /// the set held here.
-    func retainProbeHosts(_ addresses: [String]) async -> Bool {
-        guard probeExemptions.canRetain(addresses, protectedHosts: protectedHosts) else { return false }
-        guard probeExemptions.retain(addresses) else { return true }
-        guard isEnabled, stage != nil else { return true }
-        do {
-            try await engage()
-            return true
-        } catch {
-            _ = probeExemptions.release(addresses)
-            log.warn(Self.subsystem, "could not open a path for a health check: \(LogFormat.error(error))")
-            return false
-        }
-    }
-
-    func releaseProbeHosts(_ addresses: [String]) async {
-        guard probeExemptions.release(addresses) else { return }
-        await reengageForProbeHosts()
-    }
-
-    private func reengageForProbeHosts() async {
-        guard isEnabled, stage != nil else { return }
-        do {
-            try await engage()
-        } catch {
-            log.warn(Self.subsystem, "could not open a path for a health check: \(LogFormat.error(error))")
-        }
-    }
 
     /// The guard is no longer wanted at all: no stage is left to come back to.
     func disarm() async {
-        guard stage != nil || isGuardHeld else { return }
+        // A previous process may have left persistent protection behind.
         stage = nil
         await releaseHeldGuard()
     }
@@ -157,9 +121,10 @@ actor LeakGuardService {
         do {
             try await client.releaseLeakGuard()
             updateHolding(false)
+            lastError = nil
         } catch {
-            // The helper's lease releases it shortly anyway, which is the whole
-            // reason the lease exists.
+            lastError = error.localizedDescription
+            // Keep failure visible: persistent protection is never timed out open.
             log.warn(Self.subsystem, "could not release the leak guard: \(LogFormat.error(error))")
         }
     }
@@ -175,10 +140,11 @@ actor LeakGuardService {
         }
         try await client.engageLeakGuard(
             tunnelInterfaceName: tunnelInterfaceName,
-            protectedHosts: probeExemptions.hostsForGuard(protectedHosts: protectedHosts),
-            leaseSeconds: Self.leaseSeconds
+            protectedHosts: protectedHosts,
+            leaseSeconds: Self.leaseSeconds, policy: policy
         )
         updateHolding(true)
+        lastError = nil
         startRenewing()
     }
 

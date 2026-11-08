@@ -145,6 +145,7 @@ struct SettingsSectionIcon: View {
 
 private struct GeneralSettingsView: View {
     @ObservedObject var viewModel: AppViewModel
+    @State private var localDNSDraft = ""
 
     var body: some View {
         Form {
@@ -172,13 +173,33 @@ private struct GeneralSettingsView: View {
                         set: { viewModel.setLeakGuardEnabled($0) }
                     )
                 ) {
-                    Text("Protect traffic during tunnel interruptions")
+                    Text("Protect traffic when the tunnel fails")
                     Text(viewModel.connectionMode == .tun
-                        ? "Blocks apps from using your regular internet connection while the tunnel reconnects. Local network access and DNS remain available."
+                        ? "Blocks direct internet access before connecting and after a crash. Public DNS uses the tunnel. Automatic server checks are paused. Explicit Disconnect or normal Quit restores access."
                         : "Available in TUN mode.")
                 }
-                .disabled(viewModel.connectionMode != .tun)
-                .help("If a hotel or airport sign-in page will not load, temporarily turn off tunnel protection.")
+                .disabled(viewModel.connectionMode != .tun || viewModel.hasActiveConnectionSession)
+
+                Toggle("Allow local network access", isOn: Binding(
+                    get: { viewModel.allowsLocalNetwork }, set: { viewModel.setAllowsLocalNetwork($0) }
+                ))
+                .disabled(viewModel.connectionMode != .tun || viewModel.hasActiveConnectionSession)
+                .help("Allows applications to contact devices on private networks. Ordinary DNS remains blocked outside Xray.")
+
+                HStack {
+                    TextField("Local DNS zones (home.arpa, corp.example)", text: $localDNSDraft)
+                    Button("Apply zones") { viewModel.setLocalDNSDomains(localDNSDraft) }
+                }
+                .disabled(viewModel.connectionMode != .tun || viewModel.hasActiveConnectionSession)
+                .onAppear { localDNSDraft = viewModel.localDNSDomains.joined(separator: ", ") }
+                Text("Only these zones use your network's DNS. They never fall back to public DNS; other names never fall back to local DNS.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text(viewModel.protectionStatus).font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Button("Check protection") { viewModel.refreshProtectionStatus() }
+                    Button("Disconnect and restore direct access") { viewModel.disconnect() }
+                        .disabled(viewModel.hasActiveConnectionSession || viewModel.isDisconnecting)
+                }
             } header: {
                 Text("Connection")
             } footer: {

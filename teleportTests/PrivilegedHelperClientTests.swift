@@ -93,6 +93,10 @@ private final class LostStopReplyProxy: NSObject, TUNHelperXPCProtocol, @uncheck
         reply(nil, NSError(domain: "test", code: 1))
     }
 
+    func resolveEndpoint(_ request: Data, withReply reply: @escaping (Data?, NSError?) -> Void) {
+        reply(nil, NSError(domain: "test.unexpected-resolve", code: 1))
+    }
+
     func getStatus(_ request: Data, withReply reply: @escaping (Data?, NSError?) -> Void) {
         lock.withLock { statusCalls += 1 }
         do {
@@ -236,7 +240,7 @@ final class PrivilegedHelperClientTests: XCTestCase {
         let configuration = try ConnectionLinkParser().parse(
             "vless://123e4567-e89b-12d3-a456-426614174000@next.invalid:443?security=none&type=tcp")
         let request = ConnectionRequest(defaultConnection: .init(id: UUID(), configuration: configuration),
-            localProxy: .default, splitTunnelPolicy: .init(rules: [], defaultAction: .proxy))
+            localProxy: .default, splitTunnelPolicy: .init(rules: [], defaultAction: .proxy), usesLeakGuard: false)
         let attempt = Task {
             if cancelBeforeStart { withUnsafeCurrentTask { $0?.cancel() } }
             try await provider.connect(request)
@@ -309,7 +313,7 @@ final class PrivilegedHelperClientTests: XCTestCase {
             "vless://123e4567-e89b-12d3-a456-426614174000@next.example.test:443?security=none&type=tcp"
         )
         let request = ConnectionRequest(defaultConnection: .init(id: UUID(), configuration: configuration),
-                                        localProxy: .default, splitTunnelPolicy: .init(rules: [], defaultAction: .proxy))
+                                        localProxy: .default, splitTunnelPolicy: .init(rules: [], defaultAction: .proxy), usesLeakGuard: false)
         do {
             let task = Task { try await backend.reconnect(request, reportPhase: { _ in }) }
             if cancelBeforeReconnect { task.cancel() }
@@ -370,7 +374,7 @@ final class PrivilegedHelperClientTests: XCTestCase {
         let configuration = try ConnectionLinkParser().parse(
             "vless://123e4567-e89b-12d3-a456-426614174000@next.invalid:443?security=none&type=tcp")
         let request = ConnectionRequest(defaultConnection: .init(id: UUID(), configuration: configuration),
-            localProxy: .default, splitTunnelPolicy: .init(rules: [], defaultAction: .proxy))
+            localProxy: .default, splitTunnelPolicy: .init(rules: [], defaultAction: .proxy), usesLeakGuard: false)
         do {
             try await backend.start(request, reportPhase: { _ in })
             XCTFail("Expected the synthetic DNS lookup to fail")
@@ -416,7 +420,7 @@ final class PrivilegedHelperClientTests: XCTestCase {
         let configuration = try ConnectionLinkParser().parse(
             "vless://123e4567-e89b-12d3-a456-426614174000@next.invalid:443?security=none&type=tcp")
         let request = ConnectionRequest(defaultConnection: .init(id: UUID(), configuration: configuration),
-            localProxy: .default, splitTunnelPolicy: .init(rules: [], defaultAction: .proxy))
+            localProxy: .default, splitTunnelPolicy: .init(rules: [], defaultAction: .proxy), usesLeakGuard: false)
         do {
             try await backend.start(request, reportPhase: { _ in })
             XCTFail("Expected to stop at the synthetic route failure")
@@ -424,6 +428,27 @@ final class PrivilegedHelperClientTests: XCTestCase {
             // The cached answer reached routing despite DNS disappearing on stop.
         } catch { XCTFail("Recovery lost the previous tunnel's DNS answer: \(error)") }
         XCTAssertEqual(network.events, ["resolve", "stop"])
+    }
+
+    func testRecoveryDoesNotStopTheOldTunnelWhenProtectionFails() async throws {
+        enum ProtectionFailure: Error { case rejected }
+        let paths = try temporaryRuntimePaths(named: "recovery-protection-failure")
+        defer { removeTemporaryRuntimePaths(paths) }
+        let sessionID = UUID()
+        let transport = ScriptedTransport { command, data, _, _ in
+            XCTAssertEqual(command, .status, "a failed guard must prevent the stop mutation")
+            let request: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(data)
+            return try response(requestID: request.requestID, sessionID: sessionID,
+                payload: StatusResponse(helperVersion: PrivilegedHelperClient.expectedVersion, phase: .running,
+                    summary: nil, details: nil, tunnelInterfaceName: "utun10", outboundInterface: "en0"))
+        }
+        let manager = PrivilegedXrayRuntimeManager(helperClient: PrivilegedHelperClient(transport: transport), paths: paths,
+            runtimeURLProvider: { URL(fileURLWithPath: "/tmp/test-xray") }, ensureHelperInstalled: { _, _ in })
+        do {
+            _ = try await manager.recoverPreviousSession(existingVPNInterfaces: ["utun10"]) { throw ProtectionFailure.rejected }
+            XCTFail("Expected failed protection to abort recovery")
+        } catch ProtectionFailure.rejected {}
+        XCTAssertEqual(transport.calls.map(\.0), [.status])
     }
 
     func testConnectRecoveryUsesHelperOwnershipAfterHelperRestart() async throws {
@@ -605,6 +630,10 @@ final class PrivilegedHelperClientTests: XCTestCase {
         let sessionID = UUID()
         let transport = ScriptedTransport { command, data, _, _ in
             switch command {
+            case .resolveEndpoint:
+                let request: TUNHelperRequestEnvelope<ResolveEndpointRequest> = try TUNHelperCodec.decodeRequest(data)
+                return try response(requestID: request.requestID, sessionID: nil,
+                                    payload: ResolveEndpointResponse(addresses: ["203.0.113.10"]))
             case .status:
                 let request: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(data)
                 return try response(
@@ -662,6 +691,8 @@ final class PrivilegedHelperClientTests: XCTestCase {
 
         let status = try await client.status()
         XCTAssert(status.success && status.version == "8" && status.phase == .idle)
+        let addresses = try await client.resolveEndpoint(host: "proxy.example", interface: "en0")
+        XCTAssertEqual(addresses, ["203.0.113.10"])
         let diagnostics = try await client.readLog(logName: "xray-tun.log", maxBytes: Int.max)
         XCTAssert(diagnostics.success && diagnostics.details == "diagnostic")
         let config = try await client.readLog(logName: "xray-tun-config.json", maxBytes: Int.max)
@@ -676,10 +707,13 @@ final class PrivilegedHelperClientTests: XCTestCase {
         )
         try await client.releaseLeakGuard()
 
-        XCTAssert(transport.calls.map(\.0) == [.status, .readDiagnostics, .readDiagnostics, .startSession, .stopSession, .engageLeakGuard, .releaseLeakGuard])
-        XCTAssert(transport.calls.map(\.2) == [3, 5, 5, 20, 15, 10, 10])
+        XCTAssert(transport.calls.map(\.0) == [.status, .resolveEndpoint, .readDiagnostics, .readDiagnostics, .startSession, .stopSession, .engageLeakGuard, .releaseLeakGuard])
+        XCTAssert(transport.calls.map(\.2) == [3, 12, 5, 5, 20, 15, 10, 10])
         let requestIDs = try transport.calls.map { command, data, _ -> UUID in
             switch command {
+            case .resolveEndpoint:
+                let request: TUNHelperRequestEnvelope<ResolveEndpointRequest> = try TUNHelperCodec.decodeRequest(data)
+                return request.requestID
             case .status:
                 let request: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(data)
                 return request.requestID

@@ -58,6 +58,9 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var showsInDock: Bool
     @Published private(set) var connectsOnLaunch: Bool
     @Published private(set) var isLeakGuardEnabled: Bool
+    @Published private(set) var allowsLocalNetwork: Bool
+    @Published private(set) var localDNSDomains: [String]
+    @Published private(set) var protectionStatus = "Protection status has not been checked."
     @Published private(set) var splitTunnelProfiles: [SplitTunnelProfile]
     @Published private(set) var selectedSplitTunnelProfileID: UUID?
     @Published private(set) var isSplitTunnelEnabled: Bool
@@ -253,6 +256,8 @@ final class AppViewModel: ObservableObject {
         selectedSplitTunnelProfileID = snapshot.selectedSplitTunnelProfileID
         isSplitTunnelEnabled = snapshot.isSplitTunnelEnabled
         isLeakGuardEnabled = snapshot.isLeakGuardEnabled
+        allowsLocalNetwork = snapshot.allowsLocalNetwork
+        localDNSDomains = snapshot.localDNSDomains
         geodataSettings = snapshot.geodataSettings
         tunnelAssignments = snapshot.tunnelAssignments
         selectedTunnelTarget = nil
@@ -850,6 +855,7 @@ final class AppViewModel: ObservableObject {
         let previousProvider = connectionProvider
         connectionStateTask?.cancel()
         connectionMode = mode
+        if mode == .tun && isLeakGuardEnabled { healthProbeQueue.cancelAll() }
         connectionProvider = connectionProviderFactory.makeProvider(for: mode)
         connectionState = .idle
         hasObservedInitialConnectionState = false
@@ -900,12 +906,53 @@ final class AppViewModel: ObservableObject {
     }
 
     func setLeakGuardEnabled(_ isEnabled: Bool) {
-        guard isEnabled != isLeakGuardEnabled else { return }
+        guard !hasActiveConnectionSession, isEnabled != isLeakGuardEnabled else { return }
         isLeakGuardEnabled = isEnabled
+        if isEnabled { healthProbeQueue.cancelAll() }
         schedulePersist()
-        log.info(Self.subsystem, "leak guard turned \(isEnabled ? "on" : "off")")
         let leakGuard = leakGuard
-        Task { await leakGuard.setEnabled(isEnabled) }
+        Task { [weak self] in
+            await leakGuard.setEnabled(isEnabled)
+            if let error = await leakGuard.lastError { self?.setStoredError(error) }
+            self?.refreshProtectionStatus()
+        }
+    }
+
+    func setAllowsLocalNetwork(_ allowed: Bool) {
+        guard !hasActiveConnectionSession else { return }
+        allowsLocalNetwork = allowed
+        schedulePersist()
+    }
+
+    func setLocalDNSDomains(_ text: String) {
+        guard !hasActiveConnectionSession else { return }
+        let zones = text.lowercased().split { $0 == "," || $0.isWhitespace }.map(String.init)
+        guard zones.count <= 32, zones.allSatisfy({ zone in
+            zone.count <= 253 && zone.split(separator: ".", omittingEmptySubsequences: false).allSatisfy { label in
+                !label.isEmpty && label.count <= 63 && !label.hasPrefix("-") && !label.hasSuffix("-")
+                    && label.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }
+            }
+        }) else {
+            setStoredError("Enter up to 32 domain suffixes, such as home.arpa or corp.example, separated by commas.")
+            return
+        }
+        localDNSDomains = Array(Set(zones)).sorted()
+        schedulePersist()
+    }
+
+    func refreshProtectionStatus() {
+        let leakGuard = leakGuard
+        Task { [weak self] in
+            do {
+                let held = try await leakGuard.status()
+                self?.protectionStatus = held
+                    ? "Firewall protection is held. Disconnect explicitly to restore direct access."
+                    : "Firewall protection is not confirmed. If access remains blocked, use Disconnect and restore direct access."
+            } catch {
+                // Unknown is never displayed as released or protected.
+                self?.protectionStatus = "Protection status unavailable. Connect to update the helper, or use Remove helper in Advanced to recover direct access."
+            }
+        }
     }
 
     func setProxyEndpoint(httpPort: Int? = nil, socksPort: Int? = nil) {
@@ -1568,6 +1615,7 @@ final class AppViewModel: ObservableObject {
         let log = log
         let leakGuard = leakGuard
         let armStandby = isLeakGuardEnabled && connectionMode == .tun
+        let reportsProtectionErrors = connectionMode == .tun && (isLeakGuardEnabled || isLeakGuardHoldingUplink)
         Task.detached { [weak self] in
             // Complete guard changes before declaring the teardown finished.
             // These actor calls must also run while AppKit tracks an open menu.
@@ -1582,7 +1630,12 @@ final class AppViewModel: ObservableObject {
             }
             // A connect past its commit point may arm the guard while disconnect
             // waits behind it. Release last, even when the stop reports an error.
-            if releaseGuard { await leakGuard.disarm() }
+            if releaseGuard {
+                await leakGuard.disarm()
+                if failure == nil, reportsProtectionErrors, let message = await leakGuard.lastError {
+                    failure = NSError(domain: "Teleport.Protection", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+                }
+            }
             // Captured whether or not the disconnect reported success: routes and
             // proxy settings left behind by a failed teardown are exactly what this
             // dump exists to show.
@@ -1625,9 +1678,9 @@ final class AppViewModel: ObservableObject {
                 // tunnel's routes come out from under the machine.
                 await leakGuard.disarm()
             } else {
-                // The guard stays with the helper, whose lease flushes it; the
-                // proxy snapshot is restored on the next launch.
-                self?.log.warn(Self.subsystem, "teardown did not finish within \(teardownLimit); quitting with the session's cleanup left to the helper's lease and the next launch")
+                // The helper keeps the guard in standby after lease expiry;
+                // restoring direct access requires an explicit release.
+                self?.log.warn(Self.subsystem, "teardown did not finish within \(teardownLimit); quitting with leak protection held until an explicit release")
             }
             self?.connectionStateTask?.cancel()
             // Anything still queued would otherwise be lost exactly when the log
@@ -1744,7 +1797,7 @@ final class AppViewModel: ObservableObject {
     private func syncLeakGuardSetting() {
         let leakGuard = leakGuard
         let isEnabled = isLeakGuardEnabled
-        Task.detached { await leakGuard.setEnabled(isEnabled) }
+        Task.detached { await leakGuard.configure(isEnabled: isEnabled) }
     }
 
     /// The uncoalesced half of the path observer, and the only thing it is used
@@ -1900,6 +1953,7 @@ final class AppViewModel: ObservableObject {
             restoreDeferredProxyStateIfNeeded()
         }
         connectionState = state
+        if connectionMode == .tun { refreshProtectionStatus() }
 
         switch state {
         case let .failed(failure):
@@ -2023,6 +2077,7 @@ final class AppViewModel: ObservableObject {
         // runs, which is moments from now; the connected state can arrive seconds
         // later, by which time a roaming machine may already be on another one.
         sessionUplink = currentUplink()
+        if isLeakGuardEnabled && connectionMode == .tun { healthProbeQueue.cancelAll() }
         let request = makeConnectionRequest(configuration: configuration)
         let profile = tunnelProfile(for: savedConnections.first { $0.id == request.defaultConnection.id })
         let sources = connectionMode == .tun && profile?.isRoutingEnabled == true
@@ -2125,7 +2180,9 @@ final class AppViewModel: ObservableObject {
                 rules: rules,
                 defaultAction: profile?.isRoutingEnabled == true ? (profile?.defaultAction ?? .proxy) : .proxy
             ),
-            usesLeakGuard: isLeakGuardEnabled
+            usesLeakGuard: isLeakGuardEnabled,
+            allowsLocalNetwork: allowsLocalNetwork,
+            localDNSDomains: localDNSDomains.map { "domain:" + $0 }
         )
     }
 
@@ -2442,6 +2499,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private func enqueueHealthProbes(for ids: [UUID], force: Bool, priority: Bool) {
+        guard !(isLeakGuardEnabled && connectionMode == .tun) else { return }
         healthProbeQueue.enqueue(ids: ids, force: force, priority: priority)
     }
 
@@ -2631,6 +2689,8 @@ final class AppViewModel: ObservableObject {
             selectedSplitTunnelProfileID: selectedSplitTunnelProfileID,
             isSplitTunnelEnabled: isSplitTunnelEnabled,
             isLeakGuardEnabled: isLeakGuardEnabled,
+            allowsLocalNetwork: allowsLocalNetwork,
+            localDNSDomains: localDNSDomains,
             geodataSettings: geodataSettings,
             tunnelAssignments: tunnelAssignments
         )

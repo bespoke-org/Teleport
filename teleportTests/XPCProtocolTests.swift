@@ -2,6 +2,39 @@ import Foundation
 import XCTest
 
 final class XPCProtocolTests: XCTestCase {
+    func testProtectionRejectsRuleInjectionAndInvalidEndpoints() throws {
+        func encode(_ endpoint: LeakGuardEndpoint, interface: String = "utun9") throws {
+            _ = try TUNHelperCodec.encodeRequest(TUNHelperRequestEnvelope(
+                revision: TUNHelperProtocol.revision, requestID: UUID(), sessionID: nil,
+                payload: EngageLeakGuardRequest(tunnelInterfaceName: interface, protectedHosts: [], leaseSeconds: 180,
+                                               policy: .init(endpoints: [endpoint]))))
+        }
+        let valid = LeakGuardEndpoint(address: "203.0.113.7", transport: "udp", ports: "443,5000-5010")
+        XCTAssertNoThrow(try encode(valid))
+        for address in ["example.com", "any", "203.0.113.7\npass out all", "203.0.113.7\0ignored", "fe80::1%en0", ""] {
+            XCTAssertThrowsError(try encode(.init(address: address, transport: "tcp", ports: "443")))
+        }
+        for ports in ["", "0", "65536", "443,", "5000-4000", "443 } group 0", "-1", "1-2-3"] {
+            XCTAssertThrowsError(try encode(.init(address: valid.address, transport: "tcp", ports: ports)))
+        }
+        for interface in ["en0", "utun", "utun9 all\npass out all", "utun-1"] {
+            XCTAssertThrowsError(try encode(valid, interface: interface))
+        }
+    }
+
+    func testEndpointBootstrapIsAConstrainedRequest() throws {
+        for host in ["proxy.example", "vpn-2.example"] {
+            _ = try TUNHelperCodec.encodeRequest(TUNHelperRequestEnvelope(
+                revision: TUNHelperProtocol.revision, requestID: UUID(), sessionID: nil,
+                payload: ResolveEndpointRequest(host: host, interface: "en0")))
+        }
+        for host in ["", "https://example.com", "example.com&type=TXT", "-o/tmp/file", "a\nb"] {
+            XCTAssertThrowsError(try TUNHelperCodec.encodeRequest(TUNHelperRequestEnvelope(
+                revision: TUNHelperProtocol.revision, requestID: UUID(), sessionID: nil,
+                payload: ResolveEndpointRequest(host: host, interface: "en0"))))
+        }
+    }
+
     func testExactRevisionAndStartRoundTrip() throws {
         let requestID = UUID()
         let sessionID = UUID()

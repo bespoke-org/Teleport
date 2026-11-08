@@ -2,6 +2,7 @@ import Foundation
 
 nonisolated enum TUNHelperCommand: String, Codable, Sendable {
     case status
+    case resolveEndpoint
     case startSession
     case stopSession
     case readDiagnostics
@@ -98,20 +99,29 @@ nonisolated enum TUNHelperLog: String, Codable, Sendable {
 }
 
 /// Asks the helper to keep traffic off the physical uplink until it is released
-/// or the lease runs out.
+/// explicitly. Lease expiry tightens the filter to standby.
 ///
 /// `tunnelInterfaceName` is present only once a session owns one: before that
 /// there is no tunnel for traffic to legitimately leave through, and the guard is
 /// correspondingly stricter.
 nonisolated struct EngageLeakGuardRequest: Codable, Sendable, Equatable {
     let tunnelInterfaceName: String?
-    /// The numeric proxy-server addresses whose transport carries everything else
-    /// and so cannot itself be blocked.
+    /// Session endpoint metadata retained for correlation. Firewall exceptions
+    /// are defined exclusively by the typed endpoint policy below.
     let protectedHosts: [String]
-    /// How long the helper keeps the guard without hearing from this client again.
-    /// A client that stops renewing has stopped running, and the machine must not
-    /// stay off the network because of it.
+    /// How long session exceptions survive without a heartbeat. Expiry keeps
+    /// direct traffic blocked; only an explicit release removes protection.
     let leaseSeconds: Double
+    var policy: LeakGuardPolicy = .init()
+}
+
+nonisolated struct ResolveEndpointRequest: Codable, Sendable, Equatable {
+    var host: String
+    var interface: String
+}
+
+nonisolated struct ResolveEndpointResponse: Codable, Sendable, Equatable {
+    var addresses: [String]
 }
 
 nonisolated struct ReleaseLeakGuardRequest: Codable, Sendable, Equatable {}
@@ -132,6 +142,7 @@ nonisolated struct StatusResponse: Codable, Sendable, Equatable {
     let details: String?
     var tunnelInterfaceName: String? = nil
     var outboundInterface: String? = nil
+    var isLeakGuardEngaged: Bool = false
 }
 
 nonisolated struct StartSessionResponse: Codable, Sendable, Equatable {

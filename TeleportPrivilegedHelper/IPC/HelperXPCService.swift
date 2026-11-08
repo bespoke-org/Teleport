@@ -16,6 +16,10 @@ nonisolated final class HelperXPCService: NSObject, TUNHelperXPCProtocol {
         super.init()
     }
 
+    func resolveEndpoint(_ request: Data, withReply reply: @escaping (Data?, NSError?) -> Void) {
+        dispatch(.resolveEndpoint, request: request, reply: reply)
+    }
+
     func getStatus(_ request: Data, withReply reply: @escaping (Data?, NSError?) -> Void) {
         dispatch(.status, request: request, reply: reply)
     }
