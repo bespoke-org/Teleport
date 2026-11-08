@@ -51,7 +51,7 @@ struct SettingsView: View {
                     Color.clear.frame(width: 1, height: 1)
                 }
             }
-            SettingsErrorToolbar(viewModel: viewModel, onOpenLogs: { navigation.select(.logs) })
+            SettingsRecoveryToolbar(viewModel: viewModel)
             PortalsToolbar(state: $portalsState, isActive: navigation.section == .portals,
                            connection: PortalsConnectionButton(viewModel: viewModel))
             RoutingToolbar(viewModel: viewModel, isActive: navigation.section == .tunnel,
@@ -160,18 +160,19 @@ private struct GeneralSettingsView: View {
                         get: { viewModel.connectionMode }, set: viewModel.selectConnectionMode
                     ), choices: ConnectionMode.allCases.map {
                         SettingsChoice(value: $0, title: $0.displayName)
-                    })
+                    }, acceptsSelection: viewModel.canChangeSelection)
                     .frame(width: 220, height: 28)
+                    .allowsHitTesting(viewModel.canChangeSelection)
                 } label: {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Connection mode")
-                        stableModeDescription(
-                            tun: modeDescription(for: .tun),
-                            systemProxy: modeDescription(for: .systemProxy)
-                        )
+                        Text("System Proxy routes apps that use macOS proxy settings. TUN routes device traffic.")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                .disabled(!viewModel.canChangeSelection || viewModel.hasActiveConnectionSession)
+                .disabled(viewModel.hasActiveConnectionSession && !viewModel.isResolvingConnectionProvider)
+                .help(modeRestriction ?? "Choose how Teleport routes traffic.")
 
                 Toggle(
                     isOn: Binding(
@@ -181,20 +182,15 @@ private struct GeneralSettingsView: View {
                 ) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Protect traffic during tunnel interruptions")
-                        stableModeDescription(
-                            tun: "Blocks apps from using your regular internet connection while the tunnel reconnects. Local network access and DNS remain available.",
-                            systemProxy: "Available in TUN mode."
-                        )
+                        Text("In TUN mode, blocks apps from using your regular internet connection while the tunnel reconnects. Local network access and DNS remain available.")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 .disabled(viewModel.connectionMode != .tun)
                 .help("If a hotel or airport sign-in page will not load, temporarily turn off tunnel protection.")
             } header: {
                 Text("Connection")
-            } footer: {
-                if let restriction = modeRestriction {
-                    Text(restriction)
-                }
             }
 
             Section("Menu bar and Dock") {
@@ -259,33 +255,6 @@ private struct GeneralSettingsView: View {
         }
         .formStyle(.grouped)
         .padding(.top, -20)
-    }
-
-    private func stableModeDescription(tun: String, systemProxy: String) -> some View {
-        // Measure both descriptions at the actual row width. Switching modes
-        // changes the visible text without shifting the sections below it.
-        ZStack(alignment: .topLeading) {
-            Text(tun)
-                .opacity(viewModel.connectionMode == .tun ? 1 : 0)
-                .accessibilityHidden(viewModel.connectionMode != .tun)
-            Text(systemProxy)
-                .opacity(viewModel.connectionMode == .systemProxy ? 1 : 0)
-                .accessibilityHidden(viewModel.connectionMode != .systemProxy)
-        }
-        .font(.caption).foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
-    }
-
-    private func modeDescription(for mode: ConnectionMode) -> String {
-        switch mode {
-        case .systemProxy:
-            return "Routes apps that use macOS proxy settings."
-        case .tun:
-            if !viewModel.isHelperInstalled {
-                return "Routes device traffic with split routing exceptions. The first connection requires administrator approval to install a helper."
-            }
-            return "Routes device traffic with split routing exceptions."
-        }
     }
 
     private var modeRestriction: String? {

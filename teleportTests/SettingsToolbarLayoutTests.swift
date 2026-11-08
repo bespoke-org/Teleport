@@ -4,6 +4,60 @@ import XCTest
 
 @MainActor
 final class SettingsToolbarLayoutTests: XCTestCase {
+    func testModeSwitchKeepsAppearanceAndLayoutStableWhileProviderStarts() async throws {
+        let provider = PendingProvider()
+        let fixture = try Fixture(systemProxyProvider: provider)
+        defer { fixture.cleanUp() }
+        fixture.navigation.value.select(.general)
+        await awaitUIUpdate("General settings are ready") { fixture.model.canChangeSelection }
+        let controls = descendants(fixture.window.contentView!).compactMap { $0 as? NSSegmentedControl }
+        let mode = try XCTUnwrap(controls.first { $0.label(forSegment: 0) == "System Proxy" })
+        let order = try XCTUnwrap(controls.first { $0.segmentCount == 3 })
+        let originalFrame = order.convert(order.bounds, to: nil)
+        let originalAlpha = mode.alphaValue
+
+        fixture.model.selectConnectionMode(.systemProxy)
+        await awaitUIUpdate("The new mode is displayed while its provider starts") { mode.selectedSegment == 0 }
+        XCTAssertFalse(fixture.model.canChangeSelection)
+        XCTAssertTrue(mode.isEnabled, "Provider startup must not flash the native disabled appearance")
+        XCTAssertEqual(mode.alphaValue, originalAlpha, "Provider startup must not dim the picker")
+        XCTAssertEqual(order.convert(order.bounds, to: nil), originalFrame,
+                       "Waiting for the provider must not move Menu bar and Dock")
+        XCTAssertFalse(mode.isAccessibilityEnabled())
+        mode.selectedSegment = 1
+        mode.sendAction(try XCTUnwrap(mode.action), to: mode.target)
+        XCTAssertEqual(fixture.model.connectionMode, .systemProxy, "Input must stay blocked during provider startup")
+        XCTAssertEqual(mode.selectedSegment, 0, "Rejected input must restore the displayed selection")
+        XCTAssertNil(fixture.model.lastError)
+
+        provider.continuation.yield(.preparing)
+        await awaitUIUpdate("The provider is checking for an existing session") {
+            fixture.model.connectionState == .preparing
+        }
+        XCTAssertFalse(fixture.model.canChangeSelection)
+        XCTAssertTrue(mode.isEnabled, "Resolving a provider must not look like starting a connection")
+        XCTAssertEqual(mode.alphaValue, originalAlpha, "The provider's initial preparing state must not dim the picker")
+
+        provider.continuation.yield(.idle)
+        await awaitUIUpdate("The new provider is ready") { fixture.model.canChangeSelection }
+        XCTAssertEqual(order.convert(order.bounds, to: nil), originalFrame)
+        XCTAssertTrue(mode.isAccessibilityEnabled())
+        provider.continuation.yield(.preparing)
+        await awaitUIUpdate("Preparing a real connection disables and dims the picker") {
+            fixture.model.connectionState == .preparing && !mode.isEnabled && mode.alphaValue < originalAlpha
+        }
+        provider.continuation.yield(.connecting)
+        await awaitUIUpdate("An active connection disables and dims the picker") {
+            fixture.model.connectionState == .connecting && !mode.isEnabled && mode.alphaValue < originalAlpha
+        }
+        XCTAssertTrue(fixture.model.hasActiveConnectionSession)
+        provider.continuation.yield(.idle)
+        await awaitUIUpdate("Disconnecting restores the picker") { mode.isEnabled && mode.alphaValue == originalAlpha }
+        fixture.model.selectConnectionMode(.tun)
+        await awaitUIUpdate("TUN is ready again") { fixture.model.canChangeSelection && mode.isEnabled }
+        XCTAssertEqual(order.convert(order.bounds, to: nil), originalFrame)
+    }
+
     func testExpandedPortalSearchReleasesSpaceForLogsAndSurvivesNavigation() async throws {
         guard #available(macOS 26.0, *) else { throw XCTSkip("Shared glass toolbar is macOS 26+") }
         let fixture = try Fixture()
@@ -50,21 +104,21 @@ final class SettingsToolbarLayoutTests: XCTestCase {
         XCTAssertTrue(portals === toolbar.items.first { $0.itemIdentifier.rawValue == "portals.actions" })
     }
 
-    func testErrorToolbarItemExistsOnlyWhileAnErrorIsPresent() async throws {
+    func testErrorsDoNotAddToolbarItems() async throws {
         let fixture = try Fixture()
         defer { fixture.cleanUp() }
         await awaitUIUpdate("Settings toolbar is attached") { fixture.window.toolbar != nil }
         let toolbar = try XCTUnwrap(fixture.window.toolbar)
+        let itemIDs = toolbar.items.map(\.itemIdentifier)
         XCTAssertFalse(toolbar.items.contains { $0.itemIdentifier.rawValue == "settings.error" })
 
         XCTAssertFalse(fixture.model.addConnection(from: "not-a-portal"))
-        await awaitUIUpdate("An error adds its native toolbar item") {
-            toolbar.items.contains { $0.itemIdentifier.rawValue == "settings.error" }
-        }
+        XCTAssertNotNil(fixture.model.lastError)
+        await awaitUIUpdate("Settings update after an error")
+        XCTAssertEqual(toolbar.items.map(\.itemIdentifier), itemIDs)
         fixture.model.clearError()
-        await awaitUIUpdate("Clearing the error removes its native toolbar item") {
-            !toolbar.items.contains { $0.itemIdentifier.rawValue == "settings.error" }
-        }
+        await awaitUIUpdate("Settings update after clearing an error")
+        XCTAssertEqual(toolbar.items.map(\.itemIdentifier), itemIDs)
     }
 
     func testRoutingToolbarTogglesRoutingAndPreservesAssignmentsWhilePickersAreHidden() async throws {
@@ -263,7 +317,7 @@ final class SettingsToolbarLayoutTests: XCTestCase {
         let store: ConfigurationStore
         let window: NSWindow
 
-        init(withPortals: Bool = false) throws {
+        init(withPortals: Bool = false, systemProxyProvider: (any ConnectionProvider)? = nil) throws {
             _ = NSApplication.shared
             let files = IsolatedFileManager(root: root)
             let log = TeleportLog(directoryURL: root, fileName: "test.log")
@@ -279,7 +333,7 @@ final class SettingsToolbarLayoutTests: XCTestCase {
                                        selectedConnectionID: withPortals ? connection.id : nil, proxyEndpoint: .default))
             let provider = IdleProvider()
             model = AppViewModel(parser: ConnectionLinkParser(), store: store,
-                connectionProviderFactory: ConnectionProviderFactory(systemProxyProvider: { provider }, tunProvider: { provider }),
+                connectionProviderFactory: ConnectionProviderFactory(systemProxyProvider: { systemProxyProvider ?? provider }, tunProvider: { provider }),
                 leakGuard: LeakGuardService(isEnabled: false, log: log),
                 subscriptionClient: SubscriptionClient(loadResponse: { _ in throw URLError(.cancelled) }),
                 healthProbeService: ConnectionHealthProbeService(),
@@ -310,6 +364,20 @@ final class SettingsToolbarLayoutTests: XCTestCase {
     private final class IdleProvider: ConnectionProvider, @unchecked Sendable {
         func currentState() async -> ConnectionState { .idle }
         func stateUpdates() -> AsyncStream<ConnectionState> { AsyncStream { $0.yield(.idle); $0.finish() } }
+        func connect(_ request: ConnectionRequest) async throws { throw CancellationError() }
+        func disconnect() async throws {}
+    }
+
+    private final class PendingProvider: ConnectionProvider, Sendable {
+        let stream: AsyncStream<ConnectionState>
+        let continuation: AsyncStream<ConnectionState>.Continuation
+
+        init() {
+            (stream, continuation) = AsyncStream.makeStream(of: ConnectionState.self)
+        }
+
+        func currentState() async -> ConnectionState { .idle }
+        func stateUpdates() -> AsyncStream<ConnectionState> { stream }
         func connect(_ request: ConnectionRequest) async throws { throw CancellationError() }
         func disconnect() async throws {}
     }

@@ -8,6 +8,8 @@ struct SettingsSegmentedPicker<Value: Hashable>: NSViewRepresentable {
     let title: String
     @Binding var selection: Value
     let choices: [SettingsChoice<Value>]
+    // A brief data refresh can block input without flashing the disabled style.
+    var acceptsSelection = true
     @Environment(\.isEnabled) private var isEnabled
 
     func makeNSView(context: Context) -> NSSegmentedControl {
@@ -31,8 +33,12 @@ struct SettingsSegmentedPicker<Value: Hashable>: NSViewRepresentable {
     }
 
     func updateNSView(_ control: NSSegmentedControl, context: Context) {
-        context.coordinator.selectIndex = { index in
-            guard choices.indices.contains(index) else { return }
+        let selectedIndex = choices.firstIndex { $0.value == selection } ?? -1
+        context.coordinator.selectIndex = { [weak control] index in
+            guard isEnabled, acceptsSelection, choices.indices.contains(index) else {
+                control?.selectedSegment = selectedIndex
+                return
+            }
             let value = choices[index].value
             if value != selection { selection = value }
         }
@@ -41,9 +47,11 @@ struct SettingsSegmentedPicker<Value: Hashable>: NSViewRepresentable {
             control.setLabel(choice.title, forSegment: index)
             control.setWidth(216 / CGFloat(max(choices.count, 1)), forSegment: index)
         }
-        control.selectedSegment = choices.firstIndex { $0.value == selection } ?? -1
+        control.selectedSegment = selectedIndex
         control.isEnabled = isEnabled
+        control.alphaValue = isEnabled ? 1 : 0.5
         control.setAccessibilityLabel(title)
+        control.setAccessibilityEnabled(isEnabled && acceptsSelection)
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSSegmentedControl, context: Context) -> CGSize? {
