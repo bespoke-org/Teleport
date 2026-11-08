@@ -1118,6 +1118,7 @@ final class AppViewModel: ObservableObject {
     func removeSplitTunnelProfile(id: UUID) {
         guard personalTunnelProfiles.count > 1,
               let index = splitTunnelProfiles.firstIndex(where: { $0.id == id && $0.subscriptionSourceID == nil }) else { return }
+        let previousConnectionProfile = connectionTunnelProfile
         let wasSelected = selectedSplitTunnelProfileID == id
         splitTunnelProfiles.remove(at: index)
         let fallbackID = personalTunnelProfiles.first?.id
@@ -1126,15 +1127,22 @@ final class AppViewModel: ObservableObject {
         }
         if wasSelected { syncTunnelEditor() }
         schedulePersist()
-        scheduleSplitTunnelLiveApply()
+        // Unrelated/no-op edits must not resume deferred subscription routing.
+        if connectionTunnelProfile != previousConnectionProfile {
+            scheduleSplitTunnelLiveApply()
+        }
     }
 
     func selectSplitTunnelProfile(id: UUID) {
         guard personalTunnelProfiles.contains(where: { $0.id == id }), let target = selectedTunnelTarget else { return }
+        let previousConnectionProfile = connectionTunnelProfile
         assignTunnelProfile(id, to: target)
         syncTunnelEditor()
         schedulePersist()
-        scheduleSplitTunnelLiveApply()
+        // Unrelated/no-op edits must not resume deferred subscription routing.
+        if connectionTunnelProfile != previousConnectionProfile {
+            scheduleSplitTunnelLiveApply()
+        }
     }
 
     /// Coalesces rapid rule edits (typing, dragging to reorder, flipping several
@@ -2765,6 +2773,7 @@ extension AppViewModel {
 
     func setInheritsSubscriptionTunnel(_ inherits: Bool) {
         guard let target = selectedTunnelTarget else { return }
+        let previousConnectionProfile = connectionTunnelProfile
         if inherits {
             guard providerTunnelProfile != nil else { return }
             assignTunnelProfile(nil, to: target)
@@ -2774,7 +2783,10 @@ extension AppViewModel {
         }
         syncTunnelEditor()
         schedulePersist()
-        scheduleSplitTunnelLiveApply()
+        // Unrelated/no-op edits must not resume deferred subscription routing.
+        if connectionTunnelProfile != previousConnectionProfile {
+            scheduleSplitTunnelLiveApply()
+        }
     }
 
     @discardableResult
