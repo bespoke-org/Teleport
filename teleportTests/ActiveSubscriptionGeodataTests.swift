@@ -18,8 +18,7 @@ final class ActiveSubscriptionGeodataTests: XCTestCase {
         ]).base64EncodedString()
         await fixture.client.succeed(header: "happ://routing/onadd/" + payload)
         await waitUntil { fixture.model.refreshingSubscriptionIDs.isEmpty }
-        fixture.model.selectTunnelTarget(.subscription(fixture.sourceID))
-        let imported = try XCTUnwrap(fixture.model.providerTunnelProfile)
+        let imported = try XCTUnwrap(fixture.model.providerTunnelProfile(for: fixture.sourceID))
         XCTAssertEqual(imported.rules.count, 1)
         XCTAssertEqual(imported.geodataSources?.geositeURLString, "https://data.example/geosite.dat")
         XCTAssertEqual(imported.geodataSources?.geoipURLString, "https://data.example/geoip.dat")

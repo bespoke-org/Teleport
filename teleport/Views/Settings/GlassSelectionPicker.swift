@@ -205,14 +205,3 @@ struct GlassSelectionList: View {
         .accessibilityAddTraits(option.containsSelection(selectedID) ? .isSelected : [])
     }
 }
-
-struct SettingsGlassPopoverSurface: ViewModifier {
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if #available(macOS 26.0, *) {
-            content.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18))
-        } else {
-            content.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
-        }
-    }
-}

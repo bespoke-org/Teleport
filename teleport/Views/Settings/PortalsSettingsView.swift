@@ -37,6 +37,7 @@ struct PortalsState {
 struct PortalsSettingsView: View {
     @ObservedObject var viewModel: AppViewModel
     @Binding var state: PortalsState
+    let onOpenRoutingProfile: (UUID) -> Void
     @State private var editingConnection: SavedConnection?
     @State private var renamingConnection: SavedConnection?
     @State private var editingSubscription: SubscriptionSource?
@@ -45,6 +46,7 @@ struct PortalsSettingsView: View {
 
     private var isSearching: Bool { !state.searchTerm.isEmpty }
     private var isEmpty: Bool { viewModel.savedConnections.isEmpty && viewModel.subscriptionSources.isEmpty }
+    private var showsRoutingProfiles: Bool { viewModel.isSplitTunnelEnabled && viewModel.connectionMode == .tun }
 
     var body: some View {
         let manual = viewModel.manualConnections.filter { state.matches($0) }
@@ -188,70 +190,79 @@ struct PortalsSettingsView: View {
         let health = viewModel.healthCheck(for: connection)
         let ruleCount = viewModel.activeRuleCount(routingThrough: connection.id)
         return HStack(spacing: 8) {
-            Button {
-                viewModel.selectConnection(id: connection.id)
-            } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                        .foregroundStyle(selected ? Color.accentColor : Color.secondary.opacity(0.5))
-                        .frame(width: 16)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(connection.displayName)
-                            .fontWeight(.regular)
-                            .lineLimit(1)
-                        Text(connection.configuration.descriptiveSummary)
-                            .font(.caption)
-                            .foregroundStyle(connection.configuration.securityWarningText == nil ? Color.secondary : .orange)
-                            .lineLimit(1)
-                            .additionalHelp(connection.configuration.securityWarningText)
-                        if !selected && ruleCount > 0 {
-                            Text(ruleCount == 1 ? "1 split routing rule" : "\(ruleCount) split routing rules")
+            VStack(alignment: .leading, spacing: 5) {
+                Button {
+                    viewModel.selectConnection(id: connection.id)
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(selected ? Color.accentColor : Color.secondary.opacity(0.5))
+                            .frame(width: 16)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(connection.displayName)
+                                .fontWeight(.regular)
+                                .lineLimit(1)
+                            Text(connection.configuration.descriptiveSummary)
                                 .font(.caption)
-                                .foregroundStyle(.tint)
+                                .foregroundStyle(connection.configuration.securityWarningText == nil ? Color.secondary : .orange)
+                                .lineLimit(1)
+                                .additionalHelp(connection.configuration.securityWarningText)
+                            if ruleCount > 0 {
+                                Text(ruleCount == 1 ? "1 split routing rule" : "\(ruleCount) split routing rules")
+                                    .font(.caption)
+                                    .foregroundStyle(.tint)
+                            }
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
                 }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(!viewModel.canChangeSelection && !selected)
-            .accessibilityValue(selected ? "Selected" : "Not selected")
+                .buttonStyle(.plain)
+                .disabled(!viewModel.canChangeSelection && !selected)
+                .accessibilityValue(selected ? "Selected" : "Not selected")
 
-            healthLabel(health)
-                .frame(width: 100, alignment: .trailing)
-                .padding(.trailing, 4)
-            rowButton("Test latency", icon: "waveform.path.ecg") {
-                viewModel.refreshConnectionHealth(id: connection.id)
-            }
-            .disabled(viewModel.isRefreshingHealth(for: connection.id) || viewModel.isQueuedHealth(for: connection.id))
-            Menu {
-                Button(connection.isImported ? "Rename" : "Edit", systemImage: "pencil") {
-                    if connection.isImported { renamingConnection = connection }
-                    else { editingConnection = connection }
+                if !connection.isImported && showsRoutingProfiles {
+                    routingProfileButton(for: .connection(connection.id))
+                        .padding(.leading, 26)
                 }
-                shareMenu(
-                    title: connection.displayName,
-                    value: connection.shareableLink,
-                    copyTitle: connection.configuration.protocolType == .wireguard || connection.configuration.shareExportNote != nil ? "Copy configuration" : "Copy URL",
-                    exportNote: connection.configuration.shareExportNote
-                )
-                if !connection.isImported {
-                    Button("Remove", systemImage: "trash", role: .destructive) {
-                        removal = .connection(connection)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            rowAccessories {
+                healthLabel(health)
+                    .frame(width: 100, alignment: .trailing)
+                    .padding(.trailing, 4)
+                rowButton("Test latency", icon: "waveform.path.ecg") {
+                    viewModel.refreshConnectionHealth(id: connection.id)
+                }
+                .disabled(viewModel.isRefreshingHealth(for: connection.id) || viewModel.isQueuedHealth(for: connection.id))
+                Menu {
+                    Button(connection.isImported ? "Rename" : "Edit", systemImage: "pencil") {
+                        if connection.isImported { renamingConnection = connection }
+                        else { editingConnection = connection }
                     }
-                    .disabled(viewModel.isConnectionInUse(id: connection.id))
+                    shareMenu(
+                        title: connection.displayName,
+                        value: connection.shareableLink,
+                        copyTitle: connection.configuration.protocolType == .wireguard || connection.configuration.shareExportNote != nil ? "Copy configuration" : "Copy URL",
+                        exportNote: connection.configuration.shareExportNote
+                    )
+                    if !connection.isImported {
+                        Button("Remove", systemImage: "trash", role: .destructive) {
+                            removal = .connection(connection)
+                        }
+                        .disabled(viewModel.isConnectionInUse(id: connection.id))
+                    }
+                } label: {
+                    Image(systemName: "ellipsis").frame(width: 20, height: 24)
                 }
-            } label: {
-                Image(systemName: "ellipsis").frame(width: 20, height: 24)
+                .menuStyle(.borderlessButton)
+                .labelStyle(.titleAndIcon)
+                .background(MenuIconVisibility())
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("More portal actions")
+                .accessibilityLabel("More actions for \(connection.displayName)")
             }
-            .menuStyle(.borderlessButton)
-            .labelStyle(.titleAndIcon)
-            .background(MenuIconVisibility())
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("More portal actions")
-            .accessibilityLabel("More actions for \(connection.displayName)")
         }
         .padding(.vertical, 7)
     }
@@ -281,102 +292,111 @@ struct PortalsSettingsView: View {
         let selected = viewModel.savedConnections.first { $0.id == viewModel.selectedConnectionID && $0.source?.subscriptionSourceID == source.id }
         return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                Button {
-                    state.toggle(source.id)
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 16)
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack(spacing: 6) {
-                                Text(source.displayName)
-                                    .fontWeight(.regular)
-                                    .lineLimit(1)
-                                if !expanded, let selected {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .font(.caption)
-                                        .foregroundStyle(.tint)
-                                        .help("Selected portal: \(selected.displayName)")
-                                        .accessibilityHidden(true)
-                                }
-                            }
-                            HStack(spacing: 8) {
-                                Text(isSearching && group.connections.count != group.total
-                                    ? "\(group.connections.count) of \(group.total) portals"
-                                    : group.total == 1 ? "1 portal" : "\(group.total) portals")
-                                if viewModel.isRefreshingSubscription(source.id) {
-                                    Text("Updating…")
-                                } else if viewModel.isDownloadingSubscriptionGeodata(source.id) {
-                                    Text("Downloading geodata…")
-                                } else if let date = source.lastRefreshedAt {
-                                    TimelineView(.periodic(from: .now, by: 60)) { _ in
-                                        Text("Updated \(date.formatted(.relative(presentation: .numeric, unitsStyle: .abbreviated)))")
-                                            .help(date.formatted(date: .abbreviated, time: .shortened))
+                VStack(alignment: .leading, spacing: 5) {
+                    Button {
+                        state.toggle(source.id)
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 16)
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(spacing: 6) {
+                                    Text(source.displayName)
+                                        .fontWeight(.regular)
+                                        .lineLimit(1)
+                                    if !expanded, let selected {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .font(.caption)
+                                            .foregroundStyle(.tint)
+                                            .help("Selected portal: \(selected.displayName)")
+                                            .accessibilityHidden(true)
                                     }
                                 }
+                                HStack(spacing: 8) {
+                                    Text(isSearching && group.connections.count != group.total
+                                        ? "\(group.connections.count) of \(group.total) portals"
+                                        : group.total == 1 ? "1 portal" : "\(group.total) portals")
+                                    if viewModel.isRefreshingSubscription(source.id) {
+                                        Text("Updating…")
+                                    } else if viewModel.isDownloadingSubscriptionGeodata(source.id) {
+                                        Text("Downloading geodata…")
+                                    } else if let date = source.lastRefreshedAt {
+                                        TimelineView(.periodic(from: .now, by: 60)) { _ in
+                                            Text("Updated \(date.formatted(.relative(presentation: .numeric, unitsStyle: .abbreviated)))")
+                                                .help(date.formatted(date: .abbreviated, time: .shortened))
+                                        }
+                                    }
+                                }
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
                             }
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
                     }
-                    .contentShape(Rectangle())
+                    .buttonStyle(.plain)
+                    .disabled(isSearching)
+                    .accessibilityLabel("\(source.displayName), \(expanded ? "expanded" : "collapsed")")
+                    .accessibilityValue(selected.map { "Selected portal: \($0.displayName)" } ?? "")
+                    if showsRoutingProfiles {
+                        routingProfileButton(for: .subscription(source.id))
+                            .padding(.leading, 26)
+                    }
                 }
-                .buttonStyle(.plain)
-                .disabled(isSearching)
-                .accessibilityLabel("\(source.displayName), \(expanded ? "expanded" : "collapsed")")
-                .accessibilityValue(selected.map { "Selected portal: \($0.displayName)" } ?? "")
-                if let announcement = source.announcement {
-                    SubscriptionInfoButton(announcement: announcement)
-                }
-                if let usage = source.usage {
-                    SubscriptionUsageButton(usage: usage)
-                }
-                rowButton("Test all portals in subscription", icon: "waveform.path.ecg") {
-                    viewModel.refreshSubscriptionHealth(id: source.id)
-                }
-                .disabled(viewModel.isRefreshingSubscriptionHealth(source.id) || viewModel.isQueuedSubscriptionHealth(source.id))
-                Button {
-                    viewModel.refreshSubscription(id: source.id)
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .symbolEffect(.rotate, options: .repeating, isActive: isUpdating)
-                        .frame(width: 20, height: 24)
-                }
-                .buttonStyle(.borderless)
-                .disabled(isUpdating)
-                .help(isUpdating ? "Updating subscription…" : "Update subscription")
-                .accessibilityLabel("Update \(source.displayName)")
-                .accessibilityValue(isUpdating ? "Updating" : "")
-                Menu {
-                    Button("Update", systemImage: "arrow.clockwise") {
+                .frame(maxWidth: .infinity, alignment: .leading)
+                rowAccessories {
+                    if let announcement = source.announcement {
+                        SubscriptionInfoButton(announcement: announcement)
+                    }
+                    if let usage = source.usage {
+                        SubscriptionUsageButton(usage: usage)
+                    }
+                    rowButton("Test all portals in subscription", icon: "waveform.path.ecg") {
+                        viewModel.refreshSubscriptionHealth(id: source.id)
+                    }
+                    .disabled(viewModel.isRefreshingSubscriptionHealth(source.id) || viewModel.isQueuedSubscriptionHealth(source.id))
+                    Button {
                         viewModel.refreshSubscription(id: source.id)
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .symbolEffect(.rotate, options: .repeating, isActive: isUpdating)
+                            .frame(width: 20, height: 24)
                     }
+                    .buttonStyle(.borderless)
                     .disabled(isUpdating)
-                    Button("Edit", systemImage: "pencil") { editingSubscription = source }
-                    shareMenu(title: source.displayName, value: source.urlString)
-                    Button("Remove", systemImage: "trash", role: .destructive) { removal = .subscription(source) }
-                    .disabled(viewModel.importedConnections(for: source.id).contains { viewModel.isConnectionInUse(id: $0.id) })
-                } label: {
-                    Image(systemName: "ellipsis").frame(width: 20, height: 24)
-                }
-                .menuStyle(.borderlessButton)
-                .labelStyle(.titleAndIcon)
-                .background(MenuIconVisibility())
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help("More subscription actions")
-                .accessibilityLabel("More actions for \(source.displayName)")
-                .popover(isPresented: Binding(
-                    get: { editingSubscription?.id == source.id },
-                    set: { if !$0, editingSubscription?.id == source.id { editingSubscription = nil } }
-                ), attachmentAnchor: .rect(.bounds), arrowEdge: .top) {
-                    SubscriptionSettingsPopover(source: source) { name, url, interval, filterDuplicates in
-                        viewModel.updateSubscriptionSettings(id: source.id, customName: name, urlString: url,
-                            autoUpdateIntervalMinutes: interval, filterDuplicateImports: filterDuplicates)
+                    .help(isUpdating ? "Updating subscription…" : "Update subscription")
+                    .accessibilityLabel("Update \(source.displayName)")
+                    .accessibilityValue(isUpdating ? "Updating" : "")
+                    Menu {
+                        Button("Update", systemImage: "arrow.clockwise") {
+                            viewModel.refreshSubscription(id: source.id)
+                        }
+                        .disabled(isUpdating)
+                        Button("Edit", systemImage: "pencil") { editingSubscription = source }
+                        shareMenu(title: source.displayName, value: source.urlString)
+                        Button("Remove", systemImage: "trash", role: .destructive) { removal = .subscription(source) }
+                        .disabled(viewModel.importedConnections(for: source.id).contains { viewModel.isConnectionInUse(id: $0.id) })
+                    } label: {
+                        Image(systemName: "ellipsis").frame(width: 20, height: 24)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .labelStyle(.titleAndIcon)
+                    .background(MenuIconVisibility())
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .help("More subscription actions")
+                    .accessibilityLabel("More actions for \(source.displayName)")
+                    .popover(isPresented: Binding(
+                        get: { editingSubscription?.id == source.id },
+                        set: { if !$0, editingSubscription?.id == source.id { editingSubscription = nil } }
+                    ), attachmentAnchor: .rect(.bounds), arrowEdge: .top) {
+                        SubscriptionSettingsPopover(source: source) { name, url, interval, filterDuplicates in
+                            viewModel.updateSubscriptionSettings(id: source.id, customName: name, urlString: url,
+                                autoUpdateIntervalMinutes: interval, filterDuplicateImports: filterDuplicates)
+                        }
                     }
                 }
             }
@@ -391,11 +411,19 @@ struct PortalsSettingsView: View {
         .padding(.vertical, 8)
     }
 
+    private func rowAccessories<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        HStack(spacing: 8, content: content)
+    }
+
     private func rowButton(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
         Button(action: action) { Image(systemName: icon).frame(width: 20, height: 24) }
             .buttonStyle(.borderless)
             .help(title)
             .accessibilityLabel(title)
+    }
+
+    private func routingProfileButton(for target: TunnelTarget) -> some View {
+        PortalRoutingProfilePicker(viewModel: viewModel, target: target, onOpenProfile: onOpenRoutingProfile)
     }
 
     private func shareMenu(title: String, value: String, copyTitle: String = "Copy URL", exportNote: String? = nil) -> some View {

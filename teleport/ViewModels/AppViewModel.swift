@@ -59,10 +59,10 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var connectsOnLaunch: Bool
     @Published private(set) var isLeakGuardEnabled: Bool
     @Published private(set) var splitTunnelProfiles: [SplitTunnelProfile]
+    /// The document open in Routing; target assignments resolve independently.
     @Published private(set) var selectedSplitTunnelProfileID: UUID?
     @Published private(set) var isSplitTunnelEnabled: Bool
     @Published private(set) var tunnelAssignments: [TunnelProfileAssignment]
-    @Published private(set) var selectedTunnelTarget: TunnelTarget?
     @Published private(set) var geodataSettings: GeodataSourceSettings
     @Published private(set) var geodataLastAttemptSources: GeodataSources?
     @Published private(set) var isSplitTunnelGeodataReady = false
@@ -255,7 +255,6 @@ final class AppViewModel: ObservableObject {
         isLeakGuardEnabled = snapshot.isLeakGuardEnabled
         geodataSettings = snapshot.geodataSettings
         tunnelAssignments = snapshot.tunnelAssignments
-        selectedTunnelTarget = nil
         startsAtLogin = loginItemService.isEnabled
         connectionProvider = connectionProviderFactory.makeProvider(for: snapshot.connectionMode)
         proxyEndpoint = snapshot.proxyEndpoint
@@ -280,8 +279,7 @@ final class AppViewModel: ObservableObject {
         rebuildSavedConnectionIndexes()
         rebuildSubscriptionSourceIndexes()
         normalizeSelection()
-        selectedTunnelTarget = selectedConnection.map(TunnelTarget.init(connection:)) ?? tunnelTargets.first
-        syncTunnelEditor()
+        normalizeTunnelProfileSelection()
         geodataUpdateCoordinator.stateDidChange = { [weak self] in self?.objectWillChange.send() }
         geodataUpdateCoordinator.didFinish = { [weak self] kind, outcome in
             self?.applyGeodataUpdateResult(kind: kind, outcome: outcome)
@@ -451,7 +449,7 @@ final class AppViewModel: ObservableObject {
     /// build the tunnel config and to decide whether a live edit changed anything
     /// worth reconnecting for.
     private var activeSplitTunnelRules: [SplitTunnelRule] {
-        guard let profile = connectionTunnelProfile, profile.isRoutingEnabled else { return [] }
+        guard let profile = connectionTunnelProfile, routingIsEnabled(for: profile) else { return [] }
         return profile.rules.filter { $0.isEnabled }
     }
 
@@ -464,7 +462,7 @@ final class AppViewModel: ObservableObject {
     /// off we keep the classic full-tunnel behavior (everything proxied) so the
     /// profile's default only takes effect while the feature is enabled.
     private var activeSplitTunnelDefaultAction: SplitTunnelRuleAction {
-        guard let profile = connectionTunnelProfile, profile.isRoutingEnabled else { return .proxy }
+        guard let profile = connectionTunnelProfile, routingIsEnabled(for: profile) else { return .proxy }
         return profile.defaultAction
     }
 
@@ -689,7 +687,7 @@ final class AppViewModel: ObservableObject {
 
         let removedConnection = savedConnections.remove(at: index)
         tunnelAssignments.removeAll { $0.target == .connection(id) }
-        normalizeTunnelTarget()
+        normalizeTunnelProfileSelection()
         healthChecksByConnectionID.removeValue(forKey: id)
         rebuildSavedConnectionIndexes()
         cancelHealthProbe(id: id)
@@ -722,7 +720,7 @@ final class AppViewModel: ObservableObject {
         subscriptionRefreshTokens.removeValue(forKey: id)
         splitTunnelProfiles.removeAll { $0.subscriptionSourceID == id }
         tunnelAssignments.removeAll { $0.target == .subscription(id) }
-        normalizeTunnelTarget()
+        normalizeTunnelProfileSelection()
         let removedIDs = Set(affectedConnections.map(\.id))
         cancelHealthProbes(ids: removedIDs)
         normalizeSelection()
@@ -928,12 +926,10 @@ final class AppViewModel: ObservableObject {
     }
 
     func setSplitTunnelEnabled(_ enabled: Bool) {
-        guard canEditTunnelProfile, enabled != isSplitTunnelEnabled,
-              let index = selectedSplitTunnelProfileIndex else { return }
+        guard enabled != isSplitTunnelEnabled else { return }
         isSplitTunnelEnabled = enabled
-        splitTunnelProfiles[index].isRoutingEnabled = enabled
         schedulePersist()
-        scheduleSplitTunnelLiveApply()
+        scheduleActiveSplitTunnelLiveApply()
     }
 
     @discardableResult
@@ -1053,7 +1049,7 @@ final class AppViewModel: ObservableObject {
         schedulePersist()
         if profile.id == connectionTunnelProfile?.id,
            previous.rules != profile.rules || previous.defaultAction != profile.defaultAction {
-            scheduleSplitTunnelLiveApply()
+            scheduleActiveSplitTunnelLiveApply()
         }
     }
 
@@ -1115,13 +1111,9 @@ final class AppViewModel: ObservableObject {
     func addSplitTunnelProfile(name: String) -> UUID {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let profile = SplitTunnelProfile(name: trimmedName.isEmpty ? "New profile" : trimmedName,
-                                        geodataSources: GeodataSources(), isRoutingEnabled: false)
+                                        geodataSources: GeodataSources())
         splitTunnelProfiles.append(profile)
-        if let target = selectedTunnelTarget { assignTunnelProfile(profile.id, to: target) }
-        selectedSplitTunnelProfileID = profile.id
-        isSplitTunnelEnabled = profile.isRoutingEnabled
-        schedulePersist()
-        scheduleSplitTunnelLiveApply()
+        openSplitTunnelProfile(id: profile.id)
         return profile.id
     }
 
@@ -1138,37 +1130,40 @@ final class AppViewModel: ObservableObject {
     func removeSplitTunnelProfile(id: UUID) {
         guard personalTunnelProfiles.count > 1,
               let index = splitTunnelProfiles.firstIndex(where: { $0.id == id && $0.subscriptionSourceID == nil }) else { return }
-        let previousConnectionProfile = connectionTunnelProfile
-        let wasSelected = selectedSplitTunnelProfileID == id
+        let wasActive = connectionTunnelProfile?.id == id
         splitTunnelProfiles.remove(at: index)
         let fallbackID = personalTunnelProfiles.first?.id
         for index in tunnelAssignments.indices where tunnelAssignments[index].personalProfileID == id {
             tunnelAssignments[index].personalProfileID = fallbackID
         }
-        if wasSelected { syncTunnelEditor() }
+        normalizeTunnelProfileSelection()
         schedulePersist()
-        // Unrelated/no-op edits must not resume deferred subscription routing.
-        if connectionTunnelProfile != previousConnectionProfile {
-            scheduleSplitTunnelLiveApply()
-        }
+        if wasActive { scheduleActiveSplitTunnelLiveApply() }
     }
 
-    func selectSplitTunnelProfile(id: UUID) {
-        guard personalTunnelProfiles.contains(where: { $0.id == id }), let target = selectedTunnelTarget else { return }
-        let previousConnectionProfile = connectionTunnelProfile
-        assignTunnelProfile(id, to: target)
-        syncTunnelEditor()
+    /// Open a profile in Routing. Browsing the library never assigns it to a
+    /// portal or changes the policy of the active connection.
+    @discardableResult
+    func openSplitTunnelProfile(id: UUID) -> Bool {
+        guard splitTunnelProfiles.contains(where: { $0.id == id }) else { return false }
+        selectedSplitTunnelProfileID = id
+        normalizeTunnelProfileSelection()
+        profileGeodataLibrary.preload(sources: selectedProfileGeodataSources)
         schedulePersist()
-        // Unrelated/no-op edits must not resume deferred subscription routing.
-        if connectionTunnelProfile != previousConnectionProfile {
-            scheduleSplitTunnelLiveApply()
-        }
+        return true
     }
 
     /// Coalesces rapid rule edits (typing, dragging to reorder, flipping several
     /// toggles) into a single TUN reconnect once the user settles, instead of
     /// tearing the tunnel down and back up on every individual change.
     private func scheduleSplitTunnelLiveApply() {
+        // Editing an unrelated library profile must not release deferred
+        // subscription changes or reconnect the active session.
+        guard selectedSplitTunnelProfileID == connectionTunnelProfile?.id else { return }
+        scheduleActiveSplitTunnelLiveApply()
+    }
+
+    private func scheduleActiveSplitTunnelLiveApply() {
         // An explicit edit resumes live application, including any imported
         // changes the user has since reviewed in the editor.
         hasDeferredSubscriptionRoutingChanges = false
@@ -1218,7 +1213,7 @@ final class AppViewModel: ObservableObject {
     // MARK: - Geodata (geosite/geoip)
 
     private var connectionGeodataSources: GeodataSources {
-        guard connectionMode == .tun, connectionTunnelProfile?.isRoutingEnabled == true else { return GeodataSources() }
+        guard connectionMode == .tun, routingIsEnabled(for: connectionTunnelProfile) else { return GeodataSources() }
         return connectionTunnelProfile?.geodataSources ?? GeodataSources()
     }
 
@@ -1332,7 +1327,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private func updateProfileGeodata(sources: GeodataSources, forceDownload: Bool) {
-        if selectedSplitTunnelProfileID == connectionTunnelProfile?.id {
+        if selectedSplitTunnelProfileID == connectionTunnelProfile?.id, routingIsEnabled(for: connectionTunnelProfile) {
             startGeodataUpdates(sources: sources, forceDownload: forceDownload)
         } else {
             profileGeodataLibrary.preload(sources: sources, forceDownload: forceDownload)
@@ -1460,7 +1455,7 @@ final class AppViewModel: ObservableObject {
     /// TUN mode is already connected instead of waiting for the user to notice.
     private func applyGeodataLiveIfNeeded() {
         guard !isTerminating, !isOperationPending, !hasDeferredSubscriptionRoutingChanges,
-              connectionMode == .tun, connectionTunnelProfile?.isRoutingEnabled == true, hasEstablishedConnection,
+              connectionMode == .tun, routingIsEnabled(for: connectionTunnelProfile), hasEstablishedConnection,
               geodataIsReady(for: connectionGeodataSources) else { return }
         reconnectToSelectedConnection()
     }
@@ -1596,7 +1591,7 @@ final class AppViewModel: ObservableObject {
         }
 
         awaitsUplinkToReconnect = false
-        log.info(Self.subsystem, "connect requested: mode \(connectionMode), server \(LogFormat.host(selectedConfiguration.host)):\(selectedConfiguration.port), split routing \(isSplitTunnelEnabled ? "on" : "off") with \(activeSplitTunnelRules.count) rules")
+        log.info(Self.subsystem, "connect requested: mode \(connectionMode), server \(LogFormat.host(selectedConfiguration.host)):\(selectedConfiguration.port), split routing \(routingIsEnabled(for: connectionTunnelProfile) ? "on" : "off") with \(activeSplitTunnelRules.count) rules")
         SystemStateDump.capture("before connect", log: log)
         startConnection(using: selectedConfiguration)
     }
@@ -2031,7 +2026,7 @@ final class AppViewModel: ObservableObject {
         let nextSelectionID = selectionForNextConnectionID
         removedSessionConnections.removeAll()
         selectedConnectionID = nextSelectionID
-        normalizeTunnelTarget()
+        normalizeTunnelProfileSelection()
         schedulePersist()
     }
 
@@ -2104,10 +2099,11 @@ final class AppViewModel: ObservableObject {
         sessionUplink = currentUplink()
         let request = makeConnectionRequest(configuration: configuration)
         let profile = tunnelProfile(for: savedConnections.first { $0.id == request.defaultConnection.id })
-        let sources = connectionMode == .tun && profile?.isRoutingEnabled == true
+        let sources = connectionMode == .tun && routingIsEnabled(for: profile)
             ? (profile?.geodataSources ?? GeodataSources()) : GeodataSources()
         let profileName = profile?.name ?? "Default"
-        let needsGeodataPreparation = !updatingGeodataKinds.isEmpty || !geodataIsReady(for: sources)
+        let needsGeodataPreparation = connectionMode == .tun && routingIsEnabled(for: profile)
+            && (!updatingGeodataKinds.isEmpty || !geodataIsReady(for: sources))
         let provider = connectionProvider
         let operationID = UUID()
         connectingSelection = (operationID, request.defaultConnection.id)
@@ -2189,7 +2185,7 @@ final class AppViewModel: ObservableObject {
             ?? UUID()
         let connection = savedConnectionsByID[defaultConnectionID]
         let profile = tunnelProfile(for: connection)
-        let rules = profile?.isRoutingEnabled == true ? (profile?.rules.filter { $0.isEnabled } ?? []) : []
+        let rules = routingIsEnabled(for: profile) ? (profile?.rules.filter { $0.isEnabled } ?? []) : []
         var seen: Set<UUID> = [defaultConnectionID]
         let additionalConnections = rules.compactMap { rule -> RoutedConnection? in
             guard rule.action == .proxy, let id = rule.connectionID, seen.insert(id).inserted,
@@ -2202,7 +2198,7 @@ final class AppViewModel: ObservableObject {
             localProxy: proxyEndpoint,
             splitTunnelPolicy: SplitTunnelPolicy(
                 rules: rules,
-                defaultAction: profile?.isRoutingEnabled == true ? (profile?.defaultAction ?? .proxy) : .proxy
+                defaultAction: routingIsEnabled(for: profile) ? (profile?.defaultAction ?? .proxy) : .proxy
             ),
             usesLeakGuard: isLeakGuardEnabled
         )
@@ -2237,7 +2233,7 @@ final class AppViewModel: ObservableObject {
             let shouldSelectNewConnection = !hasActiveConnectionSession || selectedConnectionID == nil
             savedConnections.append(savedConnection)
             rebuildSavedConnectionIndexes()
-            normalizeTunnelTarget()
+            normalizeTunnelProfileSelection()
             if shouldSelectNewConnection {
                 selectedConnectionID = savedConnection.id
             }
@@ -2271,7 +2267,7 @@ final class AppViewModel: ObservableObject {
             )
 
             subscriptionSources.append(source)
-            normalizeTunnelTarget()
+            normalizeTunnelProfileSelection()
             rebuildSubscriptionSourceIndexes()
             setStoredError(nil)
             persistSettingError()
@@ -2436,7 +2432,7 @@ final class AppViewModel: ObservableObject {
         }
 
         if let routing { importTunnelProfile(routing, sourceID: sourceID) }
-        normalizeTunnelTarget()
+        normalizeTunnelProfileSelection()
 
         updateSubscriptionSource(sourceID) {
             $0.usage = usage
@@ -2732,7 +2728,7 @@ extension AppViewModel {
 
     func tunnelTargetName(_ target: TunnelTarget) -> String {
         switch target {
-        case let .subscription(id): return subscriptionSources.first { $0.id == id }?.title ?? "Subscription"
+        case let .subscription(id): return subscriptionSources.first { $0.id == id }?.displayName ?? "Subscription"
         case let .connection(id): return savedConnectionsByID[id]?.displayName ?? "Portal"
         }
     }
@@ -2741,13 +2737,12 @@ extension AppViewModel {
         splitTunnelProfiles.filter { $0.subscriptionSourceID == nil }
     }
 
-    var providerTunnelProfile: SplitTunnelProfile? {
-        guard case let .subscription(id) = selectedTunnelTarget else { return nil }
-        return splitTunnelProfiles.first { $0.subscriptionSourceID == id }
+    func providerTunnelProfile(for sourceID: UUID) -> SplitTunnelProfile? {
+        splitTunnelProfiles.first { $0.subscriptionSourceID == sourceID }
     }
 
-    var inheritsSubscriptionTunnel: Bool {
-        guard let target = selectedTunnelTarget, providerTunnelProfile != nil else { return false }
+    func inheritsSubscriptionTunnel(for target: TunnelTarget) -> Bool {
+        guard case let .subscription(id) = target, providerTunnelProfile(for: id) != nil else { return false }
         return tunnelAssignments.first { $0.target == target }?.personalProfileID == nil
     }
 
@@ -2755,40 +2750,77 @@ extension AppViewModel {
 
     private var connectionTunnelProfile: SplitTunnelProfile? { tunnelProfile(for: selectedConnection) }
 
+    /// Personal profiles contain rules, not activation state. A provider can
+    /// explicitly publish routing/off; the global switch never overrides that.
+    private func routingIsEnabled(for profile: SplitTunnelProfile?) -> Bool {
+        guard isSplitTunnelEnabled, let profile else { return false }
+        return profile.subscriptionSourceID == nil || profile.isRoutingEnabled
+    }
+
     private func tunnelProfile(for connection: SavedConnection?) -> SplitTunnelProfile? {
-        TunnelProfileResolver.profile(for: connection.map(TunnelTarget.init(connection:)),
-                                      profiles: splitTunnelProfiles, assignments: tunnelAssignments)
+        tunnelProfile(for: connection.map(TunnelTarget.init(connection:)))
+    }
+
+    func tunnelProfile(for target: TunnelTarget?) -> SplitTunnelProfile? {
+        TunnelProfileResolver.profile(for: target, profiles: splitTunnelProfiles, assignments: tunnelAssignments)
+    }
+
+    /// The selection shown in Portals. A nil value means the subscription's
+    /// updating provider profile, while personal profiles have a stable id.
+    func personalTunnelProfileID(for target: TunnelTarget) -> UUID? {
+        inheritsSubscriptionTunnel(for: target) ? nil : tunnelProfile(for: target)?.id
     }
 
     func tunnelProfileUsers(id: UUID) -> [String] {
+        tunnelProfileTargets(id: id).map(tunnelTargetName)
+    }
+
+    func tunnelProfileTargets(id: UUID) -> [TunnelTarget] {
         tunnelTargets.filter {
             TunnelProfileResolver.profile(for: $0, profiles: splitTunnelProfiles, assignments: tunnelAssignments)?.id == id
-        }.map(tunnelTargetName)
-    }
-
-    func selectTunnelTarget(_ target: TunnelTarget) {
-        guard tunnelTargets.contains(target) else { return }
-        selectedTunnelTarget = target
-        syncTunnelEditor()
-        profileGeodataLibrary.preload(sources: selectedProfileGeodataSources)
-    }
-
-    private func normalizeTunnelTarget() {
-        if selectedTunnelTarget.map({ tunnelTargets.contains($0) }) != true {
-            selectedTunnelTarget = selectedConnection.map(TunnelTarget.init(connection:)) ?? tunnelTargets.first
         }
-        syncTunnelEditor()
     }
 
-    private func syncTunnelEditor() {
-        let profile = TunnelProfileResolver.profile(for: selectedTunnelTarget, profiles: splitTunnelProfiles,
-                                                  assignments: tunnelAssignments)
-        selectedSplitTunnelProfileID = profile?.id
-        isSplitTunnelEnabled = profile?.isRoutingEnabled ?? false
+    func tunnelProfileUsageDescription(id: UUID) -> String {
+        let targets = tunnelProfileTargets(id: id)
+        let subscriptions = targets.filter { if case .subscription = $0 { true } else { false } }.count
+        let portals = targets.count - subscriptions
+        var parts: [String] = []
+        if subscriptions > 0 { parts.append("\(subscriptions) \(subscriptions == 1 ? "subscription" : "subscriptions")") }
+        if portals > 0 { parts.append("\(portals) standalone \(portals == 1 ? "portal" : "portals")") }
+        return parts.isEmpty ? "Not assigned" : "Used by " + parts.joined(separator: " and ")
+    }
+
+    private func normalizeTunnelProfileSelection() {
+        if !splitTunnelProfiles.contains(where: { $0.id == selectedSplitTunnelProfileID }) {
+            selectedSplitTunnelProfileID = personalTunnelProfiles.first?.id ?? splitTunnelProfiles.first?.id
+        }
         prepareSplitTunnelGeodataMatcher()
     }
 
-    private func assignTunnelProfile(_ id: UUID?, to target: TunnelTarget) {
+    /// Explicit assignment from Portals. It is independent of the profile open
+    /// in Routing, including when the target is the active connection.
+    @discardableResult
+    func assignTunnelProfile(_ id: UUID?, to target: TunnelTarget) -> Bool {
+        guard tunnelTargets.contains(target) else { return false }
+        if let id {
+            guard personalTunnelProfiles.contains(where: { $0.id == id }) else { return false }
+        } else {
+            guard case let .subscription(sourceID) = target, providerTunnelProfile(for: sourceID) != nil else { return false }
+        }
+        if let existing = tunnelAssignments.first(where: { $0.target == target }), existing.personalProfileID == id {
+            return true
+        }
+        let previousConnectionProfile = connectionTunnelProfile
+        storeTunnelProfileAssignment(id, to: target)
+        schedulePersist()
+        if connectionTunnelProfile != previousConnectionProfile {
+            scheduleActiveSplitTunnelLiveApply()
+        }
+        return true
+    }
+
+    private func storeTunnelProfileAssignment(_ id: UUID?, to target: TunnelTarget) {
         if let index = tunnelAssignments.firstIndex(where: { $0.target == target }) {
             tunnelAssignments[index].personalProfileID = id
         } else {
@@ -2796,36 +2828,14 @@ extension AppViewModel {
         }
     }
 
-    func setInheritsSubscriptionTunnel(_ inherits: Bool) {
-        guard let target = selectedTunnelTarget else { return }
-        let previousConnectionProfile = connectionTunnelProfile
-        if inherits {
-            guard providerTunnelProfile != nil else { return }
-            assignTunnelProfile(nil, to: target)
-        } else {
-            guard let profile = personalTunnelProfiles.first else { return }
-            assignTunnelProfile(profile.id, to: target)
-        }
-        syncTunnelEditor()
-        schedulePersist()
-        // Unrelated/no-op edits must not resume deferred subscription routing.
-        if connectionTunnelProfile != previousConnectionProfile {
-            scheduleSplitTunnelLiveApply()
-        }
-    }
-
     @discardableResult
-    func customizeTunnelProfile() -> UUID? {
-        guard let original = selectedSplitTunnelProfile, let target = selectedTunnelTarget else { return nil }
+    func copySplitTunnelProfile(id: UUID) -> UUID? {
+        guard let original = splitTunnelProfiles.first(where: { $0.id == id }) else { return nil }
         let copy = SplitTunnelProfile(name: "\(original.name) — Custom", rules: original.rules,
                                       defaultAction: original.defaultAction, geodataSources: original.geodataSources,
-                                      isRoutingEnabled: original.isRoutingEnabled,
                                       geodataUpdateIntervalMinutes: original.geodataUpdateIntervalMinutes)
         splitTunnelProfiles.append(copy)
-        assignTunnelProfile(copy.id, to: target)
-        syncTunnelEditor()
-        schedulePersist()
-        scheduleSplitTunnelLiveApply()
+        openSplitTunnelProfile(id: copy.id)
         return copy.id
     }
 
@@ -2836,7 +2846,7 @@ extension AppViewModel {
            !tunnelAssignments.contains(where: { $0.target == target }),
            previous?.subscriptionSourceID == nil, let id = previous?.id {
             // `add` stores a provider profile without changing this target's choice.
-            assignTunnelProfile(id, to: target)
+            storeTunnelProfileAssignment(id, to: target)
         }
         var ignoredSelection: UUID?
         var ignoredEnabled = false
@@ -2859,7 +2869,7 @@ extension AppViewModel {
             splitTunnelApplyWorkItem = nil
             pendingSplitTunnelLiveApply = false
         }
-        syncTunnelEditor()
+        normalizeTunnelProfileSelection()
         // Every imported profile owns a cached pair, regardless of selection.
         // Cache preparation never activates files or changes the live session.
         if let profile = splitTunnelProfiles.first(where: { $0.subscriptionSourceID == sourceID }) {

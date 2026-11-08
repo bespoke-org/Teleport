@@ -8,6 +8,7 @@ struct SettingsView: View {
     @Binding var navigation: SettingsNavigation
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var portalsState = PortalsState()
+    @State private var routingNameFocusID: UUID?
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             SettingsSidebar(navigation: $navigation)
@@ -53,6 +54,10 @@ struct SettingsView: View {
             SettingsErrorToolbar(viewModel: viewModel, onOpenLogs: { navigation.select(.logs) })
             PortalsToolbar(state: $portalsState, isActive: navigation.section == .portals,
                            connection: PortalsConnectionButton(viewModel: viewModel))
+            RoutingToolbar(viewModel: viewModel, isActive: navigation.section == .tunnel,
+                           onNewProfile: {
+                               routingNameFocusID = viewModel.addSplitTunnelProfile(name: "новый профиль")
+                           })
         }
         .focusedSceneValue(\.settingsNavigation, $navigation)
         .navigationSplitViewStyle(.balanced)
@@ -79,9 +84,12 @@ struct SettingsView: View {
         case .general:
             GeneralSettingsView(viewModel: viewModel)
         case .portals:
-            PortalsSettingsView(viewModel: viewModel, state: $portalsState)
+            PortalsSettingsView(viewModel: viewModel, state: $portalsState) { profileID in
+                guard viewModel.openSplitTunnelProfile(id: profileID) else { return }
+                navigation.select(.tunnel)
+            }
         case .tunnel:
-            TunnelSettingsView(viewModel: viewModel)
+            TunnelSettingsView(viewModel: viewModel, nameFocusID: $routingNameFocusID)
         case .advanced:
             AdvancedSettingsView(viewModel: viewModel, onOpenLogs: { navigation.select(.logs) })
         case .logs:

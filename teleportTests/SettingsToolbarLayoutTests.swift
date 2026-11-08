@@ -67,6 +67,169 @@ final class SettingsToolbarLayoutTests: XCTestCase {
         }
     }
 
+    func testRoutingToolbarTogglesRoutingAndPreservesAssignmentsWhilePickersAreHidden() async throws {
+        let fixture = try Fixture(withPortals: true)
+        defer { fixture.cleanUp() }
+        let model = fixture.model
+        let window = fixture.window
+        let assignments = model.tunnelAssignments
+        fixture.navigation.value.select(.tunnel)
+        await awaitUIUpdate("Routing toolbar is visible") {
+            window.toolbar.map { self.isVisible("routing.toggle", in: $0) } == true
+        }
+        let toolbar = try XCTUnwrap(window.toolbar)
+        let item = try XCTUnwrap(toolbar.items.first { $0.itemIdentifier.rawValue == "routing.toggle" })
+        let view = try XCTUnwrap(item.view)
+        let frame = view.frame
+        XCTAssertFalse(model.isSplitTunnelEnabled)
+        try click(in: window, at: view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil))
+        await awaitUIUpdate("Routing turns on") { model.isSplitTunnelEnabled }
+        XCTAssertEqual(view.frame, frame, "On and Off use the same toolbar bounds")
+
+        fixture.navigation.value.select(.portals)
+        await awaitUIUpdate("Assignments are visible for both owners") {
+            self.routingPickers(in: window).count == 2
+                && (!toolbar.items.contains { $0 === item } || view.frame.width <= 1)
+        }
+        XCTAssertEqual(model.tunnelAssignments, assignments)
+        fixture.navigation.value.select(.tunnel)
+        await awaitUIUpdate("Routing control is restored") {
+            self.isVisible("routing.toggle", in: toolbar)
+                && (toolbar.items.first { $0.itemIdentifier.rawValue == "routing.toggle" }?.view?.frame.width ?? 0) > 1
+        }
+        let restoredView = try XCTUnwrap(toolbar.items.first { $0.itemIdentifier.rawValue == "routing.toggle" }?.view)
+        try click(in: window, at: restoredView.convert(NSPoint(x: restoredView.bounds.midX, y: restoredView.bounds.midY), to: nil))
+        await awaitUIUpdate("Routing turns off") { !model.isSplitTunnelEnabled }
+        fixture.navigation.value.select(.portals)
+        await awaitUIUpdate("Disabled routing hides its assignment controls") {
+            self.routingPickers(in: window).isEmpty
+        }
+        XCTAssertEqual(model.tunnelAssignments, assignments, "Hiding assignments must not reset them")
+    }
+
+    func testProfileNameEditingAndDefaultRouteKeepLayoutStable() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanUp() }
+        let window = fixture.window
+        let model = fixture.model
+        fixture.navigation.value.select(.tunnel)
+        await awaitUIUpdate("The routing editor is laid out") {
+            self.descendants(window.contentView!).contains { ($0 as? NSTextField)?.accessibilityLabel() == "Profile name" }
+        }
+        let field = try XCTUnwrap(descendants(window.contentView!).compactMap { $0 as? NSTextField }
+            .first { $0.accessibilityLabel() == "Profile name" })
+        let route = try XCTUnwrap(descendants(window.contentView!).compactMap { $0 as? NSSegmentedControl }
+            .first { $0.label(forSegment: 0) == "Proxy" })
+        let original = model.selectedSplitTunnelProfile!.name
+        for width in [761.0, 1000.0, 1160.0] {
+            window.setContentSize(NSSize(width: width, height: 760))
+            await awaitUIUpdate("Resized routing page settles")
+            let nameFrame = field.convert(field.bounds, to: nil)
+            let routeFrame = route.convert(route.bounds, to: nil)
+            XCTAssertTrue(window.makeFirstResponder(field))
+            let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
+            editor.selectAll(nil)
+            editor.insertText("A much longer name that must stay on one line while editing", replacementRange: editor.selectedRange())
+            await awaitUIUpdate("The name draft is rendered")
+            XCTAssertEqual(field.convert(field.bounds, to: nil), nameFrame)
+            XCTAssertEqual(route.convert(route.bounds, to: nil), routeFrame)
+            try key("\u{1b}", code: 53, in: window)
+            await awaitUIUpdate("Escape restores the name")
+            XCTAssertEqual(model.selectedSplitTunnelProfile?.name, original)
+            XCTAssertEqual(field.stringValue, original)
+            XCTAssertEqual(field.convert(field.bounds, to: nil), nameFrame)
+            XCTAssertEqual(route.convert(route.bounds, to: nil), routeFrame)
+            for action in [SplitTunnelRuleAction.direct, .proxy] {
+                model.setSplitTunnelDefaultAction(action)
+                await awaitUIUpdate("The default route description changes")
+                XCTAssertEqual(route.convert(route.bounds, to: nil), routeFrame,
+                               "Changing description must not resize or shift its row")
+            }
+        }
+        XCTAssertTrue(window.makeFirstResponder(field))
+        let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
+        editor.selectAll(nil)
+        editor.insertText("Renamed", replacementRange: editor.selectedRange())
+        try key("\r", code: 36, in: window)
+        await awaitUIUpdate("Return saves the profile name") { model.selectedSplitTunnelProfile?.name == "Renamed" }
+        XCTAssertTrue(window.makeFirstResponder(field))
+        let secondEdit = try XCTUnwrap(field.currentEditor() as? NSTextView)
+        secondEdit.selectAll(nil)
+        secondEdit.insertText("Saved on blur", replacementRange: secondEdit.selectedRange())
+        window.makeFirstResponder(nil)
+        await awaitUIUpdate("Leaving the field saves the profile name") {
+            model.selectedSplitTunnelProfile?.name == "Saved on blur"
+        }
+    }
+
+    func testToolbarCreatesProfileWithoutSheetAndFocusesItsName() async throws {
+        let fixture = try Fixture(withPortals: true)
+        defer { fixture.cleanUp() }
+        let window = fixture.window
+        let model = fixture.model
+        let assignments = model.tunnelAssignments
+        fixture.navigation.value.select(.tunnel)
+        await awaitUIUpdate("Profile menu and routing switch fit in the toolbar") {
+            guard let toolbar = window.toolbar else { return false }
+            return self.isVisible("routing.profile", in: toolbar) && self.isVisible("routing.toggle", in: toolbar)
+        }
+        let menu = try XCTUnwrap(window.toolbar?.items.first { $0.itemIdentifier.rawValue == "routing.profile" }?.view)
+        let frame = menu.frame
+        let existingWindows = Set(NSApp.windows.map(\.windowNumber))
+        try click(in: window, at: menu.convert(NSPoint(x: menu.bounds.midX, y: menu.bounds.midY), to: nil))
+        await awaitUIUpdate("Clicking the profile opens the manager directly") {
+            NSApp.windows.contains { !existingWindows.contains($0.windowNumber) && $0.isVisible && $0.frame.height > 100 }
+        }
+        let library = try XCTUnwrap(NSApp.windows.first { !existingWindows.contains($0.windowNumber) && $0.isVisible })
+        let commandN = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+            timestamp: 0, windowNumber: library.windowNumber, context: nil, characters: "n",
+            charactersIgnoringModifiers: "n", isARepeat: false, keyCode: 45))
+        var created = false
+        await awaitUIUpdate("The manager's New profile button is available") {
+            if !created { created = library.performKeyEquivalent(with: commandN) }
+            return created
+        }
+        await awaitUIUpdate("The new profile name is ready for typing") {
+            model.selectedSplitTunnelProfile?.name == "новый профиль"
+                && (window.firstResponder as? NSTextView)?.string == "новый профиль"
+        }
+        XCTAssertNil(window.attachedSheet)
+        XCTAssertEqual(model.personalTunnelProfiles.count, 2)
+        let editor = try XCTUnwrap(window.firstResponder as? NSTextView)
+        XCTAssertEqual(editor.selectedRange(), NSRange(location: 0, length: editor.string.utf16.count))
+        editor.insertText("Work", replacementRange: editor.selectedRange())
+        try key("\r", code: 36, in: window)
+        await awaitUIUpdate("The typed name is saved") { model.selectedSplitTunnelProfile?.name == "Work" }
+        XCTAssertEqual(menu.frame, frame)
+        XCTAssertFalse(library.isVisible, "Creating a profile closes the manager")
+        XCTAssertEqual(model.tunnelAssignments, assignments)
+        XCTAssertEqual(menu.frame, frame)
+    }
+
+    private func routingPickers(in window: NSWindow) -> [NSPopUpButton] {
+        descendants(window.contentView!).compactMap { $0 as? NSPopUpButton }.filter { $0.title == "Default" }
+    }
+
+    private func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+
+    private func click(in window: NSWindow, at point: NSPoint) throws {
+        func event(_ type: NSEvent.EventType) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        }
+        NSApp.postEvent(try event(.leftMouseUp), atStart: true)
+        window.sendEvent(try event(.leftMouseDown))
+        if let pending = NSApp.nextEvent(matching: .leftMouseUp, until: .distantPast, inMode: .default, dequeue: true) {
+            NSApp.sendEvent(pending)
+        }
+    }
+
+    private func key(_ text: String, code: UInt16, in window: NSWindow) throws {
+        window.sendEvent(try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, characters: text, charactersIgnoringModifiers: text,
+            isARepeat: false, keyCode: code)))
+    }
+
     private func isVisible(_ id: String, in toolbar: NSToolbar) -> Bool {
         toolbar.visibleItems?.contains { $0.itemIdentifier.rawValue == id } == true
     }
