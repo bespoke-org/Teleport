@@ -628,6 +628,54 @@ final class SplitTunnelingTests: XCTestCase {
         XCTAssert(decodedProfileA?.defaultAction == .direct)
     }
 
+    func testGlobalRoutingMigrationUsesAssignedProfileRatherThanEditor() throws {
+        let connection = SavedConnection(id: UUID(), configuration: try ConnectionLinkParser().parse(sampleVLESSLink()), savedAt: Date())
+        for enabled in [false, true] {
+            let active = SplitTunnelProfile(name: "Active", isRoutingEnabled: enabled)
+            let editor = SplitTunnelProfile(name: "Open in Routing", isRoutingEnabled: !enabled)
+            let assignment = TunnelProfileAssignment(target: .connection(connection.id), personalProfileID: active.id)
+            let snapshot = AppSnapshot(savedConnections: [connection], selectedConnectionID: connection.id,
+                proxyEndpoint: .default, splitTunnelProfiles: [editor, active], selectedSplitTunnelProfileID: editor.id,
+                isSplitTunnelEnabled: !enabled, tunnelAssignments: [assignment])
+            var old = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(snapshot)) as? [String: Any])
+            old.removeValue(forKey: "routingActivationVersion")
+            let migrated = try JSONDecoder().decode(AppSnapshot.self, from: JSONSerialization.data(withJSONObject: old))
+            XCTAssertEqual(migrated.isSplitTunnelEnabled, enabled)
+            XCTAssertEqual(migrated.splitTunnelProfiles, snapshot.splitTunnelProfiles)
+            XCTAssertEqual(migrated.tunnelAssignments, [assignment])
+            XCTAssertEqual(migrated.selectedSplitTunnelProfileID, editor.id)
+            let persisted = try JSONEncoder().encode(migrated)
+            XCTAssertEqual(try XCTUnwrap(JSONSerialization.jsonObject(with: persisted) as? [String: Any])["routingActivationVersion"] as? Int, 1)
+            XCTAssertEqual(try JSONDecoder().decode(AppSnapshot.self, from: persisted), migrated)
+        }
+    }
+
+    func testGlobalRoutingMarkerPreservesOffDespiteEnabledAssignedProfile() throws {
+        let active = SplitTunnelProfile(name: "Teleport", isRoutingEnabled: true)
+        for enabled in [false, true] {
+            let snapshot = AppSnapshot(savedConnections: [], selectedConnectionID: nil, proxyEndpoint: .default,
+                splitTunnelProfiles: [active], isSplitTunnelEnabled: enabled, tunnelAssignments: [])
+            let decoded = try JSONDecoder().decode(AppSnapshot.self, from: JSONEncoder().encode(snapshot))
+            XCTAssertEqual(decoded.isSplitTunnelEnabled, enabled)
+            XCTAssertEqual(decoded.splitTunnelProfiles, [active])
+        }
+        let oldDefault: [String: Any] = ["tunnelAssignments": [], "isSplitTunnelEnabled": true,
+            "splitTunnelProfiles": [["id": active.id.uuidString, "name": "Default", "rules": [], "isRoutingEnabled": false]]]
+        let migratedDefault = try JSONDecoder().decode(AppSnapshot.self, from: JSONSerialization.data(withJSONObject: oldDefault))
+        XCTAssertFalse(migratedDefault.isSplitTunnelEnabled, "An old disabled default stays off when no portal is selected")
+    }
+
+    func testPreAssignmentSnapshotKeepsItsOriginalGlobalSwitch() throws {
+        let profile = SplitTunnelProfile(name: "Default", isRoutingEnabled: false)
+        var old = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(AppSnapshot(
+            savedConnections: [], selectedConnectionID: nil, proxyEndpoint: .default,
+            splitTunnelProfiles: [profile], isSplitTunnelEnabled: true, tunnelAssignments: []))) as? [String: Any])
+        old.removeValue(forKey: "routingActivationVersion")
+        old.removeValue(forKey: "tunnelAssignments")
+        let migrated = try JSONDecoder().decode(AppSnapshot.self, from: JSONSerialization.data(withJSONObject: old))
+        XCTAssertTrue(migrated.isSplitTunnelEnabled)
+    }
+
     func testSelectingUnknownProfileIDFallsBackToFirstProfile() throws {
         let json = """
         {

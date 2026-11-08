@@ -5,6 +5,13 @@ import Foundation
 final class TeleportMCPService {
     private let model: AppViewModel
     private let access: () -> MCPAccess
+    // The legacy MCP assignment cursor is independent of the profile document
+    // open in Routing. UI navigation must never change its assignment target.
+    private var assignmentTarget: TunnelTarget?
+    private var selectedTarget: TunnelTarget? {
+        if let assignmentTarget, model.tunnelTargets.contains(assignmentTarget) { return assignmentTarget }
+        return model.selectedConnection.map(TunnelTarget.init(connection:)) ?? model.tunnelTargets.first
+    }
     private let loadAudit: (SplitTunnelProfile) async throws -> RoutingAudit
 
     init(model: AppViewModel, access: @escaping () -> MCPAccess,
@@ -43,7 +50,7 @@ final class TeleportMCPService {
         data.append((try? encoder.encode(model.subscriptionSources)) ?? Data())
         data.append((try? encoder.encode(model.geodataSettings)) ?? Data())
         data.append((try? encoder.encode(model.tunnelAssignments)) ?? Data())
-        data.append((try? encoder.encode(model.selectedTunnelTarget)) ?? Data())
+        data.append((try? encoder.encode(selectedTarget)) ?? Data())
         data.append((try? encoder.encode(model.mcpGeodataRevision)) ?? Data())
         data.append((try? encoder.encode(model.savedConnections)) ?? Data())
         data.append((try? JSONSerialization.data(withJSONObject: model.mcpRoutingApplicationState, options: [.sortedKeys])) ?? Data())
@@ -91,20 +98,21 @@ final class TeleportMCPService {
     }
 
     private func routes(_ destinations: [String], profile: SplitTunnelProfile, audit: RoutingAudit, revision expected: String) async throws -> [[String: Any]] {
+        let profileEnabled = profile.subscriptionSourceID == nil || profile.isRoutingEnabled
         // Category matching can be expensive; a batch must not block the app UI.
         let matches = try await Task.detached(priority: .utility) {
-            guard !profile.isRoutingEnabled || !profile.rules.contains(where: { $0.isEnabled && audit.missingCategory($0) }) else {
+            guard !profileEnabled || !profile.rules.contains(where: { $0.isEnabled && audit.missingCategory($0) }) else {
                 throw MCPFailure("A referenced geodata category is missing; the route cannot be previewed reliably")
             }
             let deadline = Date().addingTimeInterval(5)
             return try destinations.map { destination -> SplitTunnelRule? in
                 guard !Task.isCancelled, Date() < deadline else { throw MCPFailure("Route analysis work limit reached. Retry with fewer destinations.") }
-                return profile.isRoutingEnabled ? audit.firstMatch(destination: destination, rules: profile.rules) : nil
+                return profileEnabled ? audit.firstMatch(destination: destination, rules: profile.rules) : nil
             }
         }.value
         try checkAnalysisRevision(expected)
         return zip(destinations, matches).map { destination, rule in
-            let action = rule?.action ?? (profile.isRoutingEnabled ? profile.defaultAction : .proxy)
+            let action = rule?.action ?? (profileEnabled ? profile.defaultAction : .proxy)
             let connectionID = rule?.connectionID.flatMap { id in model.savedConnections.contains { $0.id == id } ? id : nil } ?? model.selectedConnectionID
             let connection = action == .proxy ? model.savedConnections.first { $0.id == connectionID } : nil
             return ["destination": destination, "action": action.rawValue, "rule": rule.map(ruleJSON) as Any? ?? NSNull(),
@@ -156,7 +164,7 @@ final class TeleportMCPService {
                     "selectedProfileID": model.selectedSplitTunnelProfileID?.uuidString as Any? ?? NSNull(),
                     "connected": model.isConnected, "mode": model.connectionMode.rawValue,
                     "connectionProfileID": model.mcpConnectionProfileID?.uuidString as Any? ?? NSNull(),
-                    "selectedTarget": model.selectedTunnelTarget.map(targetJSON) as Any? ?? NSNull(),
+                    "selectedTarget": selectedTarget.map(targetJSON) as Any? ?? NSNull(),
                     "targets": model.tunnelTargets.map { target in
                         var value = targetJSON(target)
                         value["name"] = model.tunnelTargetName(target)
@@ -166,7 +174,7 @@ final class TeleportMCPService {
                     "application": model.mcpRoutingApplicationState,
                     "profiles": model.splitTunnelProfiles.map { profile in
                         ["id": profile.id.uuidString, "name": profile.name, "defaultAction": profile.defaultAction.rawValue,
-                         "enabled": profile.isRoutingEnabled, "editable": profile.subscriptionSourceID == nil,
+                         "enabled": profile.subscriptionSourceID == nil || profile.isRoutingEnabled, "editable": profile.subscriptionSourceID == nil,
                          "subscriptionSourceID": profile.subscriptionSourceID?.uuidString as Any? ?? NSNull(),
                          "geodata": ["geositeHost": profile.geodataSources?.geositeURLString.flatMap { URL(string: $0)?.host } as Any? ?? NSNull(),
                                      "geoipHost": profile.geodataSources?.geoipURLString.flatMap { URL(string: $0)?.host } as Any? ?? NSNull()],
@@ -297,24 +305,31 @@ final class TeleportMCPService {
                 guard let kind = args["targetKind"] as? String else { throw MCPFailure("targetKind is required") }
                 let target: TunnelTarget = kind == "subscription" ? .subscription(id) : .connection(id)
                 guard model.tunnelTargets.contains(target) else { throw MCPFailure("Tunnel target not found") }
-                return try apply(args, preview: ["selectTarget": targetJSON(target)]) { model.selectTunnelTarget(target) }
+                return try apply(args, preview: ["selectTarget": targetJSON(target)]) {
+                    assignmentTarget = target
+                    if let id = model.tunnelProfile(for: target)?.id { model.openSplitTunnelProfile(id: id) }
+                }
             }
             if operation == "customize" {
-                guard model.selectedSplitTunnelProfile != nil, model.selectedTunnelTarget != nil else { throw MCPFailure("Select a tunnel target first") }
-                return try apply(args, affectsRouting: true, preview: ["customizeSelectedProfile": true]) { _ = model.customizeTunnelProfile() }
+                guard let profile = model.selectedSplitTunnelProfile else { throw MCPFailure("Select a routing profile first") }
+                return try apply(args, preview: ["copyProfileID": profile.id.uuidString]) { _ = model.copySplitTunnelProfile(id: profile.id) }
             }
             if operation == "inherit" {
-                guard model.providerTunnelProfile != nil else { throw MCPFailure("Selected subscription has no provider profile") }
-                return try apply(args, affectsRouting: !model.inheritsSubscriptionTunnel, preview: ["inheritProviderProfile": true]) { model.setInheritsSubscriptionTunnel(true) }
+                guard let target = selectedTarget, case let .subscription(sourceID) = target,
+                      let provider = model.providerTunnelProfile(for: sourceID) else { throw MCPFailure("Selected subscription has no provider profile") }
+                let changesActive = model.selectedConnection.map(TunnelTarget.init(connection:)) == target
+                    && model.tunnelProfile(for: target)?.id != provider.id
+                return try apply(args, affectsRouting: changesActive, preview: ["inheritProviderProfile": true]) {
+                    model.assignTunnelProfile(nil, to: target)
+                }
             }
             if operation == "set_enabled" {
-                guard model.selectedSplitTunnelProfile != nil, model.canEditTunnelProfile else { throw MCPFailure("Select a personal profile or customize the provider profile first") }
                 guard let enabled = args["enabled"] as? Bool else { throw MCPFailure("enabled is required") }
                 return try apply(args, affectsRouting: enabled != model.isSplitTunnelEnabled, preview: ["enabled": enabled]) { model.setSplitTunnelEnabled(enabled) }
             }
             if operation == "create" {
                 guard let title = args["name"] as? String, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, title.count <= 256 else { throw MCPFailure("name is required (1–256 characters)") }
-                return try apply(args, affectsRouting: true, preview: ["createAndSelect": title]) { model.addSplitTunnelProfile(name: title) }
+                return try apply(args, preview: ["createAndOpen": title]) { model.addSplitTunnelProfile(name: title) }
             }
             let selected = try profile(args)
             guard selected.subscriptionSourceID == nil else { throw MCPFailure("Provider profiles are read-only. Customize the profile first.") }
@@ -326,8 +341,13 @@ final class TeleportMCPService {
                 guard model.personalTunnelProfiles.count > 1 else { throw MCPFailure("Cannot delete the last personal profile") }
                 return try apply(args, affectsRouting: selected.id == model.mcpConnectionProfileID, preview: ["deleteProfileID": selected.id.uuidString]) { model.removeSplitTunnelProfile(id: selected.id) }
             default:
-                guard model.selectedTunnelTarget != nil else { throw MCPFailure("Select a tunnel target first") }
-                return try apply(args, affectsRouting: selected.id != model.selectedSplitTunnelProfileID, preview: ["selectProfileID": selected.id.uuidString]) { model.selectSplitTunnelProfile(id: selected.id) }
+                guard let target = selectedTarget else { throw MCPFailure("Select an assignment target first") }
+                let changesActive = model.selectedConnection.map(TunnelTarget.init(connection:)) == target
+                    && model.tunnelProfile(for: target)?.id != selected.id
+                return try apply(args, affectsRouting: changesActive,
+                                 preview: ["assignProfileID": selected.id.uuidString, "target": targetJSON(target)]) {
+                    model.assignTunnelProfile(selected.id, to: target)
+                }
             }
         case "add_subscription":
             let url = try subscriptionURL(args["url"] as! String)

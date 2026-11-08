@@ -19,6 +19,12 @@ final class SettingsSearchTests: XCTestCase {
         XCTAssertTrue(SettingsSearch.results(for: "nonexistent setting").isEmpty)
     }
 
+    func testProfileEditingAndAssignmentHaveSeparateSearchDestinations() {
+        XCTAssertEqual(SettingsSearch.results(for: "profile editor").map(\.section), [.tunnel])
+        XCTAssertEqual(SettingsSearch.results(for: "assign profile").map(\.section), [.portals])
+        XCTAssertEqual(SettingsSearch.results(for: "global split").map(\.section), [.tunnel])
+    }
+
     func testNestedPagesHaveDirectDestinationsAndNoDuplicateResults() {
         let logs = SettingsSearch.results(for: "logs")
         XCTAssertEqual(logs.count, 1)

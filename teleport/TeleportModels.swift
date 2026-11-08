@@ -833,6 +833,8 @@ nonisolated struct SplitTunnelProfile: Codable, Equatable, Identifiable {
     /// Sources travel with the rules that reference their categories. A nil URL
     /// uses Teleport's bundled file for that kind; nil sources decode old profiles.
     var geodataSources: GeodataSources?
+    /// Provider routing/on and routing/off. Legacy personal values are retained
+    /// for migration; personal profiles use the application's global switch.
     var isRoutingEnabled: Bool
     var geodataUpdateIntervalMinutes: Int?
 
@@ -934,6 +936,8 @@ struct AppSnapshot: Codable, Equatable {
     var splitTunnelProfiles: [SplitTunnelProfile]
     var selectedSplitTunnelProfileID: UUID?
     var isSplitTunnelEnabled: Bool
+    /// Version 1 separates the global switch from the profile open in Routing.
+    private var routingActivationVersion = 1
     /// Whether TUN mode refuses to let traffic reach the physical uplink while a
     /// session is meant to be carrying it. On by default: the windows it covers
     /// open without the user doing anything.
@@ -998,6 +1002,7 @@ struct AppSnapshot: Codable, Equatable {
         case splitTunnelProfiles
         case selectedSplitTunnelProfileID
         case isSplitTunnelEnabled
+        case routingActivationVersion
         case isLeakGuardEnabled
         case geodataSettings
         case tunnelAssignments
@@ -1060,6 +1065,12 @@ struct AppSnapshot: Codable, Equatable {
             migrateGeodataSources()
         }
         ensurePersonalTunnelProfile()
+        if !container.contains(.routingActivationVersion), container.contains(.tunnelAssignments) {
+            let activeTarget = savedConnections.first { $0.id == selectedConnectionID }.map(TunnelTarget.init(connection:))
+            let activeProfile = TunnelProfileResolver.profile(for: activeTarget, profiles: splitTunnelProfiles,
+                                                              assignments: tunnelAssignments)
+            isSplitTunnelEnabled = activeProfile?.isRoutingEnabled ?? isSplitTunnelEnabled
+        }
     }
 
     private mutating func ensurePersonalTunnelProfile() {

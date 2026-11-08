@@ -338,14 +338,10 @@ private struct ConnectionPickerSection: View, Equatable {
         }
         for source in subscriptionItems {
             let connections = importedItemsBySourceID[source.id] ?? []
-            let section = "\(source.displayName) (\(connections.count))"
-            if connections.isEmpty {
-                options.append(GlassSelectionOption(id: "empty:\(source.id)", title: "No imported configs", section: section, isEnabled: false))
-            } else {
-                options += connections.map {
-                    GlassSelectionOption(id: $0.id.uuidString, title: connectionLabel(for: $0), section: section)
-                }
-            }
+            options.append(GlassSelectionOption(id: "subscription:\(source.id)", title: source.displayName,
+                section: "Subscriptions", children: connections.map {
+                    GlassSelectionOption(id: $0.id.uuidString, title: connectionLabel(for: $0))
+                }))
         }
         return options
     }

@@ -8,6 +8,8 @@ struct SettingsView: View {
     @Binding var navigation: SettingsNavigation
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var portalsState = PortalsState()
+    @State private var portalSearchFocusRequest = 0
+    @State private var routingNameFocusID: UUID?
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             SettingsSidebar(navigation: $navigation)
@@ -38,24 +40,21 @@ struct SettingsView: View {
                 }
                 .controlGroupStyle(.navigation)
             }
-            // A principal item keeps page actions trailing in a SwiftUI Window.
-            // Give it a real size so AppKit can measure it without warnings.
+            SettingsRecoveryToolbar(viewModel: viewModel)
             if #available(macOS 26.0, *) {
-                ToolbarItem(id: "settings.titleSpacer", placement: .principal) {
-                    Color.clear.frame(width: 1, height: 1)
+                ToolbarItem(id: "settings.pageActions", placement: .primaryAction) {
+                    pageActions
                 }
                 .sharedBackgroundVisibility(.hidden)
             } else {
-                ToolbarItem(id: "settings.titleSpacer", placement: .principal) {
-                    Color.clear.frame(width: 1, height: 1)
+                ToolbarItem(id: "settings.pageActions", placement: .primaryAction) {
+                    pageActions
                 }
             }
-            ToolbarItem(id: "settings.error", placement: .primaryAction) {
-                SettingsErrorIndicator(viewModel: viewModel, onOpenLogs: { navigation.select(.logs) })
-            }
-            PortalsToolbar(state: $portalsState, isActive: navigation.section == .portals,
-                           connection: PortalsConnectionButton(viewModel: viewModel))
         }
+        .focusedSceneValue(\.findPortals, navigation.section == .portals ? {
+            portalSearchFocusRequest += 1
+        } : nil)
         .focusedSceneValue(\.settingsNavigation, $navigation)
         .navigationSplitViewStyle(.balanced)
         .transaction(value: navigation.section) { transaction in
@@ -63,6 +62,25 @@ struct SettingsView: View {
             transaction.disablesAnimations = true
         }
         .frame(minHeight: SettingsSidebarLayout.minimumContentSize.height)
+    }
+
+    // One native item avoids AppKit's insertion/removal fades and leaves no gaps
+    // for inactive pages. Both sets of controls retain their native view state.
+    private var pageActions: some View {
+        ZStack(alignment: .trailing) {
+            PortalsToolbar(state: $portalsState, isActive: navigation.section == .portals,
+                           searchFocusRequest: portalSearchFocusRequest,
+                           connection: PortalsConnectionButton(viewModel: viewModel))
+            RoutingToolbar(viewModel: viewModel, isActive: navigation.section == .tunnel,
+                           onNewProfile: {
+                               routingNameFocusID = viewModel.addSplitTunnelProfile(name: "новый профиль")
+                           })
+        }
+        .padding(4)
+        .transaction(value: navigation.section) {
+            $0.animation = nil
+            $0.disablesAnimations = true
+        }
     }
 
     private var detailContent: some View {
@@ -81,9 +99,12 @@ struct SettingsView: View {
         case .general:
             GeneralSettingsView(viewModel: viewModel)
         case .portals:
-            PortalsSettingsView(viewModel: viewModel, state: $portalsState)
+            PortalsSettingsView(viewModel: viewModel, state: $portalsState) { profileID in
+                guard viewModel.openSplitTunnelProfile(id: profileID) else { return }
+                navigation.select(.tunnel)
+            }
         case .tunnel:
-            TunnelSettingsView(viewModel: viewModel)
+            TunnelSettingsView(viewModel: viewModel, nameFocusID: $routingNameFocusID)
         case .advanced:
             AdvancedSettingsView(viewModel: viewModel, onOpenLogs: { navigation.select(.logs) })
         case .logs:
@@ -154,17 +175,18 @@ private struct GeneralSettingsView: View {
                         get: { viewModel.connectionMode }, set: viewModel.selectConnectionMode
                     ), choices: ConnectionMode.allCases.map {
                         SettingsChoice(value: $0, title: $0.displayName)
-                    })
+                    }, acceptsSelection: viewModel.canChangeSelection)
                     .frame(width: 220, height: 28)
                 } label: {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Connection mode")
-                        Text(modeDescription(for: viewModel.connectionMode))
+                        Text("System Proxy routes apps that use macOS proxy settings. TUN routes device traffic.")
                             .font(.caption).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                .disabled(!viewModel.canChangeSelection || viewModel.hasActiveConnectionSession)
+                .disabled(viewModel.hasActiveConnectionSession && !viewModel.isResolvingConnectionProvider)
+                .help(modeRestriction ?? "Choose how Teleport routes traffic.")
 
                 Toggle(
                     isOn: Binding(
@@ -172,19 +194,17 @@ private struct GeneralSettingsView: View {
                         set: { viewModel.setLeakGuardEnabled($0) }
                     )
                 ) {
-                    Text("Protect traffic during tunnel interruptions")
-                    Text(viewModel.connectionMode == .tun
-                        ? "Blocks apps from using your regular internet connection while the tunnel reconnects. Local network access and DNS remain available."
-                        : "Available in TUN mode.")
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Protect traffic during tunnel interruptions")
+                        Text("In TUN mode, blocks apps from using your regular internet connection while the tunnel reconnects. Local network access and DNS remain available.")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
                 .disabled(viewModel.connectionMode != .tun)
                 .help("If a hotel or airport sign-in page will not load, temporarily turn off tunnel protection.")
             } header: {
                 Text("Connection")
-            } footer: {
-                if let restriction = modeRestriction {
-                    Text(restriction)
-                }
             }
 
             Section("Menu bar and Dock") {
@@ -251,18 +271,6 @@ private struct GeneralSettingsView: View {
         .padding(.top, -20)
     }
 
-    private func modeDescription(for mode: ConnectionMode) -> String {
-        switch mode {
-        case .systemProxy:
-            return "Routes apps that use macOS proxy settings."
-        case .tun:
-            if !viewModel.isHelperInstalled {
-                return "Routes device traffic with split routing exceptions. The first connection requires administrator approval to install a helper."
-            }
-            return "Routes device traffic with split routing exceptions."
-        }
-    }
-
     private var modeRestriction: String? {
         if viewModel.connectionPhase == .failed || viewModel.proxyPhase == .failed {
             return "Click Disconnect in the menu bar to clear the failed session before changing mode."
@@ -322,7 +330,7 @@ enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         case .tunnel:
             return InterfaceSymbol.routing
         case .advanced:
-            return "slider.horizontal.3"
+            return "eyeglasses"
         case .logs:
             return "doc.text.magnifyingglass"
         case .about:

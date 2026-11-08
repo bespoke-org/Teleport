@@ -162,6 +162,256 @@ final class SubscriptionRoutingTests: XCTestCase {
     }
 
     @MainActor
+    func testGlobalSwitchLiveAppliesWithoutFollowingTheOpenProfile() async throws {
+        let fixture = try ViewModelFixture(personalProfileEnabled: false)
+        defer { fixture.cleanUp() }
+        let model = fixture.viewModel
+        await waitUntil { model.canConnect }
+        let originalID = try XCTUnwrap(model.selectedSplitTunnelProfileID)
+        model.setSplitTunnelDefaultAction(.direct)
+        model.connect()
+        await waitUntil { model.isConnected && !model.isOperationPending }
+        var requests = await fixture.provider.requests
+        XCTAssertEqual(requests.last?.splitTunnelPolicy.rules.map(\.value), ["original.example"], "Personal profiles have no hidden activation switch")
+        XCTAssertEqual(requests.last?.splitTunnelPolicy.defaultAction, .direct)
+        let draft = model.addSplitTunnelProfile(name: "Unrelated draft")
+        let assignments = model.tunnelAssignments
+        XCTAssertTrue(model.isSplitTunnelEnabled)
+        model.setSplitTunnelEnabled(false)
+        await waitForLiveApply(fixture, requestCount: 2)
+        requests = await fixture.provider.requests
+        XCTAssertEqual(requests.last?.splitTunnelPolicy.rules, [])
+        XCTAssertEqual(requests.last?.splitTunnelPolicy.defaultAction, .proxy)
+        XCTAssertEqual(model.selectedSplitTunnelProfileID, draft)
+        XCTAssertEqual(model.tunnelAssignments, assignments)
+        model.openSplitTunnelProfile(id: originalID)
+        XCTAssertFalse(model.isSplitTunnelEnabled)
+        model.openSplitTunnelProfile(id: draft)
+        model.setSplitTunnelEnabled(true)
+        await waitForLiveApply(fixture, requestCount: 3)
+        requests = await fixture.provider.requests
+        XCTAssertEqual(requests.last?.splitTunnelPolicy.rules.map(\.value), ["original.example"])
+        XCTAssertEqual(requests.last?.splitTunnelPolicy.defaultAction, .direct)
+        XCTAssertEqual(model.selectedSplitTunnelProfileID, draft)
+        model.disconnect()
+        await waitUntil { model.connectionState == .idle && !model.isOperationPending }
+        model.setSplitTunnelEnabled(false)
+        await waitUntil { !fixture.store.load().isSplitTunnelEnabled }
+        let restored = fixture.restoredViewModel()
+        XCTAssertFalse(restored.isSplitTunnelEnabled)
+        XCTAssertEqual(restored.selectedSplitTunnelProfileID, draft)
+        XCTAssertEqual(restored.tunnelAssignments, assignments)
+    }
+
+    @MainActor
+    func testGlobalOffIgnoresAssignedGeodataUntilRoutingIsEnabled() async throws {
+        let fixture = try ViewModelFixture()
+        defer { fixture.cleanUp() }
+        let model = fixture.viewModel
+        await waitUntil { model.canConnect }
+        model.setSplitTunnelEnabled(false)
+        model.setSplitTunnelDefaultAction(.direct)
+        model.applyGeodataSources(geositeURLString: "https://provider.invalid/geosite.dat", geoipURLString: nil)
+        await waitUntil { fixture.geodata.requestedKinds.count == 1 }
+        model.connect()
+        await waitUntil { model.isConnected && !model.isOperationPending }
+        var requests = await fixture.provider.requests
+        XCTAssertEqual(requests.last?.splitTunnelPolicy.rules, [])
+        XCTAssertEqual(requests.last?.splitTunnelPolicy.defaultAction, .proxy)
+        XCTAssertEqual(fixture.geodata.activationCount, 0, "Disabled routing must not activate a profile's geodata")
+        XCTAssertNil(model.geodataSettings.geositeURLString)
+        model.setSplitTunnelEnabled(true)
+        await waitForLiveApply(fixture, requestCount: 2)
+        requests = await fixture.provider.requests
+        XCTAssertEqual(requests.last?.splitTunnelPolicy.rules.map(\.value), ["original.example"])
+        XCTAssertEqual(requests.last?.splitTunnelPolicy.defaultAction, .direct)
+        XCTAssertEqual(model.geodataSettings.geositeURLString, "https://provider.invalid/geosite.dat")
+        XCTAssertEqual(fixture.geodata.activationCount, 1)
+        model.disconnect()
+        await waitUntil { model.connectionState == .idle && !model.isOperationPending }
+    }
+
+    @MainActor
+    func testProviderOffAndAssignmentsDoNotChangeTheGlobalSwitch() async throws {
+        let fixture = try ViewModelFixture(activeSubscriptionPortal: true)
+        defer { fixture.cleanUp() }
+        let model = fixture.viewModel
+        await waitUntil { model.canConnect }
+        let personal = try XCTUnwrap(model.selectedSplitTunnelProfileID)
+        model.refreshSubscription(id: fixture.source.id)
+        await waitUntil { await fixture.loader.requestCount == 1 }
+        await fixture.loader.complete(index: 0, header: "happ://routing/off")
+        await waitUntil { !model.isRefreshingSubscription(fixture.source.id) }
+        let provider = try XCTUnwrap(model.providerTunnelProfile(for: fixture.source.id))
+        XCTAssertTrue(model.isSplitTunnelEnabled, "Provider off is not the global switch")
+        model.openSplitTunnelProfile(id: provider.id)
+        XCTAssertTrue(model.isSplitTunnelEnabled)
+        model.connect()
+        await waitUntil { model.isConnected && !model.isOperationPending }
+        var requests = await fixture.provider.requests
+        XCTAssertEqual(requests.last?.splitTunnelPolicy.rules, [])
+        model.setSplitTunnelEnabled(false)
+        XCTAssertFalse(model.isSplitTunnelEnabled, "The global switch is editable even while viewing a read-only profile")
+        XCTAssertTrue(model.assignTunnelProfile(personal, to: .subscription(fixture.source.id)))
+        XCTAssertFalse(model.isSplitTunnelEnabled)
+        model.openSplitTunnelProfile(id: personal)
+        let copy = try XCTUnwrap(model.copySplitTunnelProfile(id: personal))
+        XCTAssertFalse(model.isSplitTunnelEnabled)
+        model.renameSplitTunnelProfile(id: personal, name: "Teleport renamed")
+        XCTAssertEqual(model.tunnelProfile(for: .subscription(fixture.source.id))?.name, "Teleport renamed")
+        XCTAssertEqual(model.selectedSplitTunnelProfileID, copy)
+        model.renameSplitTunnelProfile(id: provider.id, name: "Not allowed")
+        XCTAssertEqual(model.providerTunnelProfile(for: fixture.source.id)?.name, provider.name)
+        model.refreshSubscription(id: fixture.source.id)
+        await waitUntil { await fixture.loader.requestCount == 2 }
+        await fixture.loader.complete(index: 1, header: try link(["Name": "Provider on", "DirectSites": ["new.example"]]))
+        await waitUntil { !model.isRefreshingSubscription(fixture.source.id) }
+        XCTAssertFalse(model.isSplitTunnelEnabled, "Provider onadd must not enable the global switch")
+        XCTAssertEqual(model.tunnelProfile(for: .subscription(fixture.source.id))?.id, personal)
+        model.setSplitTunnelEnabled(true)
+        await waitForLiveApply(fixture, requestCount: 2)
+        requests = await fixture.provider.requests
+        XCTAssertEqual(requests.last?.splitTunnelPolicy.rules.map(\.value), ["original.example"])
+        model.disconnect()
+        await waitUntil { model.connectionState == .idle && !model.isOperationPending }
+    }
+
+    @MainActor
+    func testProfileLibrarySelectionCreationAndCopyNeverAssignAndRestoreIndependently() async throws {
+        let fixture = try ViewModelFixture()
+        defer { fixture.cleanUp() }
+        let model = fixture.viewModel
+        await waitUntil { model.canConnect }
+        let connection = try XCTUnwrap(model.selectedConnection)
+        let target = TunnelTarget(connection: connection)
+        let originalID = try XCTUnwrap(model.tunnelProfile(for: target)?.id)
+        let assignments = model.tunnelAssignments
+
+        model.connect()
+        await waitUntil { model.isConnected && !model.isOperationPending }
+        let createdID = model.addSplitTunnelProfile(name: "Not assigned")
+        XCTAssertEqual(model.selectedSplitTunnelProfileID, createdID)
+        XCTAssertEqual(model.tunnelAssignments, assignments)
+        XCTAssertEqual(model.tunnelProfile(for: target)?.id, originalID)
+        XCTAssertTrue(model.tunnelProfileUsers(id: createdID).isEmpty)
+
+        let copyID = try XCTUnwrap(model.copySplitTunnelProfile(id: originalID))
+        XCTAssertEqual(model.selectedSplitTunnelProfileID, copyID)
+        XCTAssertEqual(model.splitTunnelRules.first?.value, "original.example")
+        XCTAssertEqual(model.tunnelAssignments, assignments)
+        XCTAssertEqual(model.tunnelProfile(for: target)?.id, originalID)
+        XCTAssertTrue(model.tunnelProfileUsers(id: copyID).isEmpty)
+        XCTAssertFalse(model.openSplitTunnelProfile(id: UUID()))
+        XCTAssertEqual(model.selectedSplitTunnelProfileID, copyID)
+
+        await waitUntil { fixture.store.load().selectedSplitTunnelProfileID == copyID }
+        let restored = fixture.restoredViewModel()
+        XCTAssertEqual(restored.selectedSplitTunnelProfileID, copyID, "Startup restores the editor, not the active portal's profile")
+        XCTAssertEqual(restored.tunnelAssignments, assignments)
+        XCTAssertEqual(restored.tunnelProfile(for: target)?.id, originalID)
+        XCTAssertEqual(model.selectedConnectionID, connection.id)
+        let requests = await fixture.provider.requests
+        XCTAssertEqual(requests.count, 1)
+        XCTAssertEqual(requests[0].splitTunnelPolicy.rules.first?.value, "original.example")
+        model.disconnect()
+        await waitUntil { model.connectionState == .idle && !model.isOperationPending }
+    }
+
+    @MainActor
+    func testExplicitAssignmentLeavesEditorAloneAndSharedEditsReachConsumers() async throws {
+        let fixture = try ViewModelFixture()
+        defer { fixture.cleanUp() }
+        let model = fixture.viewModel
+        await waitUntil { model.canConnect }
+        let connection = try XCTUnwrap(model.selectedConnection)
+        let target = TunnelTarget(connection: connection)
+        let originalID = try XCTUnwrap(model.selectedSplitTunnelProfileID)
+        let sharedID = try XCTUnwrap(model.copySplitTunnelProfile(id: originalID))
+        XCTAssertTrue(model.openSplitTunnelProfile(id: originalID))
+        XCTAssertTrue(model.assignTunnelProfile(sharedID, to: .subscription(fixture.source.id)))
+        XCTAssertEqual(model.selectedSplitTunnelProfileID, originalID)
+        XCTAssertEqual(model.tunnelProfile(for: target)?.id, originalID, "Assigning one subscription must not change another target")
+
+        XCTAssertTrue(model.assignTunnelProfile(sharedID, to: target))
+        XCTAssertEqual(model.selectedSplitTunnelProfileID, originalID, "Assignment must not navigate the editor")
+        XCTAssertEqual(Set(model.tunnelProfileTargets(id: sharedID)), [target, .subscription(fixture.source.id)])
+        XCTAssertEqual(model.tunnelProfileUsageDescription(id: sharedID), "Used by 1 subscription and 1 standalone portal")
+        XCTAssertFalse(model.assignTunnelProfile(nil, to: target), "A standalone portal cannot inherit a subscription profile")
+        XCTAssertFalse(model.assignTunnelProfile(UUID(), to: target))
+        XCTAssertFalse(model.assignTunnelProfile(sharedID, to: .subscription(UUID())))
+
+        model.connect()
+        await waitUntil { model.isConnected && !model.isOperationPending }
+        model.openSplitTunnelProfile(id: sharedID)
+        _ = model.addSplitTunnelRule(value: "shared.example", action: .direct)
+        await waitUntil { await fixture.provider.requests.count == 2 && !model.isOperationPending }
+        let requests = await fixture.provider.requests
+        XCTAssertTrue(requests.last?.splitTunnelPolicy.rules.contains { $0.value == "shared.example" } == true)
+        XCTAssertEqual(model.tunnelProfile(for: target)?.rules, model.tunnelProfile(for: .subscription(fixture.source.id))?.rules)
+        model.disconnect()
+        await waitUntil { model.connectionState == .idle && !model.isOperationPending }
+    }
+
+    @MainActor
+    func testRemovingAnAssignedProfileUpdatesConsumersWithoutReplacingAnotherOpenProfile() async throws {
+        let fixture = try ViewModelFixture()
+        defer { fixture.cleanUp() }
+        let model = fixture.viewModel
+        await waitUntil { model.canConnect }
+        let target = TunnelTarget(connection: try XCTUnwrap(model.selectedConnection))
+        let originalID = try XCTUnwrap(model.selectedSplitTunnelProfileID)
+        let sharedID = try XCTUnwrap(model.copySplitTunnelProfile(id: originalID))
+        _ = model.addSplitTunnelRule(value: "shared-only.example", action: .direct)
+        XCTAssertTrue(model.assignTunnelProfile(sharedID, to: target))
+        XCTAssertTrue(model.assignTunnelProfile(sharedID, to: .subscription(fixture.source.id)))
+        model.connect()
+        await waitUntil { model.isConnected && !model.isOperationPending }
+        let draftID = model.addSplitTunnelProfile(name: "Unrelated draft")
+        model.removeSplitTunnelProfile(id: sharedID)
+        XCTAssertEqual(model.selectedSplitTunnelProfileID, draftID)
+        XCTAssertEqual(model.tunnelProfile(for: target)?.id, originalID)
+        XCTAssertEqual(model.tunnelProfile(for: .subscription(fixture.source.id))?.id, originalID)
+        await waitForLiveApply(fixture, requestCount: 2)
+        let requests = await fixture.provider.requests
+        XCTAssertEqual(requests.last?.splitTunnelPolicy.rules.map(\.value), ["original.example"])
+        model.disconnect()
+        await waitUntil { model.connectionState == .idle && !model.isOperationPending }
+    }
+
+    @MainActor
+    func testOpeningProviderAndRemovingProfilesDoesNotRetargetOtherEditorSelections() async throws {
+        let fixture = try ViewModelFixture()
+        defer { fixture.cleanUp() }
+        let model = fixture.viewModel
+        await waitUntil { model.canConnect }
+        let originalID = try XCTUnwrap(model.selectedSplitTunnelProfileID)
+        let unassignedID = model.addSplitTunnelProfile(name: "Draft")
+        model.refreshSubscription(id: fixture.source.id)
+        await waitUntil { await fixture.loader.requestCount == 1 }
+        await fixture.loader.complete(index: 0, header: try link(["Name": "Provider", "DirectSites": ["provider.example"]]))
+        await waitUntil { !model.isRefreshingSubscription(fixture.source.id) }
+        XCTAssertEqual(model.selectedSplitTunnelProfileID, unassignedID, "Import must preserve an unrelated open profile")
+        let provider = try XCTUnwrap(model.providerTunnelProfile(for: fixture.source.id))
+        model.updateSubscriptionSettings(id: fixture.source.id, customName: "", urlString: fixture.source.urlString,
+                                         autoUpdateIntervalMinutes: nil, filterDuplicateImports: true)
+        XCTAssertEqual(model.tunnelTargetName(.subscription(fixture.source.id)), "provider.invalid",
+                       "Routing labels must use the same fallback display name as Portals")
+        let assignments = model.tunnelAssignments
+        XCTAssertTrue(model.openSplitTunnelProfile(id: provider.id))
+        XCTAssertEqual(model.tunnelAssignments, assignments)
+        XCTAssertFalse(model.canEditTunnelProfile)
+        XCTAssertFalse(model.assignTunnelProfile(provider.id, to: .subscription(fixture.source.id)), "Provider inheritance has its own choice")
+
+        model.openSplitTunnelProfile(id: unassignedID)
+        model.removeSubscription(id: fixture.source.id)
+        XCTAssertEqual(model.selectedSplitTunnelProfileID, unassignedID)
+        XCTAssertFalse(model.openSplitTunnelProfile(id: provider.id))
+        model.removeSplitTunnelProfile(id: unassignedID)
+        XCTAssertEqual(model.selectedSplitTunnelProfileID, originalID)
+        XCTAssertEqual(model.splitTunnelRules.first?.value, "original.example")
+    }
+
+    @MainActor
     func testImportAssignsOnlyItsSubscriptionAndPersonalCopySurvivesRefresh() async throws {
         let fixture = try ViewModelFixture()
         defer { fixture.cleanUp() }
@@ -180,8 +430,8 @@ final class SubscriptionRoutingTests: XCTestCase {
         XCTAssertEqual(fixture.geodata.activationCount, 0, "Import downloads into the library without changing active datasets")
         XCTAssertNil(model.geodataSettings.geositeURLString)
 
-        model.selectTunnelTarget(.subscription(fixture.source.id))
-        XCTAssertTrue(model.inheritsSubscriptionTunnel)
+        model.openSplitTunnelProfile(id: try XCTUnwrap(model.providerTunnelProfile(for: fixture.source.id)).id)
+        XCTAssertTrue(model.inheritsSubscriptionTunnel(for: .subscription(fixture.source.id)))
         XCTAssertFalse(model.canEditTunnelProfile)
         XCTAssertEqual(model.addSplitTunnelRule(value: "example.com", action: .direct), .failure(.readOnlyProfile))
         let providerID = try XCTUnwrap(model.selectedSplitTunnelProfileID)
@@ -189,8 +439,11 @@ final class SubscriptionRoutingTests: XCTestCase {
         model.setSplitTunnelDefaultAction(.direct)
         XCTAssertEqual(model.splitTunnelDefaultAction, .proxy, "Provider profiles are read-only")
 
-        let copyID = try XCTUnwrap(model.customizeTunnelProfile())
-        XCTAssertFalse(model.inheritsSubscriptionTunnel)
+        let copyID = try XCTUnwrap(model.copySplitTunnelProfile(id: providerID))
+        XCTAssertTrue(model.inheritsSubscriptionTunnel(for: .subscription(fixture.source.id)), "Copying only opens the new profile")
+        XCTAssertEqual(model.tunnelProfile(for: .subscription(fixture.source.id))?.id, providerID)
+        XCTAssertTrue(model.assignTunnelProfile(copyID, to: .subscription(fixture.source.id)))
+        XCTAssertFalse(model.inheritsSubscriptionTunnel(for: .subscription(fixture.source.id)))
         model.setSplitTunnelDefaultAction(.direct)
         model.applyGeodataSources(geositeURLString: "https://custom.example/geosite.dat", geoipURLString: nil)
         await waitUntil { fixture.geodata.requestedKinds.count >= 3 }
@@ -224,11 +477,11 @@ final class SubscriptionRoutingTests: XCTestCase {
         XCTAssertEqual(model.selectedSplitTunnelProfileID, copyID)
         XCTAssertEqual(model.splitTunnelDefaultAction, .direct)
         XCTAssertEqual(model.selectedProfileGeodataSources.geositeURLString, "https://custom.example/geosite.dat")
-        XCTAssertEqual(model.providerTunnelProfile?.id, providerID)
-        XCTAssertEqual(model.providerTunnelProfile?.name, "Updated provider")
+        XCTAssertEqual(model.providerTunnelProfile(for: fixture.source.id)?.id, providerID)
+        XCTAssertEqual(model.providerTunnelProfile(for: fixture.source.id)?.name, "Updated provider")
         XCTAssertEqual(fixture.store.load().tunnelAssignments, model.tunnelAssignments)
 
-        model.setInheritsSubscriptionTunnel(true)
+        XCTAssertTrue(model.assignTunnelProfile(nil, to: .subscription(fixture.source.id)))
         model.connect()
         await waitUntil { model.isConnected && !model.isOperationPending }
         requests = await fixture.provider.requests
@@ -272,7 +525,7 @@ final class SubscriptionRoutingTests: XCTestCase {
         await waitUntil { fixture.geodata.requestedKinds.count == 2 }
         let portal = try XCTUnwrap(model.savedConnections.first { $0.source?.subscriptionSourceID == fixture.source.id })
         model.selectConnection(id: portal.id)
-        model.selectTunnelTarget(.subscription(fixture.source.id))
+        model.openSplitTunnelProfile(id: try XCTUnwrap(model.providerTunnelProfile(for: fixture.source.id)).id)
         model.connect()
         await waitUntil { model.isConnected && !model.isOperationPending }
         XCTAssertEqual(fixture.geodata.activationCount, 2)
@@ -428,7 +681,8 @@ final class SubscriptionRoutingTests: XCTestCase {
             viewModel.connect()
             await waitUntil { viewModel.isConnected && !viewModel.isOperationPending }
             let requests = await fixture.provider.requests
-            XCTAssertEqual(requests.last?.splitTunnelPolicy.rules, viewModel.isSplitTunnelEnabled ? viewModel.splitTunnelRules : [])
+            let assigned = viewModel.tunnelProfile(for: .subscription(fixture.source.id))
+            XCTAssertEqual(requests.last?.splitTunnelPolicy.rules, assigned?.isRoutingEnabled == true ? assigned?.rules : [])
             XCTAssertEqual(requests.last?.splitTunnelPolicy.defaultAction, .proxy)
             viewModel.disconnect()
             await waitUntil { viewModel.connectionState == .idle && !viewModel.isOperationPending }
@@ -468,6 +722,47 @@ final class SubscriptionRoutingTests: XCTestCase {
         XCTAssertEqual(requests.count, 2)
         XCTAssertEqual(requests.last?.splitTunnelPolicy.rules.first?.value, "new.example")
         XCTAssertEqual(model.geodataSettings.geositeURLString, "https://provider.example/new-geosite.dat")
+        model.disconnect()
+        await waitUntil { model.connectionState == .idle && !model.isOperationPending }
+    }
+
+    @MainActor
+    func testEditingAnUnassignedProfileDoesNotApplyDeferredProviderChanges() async throws {
+        let fixture = try ViewModelFixture(activeSubscriptionPortal: true)
+        defer { fixture.cleanUp() }
+        let model = fixture.viewModel
+        await waitUntil { model.canConnect }
+        model.connect()
+        await waitUntil { model.isConnected && !model.isOperationPending }
+        model.refreshSubscription(id: fixture.source.id)
+        await waitUntil { await fixture.loader.requestCount == 1 }
+        await fixture.loader.complete(index: 0, header: try link([
+            "Name": "Updated provider", "DirectSites": ["deferred.example"]
+        ]))
+        await waitUntil { !model.isRefreshingSubscription(fixture.source.id) }
+        let providerID = try XCTUnwrap(model.providerTunnelProfile(for: fixture.source.id)?.id)
+        let unexpectedReconnect = expectation(description: "Unassigned profile edit must leave the active session alone")
+        unexpectedReconnect.isInverted = true
+        let observation = model.$connectionState.dropFirst().sink { state in
+            if case .connecting = state { unexpectedReconnect.fulfill() }
+        }
+        defer { observation.cancel() }
+        let draftID = model.addSplitTunnelProfile(name: "Draft")
+        _ = model.addSplitTunnelRule(value: "draft.example", action: .direct)
+        model.setSplitTunnelEnabled(true)
+        await fulfillment(of: [unexpectedReconnect], timeout: 1.2)
+        let running = await fixture.provider.requests
+        XCTAssertEqual(running.count, 1)
+        XCTAssertEqual(model.selectedSplitTunnelProfileID, draftID)
+        XCTAssertEqual(model.tunnelProfile(for: .subscription(fixture.source.id))?.id, providerID)
+
+        observation.cancel()
+        model.connect()
+        await waitUntil { model.isConnected && !model.isOperationPending }
+        let requests = await fixture.provider.requests
+        XCTAssertEqual(requests.count, 2)
+        XCTAssertEqual(requests.last?.splitTunnelPolicy.rules.map(\.value), ["deferred.example"])
+        XCTAssertEqual(model.selectedSplitTunnelProfileID, draftID)
         model.disconnect()
         await waitUntil { model.connectionState == .idle && !model.isOperationPending }
     }
@@ -601,7 +896,7 @@ final class SubscriptionRoutingTests: XCTestCase {
         let geodata = SubscriptionGeodataService()
         let viewModel: AppViewModel
 
-        init(activeSubscriptionPortal: Bool = false) throws {
+        init(activeSubscriptionPortal: Bool = false, personalProfileEnabled: Bool = true) throws {
             root = FileManager.default.temporaryDirectory.appendingPathComponent("teleport-routing-\(UUID().uuidString)")
             let fileManager = TempFileManager(root: root)
             let log = TeleportLog(directoryURL: root, fileName: "test.log")
@@ -615,13 +910,29 @@ final class SubscriptionRoutingTests: XCTestCase {
                 : nil)
             let profile = SplitTunnelProfile(name: "Manual", rules: [
                 SplitTunnelRule(value: "original.example", kind: .domain, action: .direct)
-            ])
+            ], isRoutingEnabled: personalProfileEnabled)
             try store.save(AppSnapshot(savedConnections: [connection], subscriptionSources: [source],
                                        selectedConnectionID: connection.id, proxyEndpoint: .default,
-                                       splitTunnelProfiles: [profile], isSplitTunnelEnabled: true))
+                                       splitTunnelProfiles: [profile], isSplitTunnelEnabled: true, tunnelAssignments: []))
             let provider = provider
             let loader = loader
             viewModel = AppViewModel(
+                parser: ConnectionLinkParser(), store: store,
+                connectionProviderFactory: ConnectionProviderFactory(systemProxyProvider: { provider }, tunProvider: { provider }),
+                leakGuard: LeakGuardService(isEnabled: false, log: log),
+                subscriptionClient: SubscriptionClient(loadResponse: { try await loader.load($0) }),
+                healthProbeService: ConnectionHealthProbeService(),
+                systemProxyService: SystemProxyService(fileManager: fileManager, log: log),
+                geodataUpdateCoordinator: GeodataUpdateCoordinator(service: geodata), log: log
+            )
+        }
+
+        func restoredViewModel() -> AppViewModel {
+            let fileManager = TempFileManager(root: root)
+            let log = TeleportLog(directoryURL: root, fileName: "restored-test.log")
+            let provider = provider
+            let loader = loader
+            return AppViewModel(
                 parser: ConnectionLinkParser(), store: store,
                 connectionProviderFactory: ConnectionProviderFactory(systemProxyProvider: { provider }, tunProvider: { provider }),
                 leakGuard: LeakGuardService(isEnabled: false, log: log),

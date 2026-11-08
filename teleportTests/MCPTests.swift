@@ -171,7 +171,8 @@ final class MCPTests: XCTestCase {
         XCTAssertEqual(provider.subscriptionSourceID, fixture.sourceID)
         await fixture.assertFailure("update_routing_profile", ["profileID": provider.id.uuidString, "name": "Changed", "defaultAction": "direct", "rules": [], "expectedRevision": fixture.service.revision, "dryRun": false])
         await fixture.assertFailure("manage_routing_profile", ["operation": "rename", "profileID": provider.id.uuidString, "name": "Changed", "expectedRevision": fixture.service.revision, "dryRun": false])
-        await fixture.assertFailure("manage_routing_profile", ["operation": "set_enabled", "enabled": false, "expectedRevision": fixture.service.revision, "dryRun": false])
+        _ = try await fixture.call("manage_routing_profile", ["operation": "set_enabled", "enabled": false, "expectedRevision": fixture.service.revision, "dryRun": false])
+        XCTAssertFalse(fixture.model.isSplitTunnelEnabled, "The global switch is independent of editor ownership")
         XCTAssertEqual(fixture.model.selectedSplitTunnelProfile, provider)
         _ = try await fixture.call("manage_routing_profile", ["operation": "customize", "expectedRevision": fixture.service.revision, "dryRun": false])
         XCTAssertTrue(fixture.model.canEditTunnelProfile)
@@ -213,7 +214,7 @@ final class MCPTests: XCTestCase {
             return RoutingAudit(sites: ["test": [.init(type: 2, value: profile.id == firstID ? "first.example" : "second.example", attributes: [])]], ips: [:])
         }
         fixture.access = .readOnly
-        let selection = model.selectedTunnelTarget
+        let selection = model.selectedSplitTunnelProfileID
         let revision = fixture.service.revision
         let result = try await fixture.call("explain_routes", ["destinations": ["FIRST.EXAMPLE", "second.example", "192.0.2.1", "unknown.example"],
             "profileID": second.id.uuidString])
@@ -225,8 +226,71 @@ final class MCPTests: XCTestCase {
         XCTAssertEqual(routes[0]["connectionName"] as? String, model.selectedConnection?.displayName)
         XCTAssertTrue(routes[1]["connectionID"] is NSNull)
         XCTAssertEqual(loaded, [second.id])
-        XCTAssertEqual(model.selectedTunnelTarget, selection)
+        XCTAssertEqual(model.selectedSplitTunnelProfileID, selection)
         XCTAssertEqual(fixture.service.revision, revision)
+    }
+
+    func testCreatingAndCopyingProfilesDoesNotAssignOrReconnect() async throws {
+        let fixture = try MCPFixture(connected: true, providerProfile: true)
+        defer { fixture.cleanUp() }
+        let model = fixture.model
+        await awaitUIUpdate("The existing session is adopted") { model.isConnected }
+        let assignments = model.tunnelAssignments
+        let activeID = model.mcpConnectionProfileID
+        for args: [String: Any] in [["operation": "customize"], ["operation": "create", "name": "Work"]] {
+            var arguments = args
+            arguments["expectedRevision"] = fixture.service.revision
+            let preview = try await fixture.call("manage_routing_profile", arguments)
+            XCTAssertEqual(preview["mayReconnect"] as? Bool, false)
+            arguments["dryRun"] = false
+            _ = try await fixture.call("manage_routing_profile", arguments)
+            XCTAssertEqual(model.tunnelAssignments, assignments)
+            XCTAssertEqual(model.mcpConnectionProfileID, activeID)
+            XCTAssertNotEqual(model.selectedSplitTunnelProfileID, activeID)
+        }
+        try await Task.sleep(for: .milliseconds(1000))
+        XCTAssertEqual(fixture.provider.connectCount, 0)
+        XCTAssertEqual(fixture.provider.disconnectCount, 0)
+    }
+
+    func testActiveProfileUpdateAppliesWhileAnotherProfileIsOpen() async throws {
+        let fixture = try MCPFixture(connected: true, extraTarget: true)
+        defer { fixture.cleanUp() }
+        let model = fixture.model
+        await awaitUIUpdate("The existing session is adopted") { model.isConnected }
+        let active = try XCTUnwrap(model.selectedSplitTunnelProfile)
+        let other = try XCTUnwrap(model.personalTunnelProfiles.first { $0.id != active.id })
+        model.openSplitTunnelProfile(id: other.id)
+        _ = try await fixture.call("update_routing_profile", ["profileID": active.id.uuidString,
+            "name": active.name, "defaultAction": "block", "rules": [], "expectedRevision": fixture.service.revision,
+            "dryRun": false, "allowReconnect": true])
+        await awaitUIUpdate("The changed active policy reconnects") { fixture.provider.connectCount == 1 }
+        XCTAssertEqual(model.selectedSplitTunnelProfileID, other.id)
+        XCTAssertEqual(model.mcpConnectionProfileID, active.id)
+        XCTAssertEqual(model.splitTunnelProfiles.first { $0.id == active.id }?.defaultAction, .block)
+    }
+
+    func testAssignmentRequiresConsentAndDoesNotFollowTheOpenProfile() async throws {
+        let fixture = try MCPFixture(connected: true, extraTarget: true)
+        defer { fixture.cleanUp() }
+        let model = fixture.model
+        await awaitUIUpdate("The existing session is adopted") { model.isConnected }
+        _ = try await fixture.call("manage_routing_profile", ["operation": "select_target", "targetKind": "subscription",
+            "targetID": fixture.sourceID.uuidString, "expectedRevision": fixture.service.revision, "dryRun": false])
+        let other = try XCTUnwrap(model.personalTunnelProfiles.first { $0.name == "Other" })
+        model.openSplitTunnelProfile(id: other.id)
+        var args: [String: Any] = ["operation": "select", "profileID": other.id.uuidString,
+            "expectedRevision": fixture.service.revision]
+        let preview = try await fixture.call("manage_routing_profile", args)
+        XCTAssertEqual(preview["mayReconnect"] as? Bool, true,
+                       "An open profile is not necessarily assigned to the active portal")
+        args["dryRun"] = false
+        await fixture.assertFailure("manage_routing_profile", args)
+        XCTAssertNotEqual(model.mcpConnectionProfileID, other.id)
+        args["allowReconnect"] = true
+        _ = try await fixture.call("manage_routing_profile", args)
+        XCTAssertEqual(model.mcpConnectionProfileID, other.id)
+        XCTAssertEqual(model.selectedSplitTunnelProfileID, other.id)
     }
 
     func testAuditLoaderReadsRequestedProfileCacheInsteadOfEditorData() async throws {
@@ -264,8 +328,12 @@ final class MCPTests: XCTestCase {
         fixture.model.replaceSplitTunnelProfile(profile)
         await fixture.assertFailure("explain_routes", ["destinations": ["example.com"]])
         fixture.model.setSplitTunnelEnabled(false)
-        let disabled = try await fixture.call("explain_routes", ["destinations": ["example.com"]])
-        XCTAssertEqual((disabled["routes"] as? [[String: Any]])?.first?["action"] as? String, "proxy")
+        await fixture.assertFailure("explain_routes", ["destinations": ["example.com"]])
+        profile.rules = [.init(value: "example.com", kind: .domain, action: .direct)]
+        fixture.model.replaceSplitTunnelProfile(profile)
+        let preview = try await fixture.call("explain_routes", ["destinations": ["example.com"]])
+        XCTAssertEqual((preview["routes"] as? [[String: Any]])?.first?["action"] as? String, "direct",
+                       "Route analysis previews the profile even while global routing is off")
     }
 
     func testAnalysisRejectsStateChangesWhileLoadingGeodata() async throws {
@@ -449,7 +517,10 @@ final class MCPTests: XCTestCase {
         }
 
         let inactive = try XCTUnwrap(model.personalTunnelProfiles.first { $0.name == "Other" })
-        if operation == "select" { model.selectTunnelTarget(.subscription(fixture.otherSourceID)) }
+        if operation == "select" {
+            _ = try await fixture.call("manage_routing_profile", ["operation": "select_target", "targetKind": "subscription",
+                "targetID": fixture.otherSourceID.uuidString, "expectedRevision": fixture.service.revision, "dryRun": false])
+        }
         var arguments: [String: Any] = ["operation": operation, "expectedRevision": fixture.service.revision]
         if operation != "inherit" { arguments["profileID"] = inactive.id.uuidString }
         let preview = try await fixture.call("manage_routing_profile", arguments)
@@ -533,7 +604,7 @@ private final class MCPFixture {
         let otherSource = SubscriptionSource(id: otherSourceID, urlString: "https://other.test/sub", title: "Other", savedAt: Date(), lastRefreshedAt: Date())
         let profiles = [personal] + (providerProfile ? [provided] : []) + (extraTarget ? [other] : [])
         let assignments: [TunnelProfileAssignment] = extraTarget ? [.init(target: .subscription(sourceID), personalProfileID: providerProfile ? nil : personal.id), .init(target: .subscription(otherSourceID), personalProfileID: other.id)] : []
-        try store.save(AppSnapshot(savedConnections: [connection], subscriptionSources: [source] + (extraTarget ? [otherSource] : []), selectedConnectionID: connection.id, proxyEndpoint: .default, connectionMode: .tun, splitTunnelProfiles: profiles, tunnelAssignments: assignments))
+        try store.save(AppSnapshot(savedConnections: [connection], subscriptionSources: [source] + (extraTarget ? [otherSource] : []), selectedConnectionID: connection.id, proxyEndpoint: .default, connectionMode: .tun, splitTunnelProfiles: profiles, selectedSplitTunnelProfileID: providerProfile ? provided.id : personal.id, isSplitTunnelEnabled: true, tunnelAssignments: assignments))
         provider = MCPTestProvider(connected: connected)
         let provider = self.provider
         let responseData = Data(config.rawLink.utf8)

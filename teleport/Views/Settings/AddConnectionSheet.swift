@@ -5,6 +5,7 @@ struct AddConnectionSheet: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var viewModel: AppViewModel
     @State private var draftLink = ""
+    @State private var importError: String?
     @FocusState private var isLinkFieldFocused: Bool
 
     var body: some View {
@@ -22,15 +23,13 @@ struct AddConnectionSheet: View {
                 .lineLimit(3...12)
                 .focused($isLinkFieldFocused)
                 .onChange(of: draftLink) { _, _ in
-                    if viewModel.lastError != nil {
-                        viewModel.clearError()
-                    }
+                    importError = nil
                 }
                 .onSubmit {
                     submit()
                 }
 
-            if let error = viewModel.lastError {
+            if let error = importError {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(.red)
@@ -64,6 +63,9 @@ struct AddConnectionSheet: View {
     private func submit() {
         if viewModel.addConnection(from: draftLink) {
             dismiss()
+        } else {
+            // Capture this synchronous import's error, not later connection failures.
+            importError = viewModel.lastError
         }
     }
 
@@ -85,7 +87,7 @@ struct AddConnectionSheet: View {
         }
 
         guard let contents = try? String(contentsOf: url, encoding: .utf8) else {
-            viewModel.reportImportFailure("This file couldn’t be read. Choose a text configuration file.")
+            importError = "This file couldn’t be read. Choose a text configuration file."
             return
         }
 
