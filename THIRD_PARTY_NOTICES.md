@@ -7,19 +7,19 @@ dependencies; everything else it links is part of the macOS SDK.
 ## Xray-core
 
 - Files: `teleport/Resources/xray`
-- Version: 26.10.31 (`xray version` reports `Xray 26.10.31 ... a4a3dff (go1.27.3 darwin/arm64)` or `darwin/amd64`, depending on the slice that runs)
-- Source: https://github.com/XTLS/Xray-core, tag `v26.10.31`
+- Version: 26.11.9 (`xray version` reports `Xray 26.11.9 ... 676eaf6 (go1.27.3 darwin/arm64)` or `darwin/amd64`, depending on the slice that runs)
+- Source: https://github.com/XTLS/Xray-core, tag `v26.11.9`
 - License: Mozilla Public License 2.0, https://github.com/XTLS/Xray-core/blob/main/LICENSE
 
 The bundled executable is a universal binary (SHA-256
-`70a7377e7eead7077576d6f84feccc7ffdd9a413f45e84c7900729e3a909c820`, the same
+`42d74053687fd3fa64d5eca560709aceda7c96297f10a1424aece8aa83ec192f`, the same
 value `BundledArtifactPolicy.swift` pins) made with `lipo -create` from the
 `xray` files of two official release assets of that tag:
 
 - `Xray-macos-arm64-v8a.zip`, arm64 slice, SHA-256
-  `9ddc3b0d912a8539285918e4fead4b60bbc449acdb639450ba068bc7efb983b7`
+  `1b2d5ebe3a4c332203db24b81a052c6d6688a7f80705090f031b7416013ee1b2`
 - `Xray-macos-64.zip`, x86_64 slice, SHA-256
-  `2793e1aee9ec202df2a4e65dde7149f2dd3e092b0a595b594be1fb942a6e8db0`
+  `e0421c5877c4819f672b5bc56e553502a4e14efcc17ec88691240a5d7f52cc31`
 
 `lipo -thin <arch>` recovers each upstream file byte for byte.
 `scripts/fetch-xray.sh` downloads both assets again, checks each against the

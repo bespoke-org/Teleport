@@ -5,7 +5,7 @@ Format is based on [_Keep a changelog_](https://keepachangelog.com) and uses
 
 ## [Unreleased]
 ### Changed
-- Bundled Xray runtime updated to 26.10.31.
+- Bundled Xray runtime updated to 26.11.9
 
 ## [0.6.0-rc.3] - 2026-11-08
 ### Features
