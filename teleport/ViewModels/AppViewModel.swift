@@ -83,7 +83,6 @@ final class AppViewModel: ObservableObject {
     let bundledSubscriptionTitles: [String]
     private let connectionProviderFactory: ConnectionProviderFactory
     private var connectionProvider: any ConnectionProvider
-    private let subscriptionClient: SubscriptionClient
     private let healthProbeService: ConnectionHealthProbeService
     private let splitTunnelGeodataMatcher = SplitTunnelGeodataMatcher()
     private let loginItemService = LoginItemService()
@@ -97,6 +96,9 @@ final class AppViewModel: ObservableObject {
     /// changes; this model carries out what it orders and reports session events
     /// back to it.
     private let sessionLifecycle: SessionLifecycleCoordinator
+    /// Fetches and parses subscription downloads and decides when a scheduled
+    /// refresh is due; applying what a refresh imported stays with this model.
+    private let subscriptionRefresh: SubscriptionRefreshCoordinator
     /// Held across teardowns and rebuilds, which is where the leak it guards
     /// against happens. Owned here rather than by a provider for that reason.
     private let leakGuard: LeakGuardService
@@ -142,7 +144,6 @@ final class AppViewModel: ObservableObject {
     private var importedConnectionsBySourceID: [UUID: [SavedConnection]] = [:]
     private var importedConnectionCountsBySourceID: [UUID: Int] = [:]
     private var subscriptionSourcesByID: [UUID: SubscriptionSource] = [:]
-    private var subscriptionRefreshTokens: [UUID: UUID] = [:]
 
     convenience init() {
         let leakGuard = LeakGuardService()
@@ -182,7 +183,6 @@ final class AppViewModel: ObservableObject {
         self.bundledSubscriptionTitles = bundledSeeder.subscriptionTitles()
         self.connectionProviderFactory = connectionProviderFactory
         self.leakGuard = leakGuard
-        self.subscriptionClient = subscriptionClient
         self.healthProbeService = healthProbeService
         self.systemProxyService = systemProxyService
         self.sessionLifecycle = SessionLifecycleCoordinator(
@@ -191,6 +191,7 @@ final class AppViewModel: ObservableObject {
             systemProxyService: systemProxyService,
             log: log
         )
+        self.subscriptionRefresh = SubscriptionRefreshCoordinator(parser: parser, client: subscriptionClient)
         self.geodataUpdateCoordinator = geodataUpdateCoordinator
         self.log = log
 
@@ -254,11 +255,12 @@ final class AppViewModel: ObservableObject {
         observeConnectionState()
         sessionLifecycle.host = self
         sessionLifecycle.start()
+        subscriptionRefresh.host = self
         syncLeakGuardSetting()
         startAutoRefreshTimer()
         updateMenuBarAnimation()
         scheduleInitialHealthRefresh()
-        refreshUnfetchedSubscriptionsIfNeeded()
+        subscriptionRefresh.refreshUnfetched(autoSelectFirstImported: savedConnections.isEmpty)
     }
 
     var selectedConnection: SavedConnection? {
@@ -346,7 +348,7 @@ final class AppViewModel: ObservableObject {
             || inFlightConnectionRequest?.request.additionalConnections.contains { $0.id == id } == true
     }
 
-    private func isSubscriptionInUse(id: UUID) -> Bool {
+    func isSubscriptionInUse(id: UUID) -> Bool {
         importedConnections(for: id).contains { isConnectionInUse(id: $0.id) }
     }
 
@@ -541,7 +543,9 @@ final class AppViewModel: ObservableObject {
         setStoredError(nil)
         persistSettingError()
         for (index, source) in newSources.enumerated() {
-            refreshSubscription(id: source.id, autoSelectFirstImported: index == 0 && savedConnections.isEmpty)
+            subscriptionRefresh.refresh(
+                id: source.id, autoSelectFirstImported: index == 0 && savedConnections.isEmpty, origin: .userInitiated
+            )
         }
     }
 
@@ -638,7 +642,7 @@ final class AppViewModel: ObservableObject {
         rebuildSavedConnectionIndexes()
         rebuildSubscriptionSourceIndexes()
         refreshingSubscriptionIDs.remove(id)
-        subscriptionRefreshTokens.removeValue(forKey: id)
+        subscriptionRefresh.cancelRefresh(for: id)
         let removedIDs = Set(affectedConnections.map(\.id))
         cancelHealthProbes(ids: removedIDs)
         normalizeSelection()
@@ -676,7 +680,7 @@ final class AppViewModel: ObservableObject {
     }
 
     func refreshSubscription(id: UUID) {
-        refreshSubscription(id: id, autoSelectFirstImported: false)
+        subscriptionRefresh.refresh(id: id, autoSelectFirstImported: false, origin: .userInitiated)
     }
 
     func updateSubscriptionSettings(id: UUID, customName: String, urlString: String, autoUpdateIntervalMinutes: Int?, filterDuplicateImports: Bool) {
@@ -728,7 +732,7 @@ final class AppViewModel: ObservableObject {
             persistSettingError()
 
             if urlChanged {
-                refreshSubscription(id: id, autoSelectFirstImported: false)
+                subscriptionRefresh.refresh(id: id, autoSelectFirstImported: false, origin: .userInitiated)
             }
         } catch {
             setStoredError(error.localizedDescription)
@@ -1677,7 +1681,7 @@ final class AppViewModel: ObservableObject {
             rebuildSubscriptionSourceIndexes()
             setStoredError(nil)
             persistSettingError()
-            refreshSubscription(id: source.id, autoSelectFirstImported: savedConnections.isEmpty)
+            subscriptionRefresh.refresh(id: source.id, autoSelectFirstImported: savedConnections.isEmpty, origin: .userInitiated)
             return true
         } catch {
             setStoredError(error.localizedDescription)
@@ -1685,119 +1689,28 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private enum SubscriptionRefreshOrigin {
-        case userInitiated
-        case background
-    }
+    // MARK: Subscription refresh host
 
-    private func refreshSubscription(
-        id: UUID,
-        autoSelectFirstImported: Bool,
-        origin: SubscriptionRefreshOrigin = .userInitiated
-    ) {
-        guard let source = subscriptionSources.first(where: { $0.id == id }) else { return }
-        if isSubscriptionInUse(id: id) {
-            if origin == .userInitiated {
-                setStoredError("Disconnect before refreshing the active subscription")
-            }
-            return
-        }
-
-        startSubscriptionRefresh(for: source, autoSelectFirstImported: autoSelectFirstImported, origin: origin)
-    }
-
-    private func startSubscriptionRefresh(
-        for source: SubscriptionSource,
-        autoSelectFirstImported: Bool,
-        origin: SubscriptionRefreshOrigin
-    ) {
-        let refreshToken = UUID()
-        subscriptionRefreshTokens[source.id] = refreshToken
-        refreshingSubscriptionIDs.insert(source.id)
-        updateSubscriptionSource(source.id) {
+    func beginSubscriptionRefresh(id: UUID, userInitiated: Bool) {
+        refreshingSubscriptionIDs.insert(id)
+        updateSubscriptionSource(id) {
             $0.lastError = nil
         }
-        if origin == .userInitiated { setStoredError(nil) }
+        if userInitiated { setStoredError(nil) }
         persistSettingError()
-
-        let parser = parser
-        let subscriptionClient = subscriptionClient
-
-        Task { @MainActor [weak self] in
-            defer {
-                if self?.subscriptionRefreshTokens[source.id] == refreshToken {
-                    self?.subscriptionRefreshTokens.removeValue(forKey: source.id)
-                    self?.refreshingSubscriptionIDs.remove(source.id)
-                }
-            }
-            do {
-                guard let url = URL(string: source.urlString) else {
-                    throw SubscriptionError.invalidURL
-                }
-
-                let fetched = try await subscriptionClient.fetch(from: url)
-                // A newer refresh (or source deletion) invalidates this request.
-                // Cosmetic URL edits do not invalidate a pending import.
-                guard self?.subscriptionRefreshTokens[source.id] == refreshToken else { return }
-                let importResult = try SubscriptionImportProcessor.importEntries(
-                    candidates: fetched.candidates,
-                    parser: parser,
-                    sourceID: source.id,
-                    filterDuplicateImports: source.filterDuplicateImports
-                )
-                let importStatus = [importResult.statusMessage, fetched.routingWarning]
-                    .compactMap { $0 }.joined(separator: " ")
-
-                self?.applyImportedEntries(
-                    importResult.importedEntries,
-                    skippedCount: importResult.skippedCount,
-                    importStatus: importStatus.isEmpty ? nil : importStatus,
-                    routing: fetched.routing,
-                    to: source.id,
-                    fetchedAt: Date(),
-                    autoSelectFirstImported: autoSelectFirstImported,
-                    origin: origin
-                )
-            } catch {
-                guard self?.subscriptionRefreshTokens[source.id] == refreshToken else { return }
-                self?.updateSubscriptionSource(source.id) {
-                    $0.lastError = error.localizedDescription
-                }
-                if origin == .userInitiated { self?.applyStoredError(error) }
-                self?.persistSettingError()
-            }
-        }
     }
 
-    nonisolated static func importSubscriptionEntries(
-        links: [String],
-        parser: ConnectionLinkParser,
-        sourceID: UUID,
-        filterDuplicateImports: Bool
-    ) throws -> SubscriptionImportResult {
-        try SubscriptionImportProcessor.importEntries(
-            links: links,
-            parser: parser,
-            sourceID: sourceID,
-            filterDuplicateImports: filterDuplicateImports
-        )
+    func endSubscriptionRefresh(id: UUID) {
+        refreshingSubscriptionIDs.remove(id)
     }
 
-    private func applyImportedEntries(
-        _ importedEntries: [ImportedSubscriptionEntry],
-        skippedCount: Int,
-        importStatus: String?,
-        routing: SubscriptionRoutingImport?,
-        to sourceID: UUID,
-        fetchedAt: Date,
-        autoSelectFirstImported: Bool,
-        origin: SubscriptionRefreshOrigin
-    ) {
+    func applySubscriptionRefresh(_ outcome: SubscriptionRefreshOutcome) {
+        let sourceID = outcome.sourceID
         if isSubscriptionInUse(id: sourceID) {
             refreshingSubscriptionIDs.remove(sourceID)
             // A connection can start while the download is in flight. Keep the
             // active configs and refresh timestamp so the next timer can retry.
-            if origin == .userInitiated {
+            if outcome.origin == .userInitiated {
                 updateSubscriptionSource(sourceID) {
                     $0.lastError = "Disconnect before refreshing the active subscription"
                 }
@@ -1816,9 +1729,9 @@ final class AppViewModel: ObservableObject {
             existingConnections: existingConnectionsForReconcile,
             sourceID: sourceID,
             selectedConnectionID: selectedConnectionID,
-            importedEntries: importedEntries,
-            fetchedAt: fetchedAt,
-            autoSelectFirstImported: autoSelectFirstImported
+            importedEntries: outcome.importedEntries,
+            fetchedAt: outcome.fetchedAt,
+            autoSelectFirstImported: outcome.autoSelectFirstImported
         )
 
         savedConnections = replacementResult.savedConnections
@@ -1827,7 +1740,7 @@ final class AppViewModel: ObservableObject {
         rebuildSavedConnectionIndexes()
         selectedConnectionID = replacementResult.selectedConnectionID
 
-        if let routing {
+        if let routing = outcome.routing {
             let previousPolicy = SplitTunnelPolicy(rules: activeSplitTunnelRules, defaultAction: activeSplitTunnelDefaultAction)
             routing.apply(
                 to: &splitTunnelProfiles, sourceID: sourceID,
@@ -1844,16 +1757,29 @@ final class AppViewModel: ObservableObject {
         }
 
         updateSubscriptionSource(sourceID) {
-            $0.lastRefreshedAt = fetchedAt
-            $0.lastSkippedCount = skippedCount
-            $0.lastError = importStatus
+            $0.lastRefreshedAt = outcome.fetchedAt
+            $0.lastSkippedCount = outcome.skippedCount
+            $0.lastError = outcome.importStatus
         }
 
         refreshingSubscriptionIDs.remove(sourceID)
-        if origin == .userInitiated { setStoredError(nil) }
+        if outcome.origin == .userInitiated { setStoredError(nil) }
         updateMenuBarAnimation()
         persistSettingError()
         refreshSubscriptionHealth(id: sourceID, force: true)
+    }
+
+    func subscriptionRefreshDidFail(id: UUID, error: Error, userInitiated: Bool) {
+        updateSubscriptionSource(id) {
+            $0.lastError = error.localizedDescription
+        }
+        if userInitiated { applyStoredError(error) }
+        persistSettingError()
+    }
+
+    func subscriptionRefreshWasBlocked(id: UUID, userInitiated: Bool) {
+        guard userInitiated else { return }
+        setStoredError("Disconnect before refreshing the active subscription")
     }
 
     private func validateSubscriptionURL(_ rawURL: String) throws -> URL {
@@ -1892,30 +1818,8 @@ final class AppViewModel: ObservableObject {
             }
     }
 
-    private func refreshUnfetchedSubscriptionsIfNeeded() {
-        let shouldAutoSelectFirstImported = savedConnections.isEmpty
-        for source in subscriptionSources where source.lastRefreshedAt == nil && !refreshingSubscriptionIDs.contains(source.id) {
-            refreshSubscription(id: source.id, autoSelectFirstImported: shouldAutoSelectFirstImported, origin: .background)
-        }
-    }
-
     func performScheduledSubscriptionRefreshes() {
-        let now = Date()
-
-        for source in subscriptionSources {
-            guard let intervalMinutes = source.autoUpdateIntervalMinutes,
-                  intervalMinutes > 0,
-                  !refreshingSubscriptionIDs.contains(source.id) else {
-                continue
-            }
-
-            let referenceDate = source.lastRefreshedAt ?? source.savedAt
-            guard now.timeIntervalSince(referenceDate) >= TimeInterval(intervalMinutes * 60) else {
-                continue
-            }
-
-            refreshSubscription(id: source.id, autoSelectFirstImported: false, origin: .background)
-        }
+        subscriptionRefresh.scheduleRefreshes()
     }
 
     private func scheduleInitialHealthRefresh() {
@@ -2147,3 +2051,4 @@ nonisolated private final class TeardownOutcome: @unchecked Sendable {
 }
 
 extension AppViewModel: SessionLifecycleHost {}
+extension AppViewModel: SubscriptionRefreshHost {}

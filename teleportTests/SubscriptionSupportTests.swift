@@ -621,7 +621,7 @@ final class SubscriptionSupportTests: XCTestCase {
             sampleLinks()[1]
         ]
 
-        let filtered = try AppViewModel.importSubscriptionEntries(
+        let filtered = try SubscriptionRefreshCoordinator.importSubscriptionEntries(
             links: links,
             parser: parser,
             sourceID: sourceID,
@@ -631,7 +631,7 @@ final class SubscriptionSupportTests: XCTestCase {
         XCTAssert(filtered.importedEntries[0].configuration.displayName == "Alpha")
         XCTAssert(filtered.importedEntries[1].configuration.displayName == "Beta")
 
-        let unfiltered = try AppViewModel.importSubscriptionEntries(
+        let unfiltered = try SubscriptionRefreshCoordinator.importSubscriptionEntries(
             links: links,
             parser: parser,
             sourceID: sourceID,
