@@ -9,10 +9,10 @@ nonisolated protocol GeodataUpdateServicing: Sendable {
     func removeCustomGeodata(for kind: GeodataKind) throws
 }
 
-/// Owns each kind's current request and groups overlapping work into one batch.
+/// Owns each kind's current request.
 /// Entry points run on the main actor, like the owning AppViewModel.
-/// Replacing a request keeps its batch open; stale completions can only discard
-/// staging files, never activate data, publish settings, or complete the batch.
+/// Replacing a request supersedes the old one; stale completions can only
+/// discard staging files, never activate data or publish settings.
 final class GeodataUpdateCoordinator {
     struct Request: Sendable {
         let kind: GeodataKind
@@ -34,12 +34,6 @@ final class GeodataUpdateCoordinator {
         case cancelled
     }
 
-    struct Batch {
-        let id = UUID()
-        var outcomes: [GeodataKind: Outcome] = [:]
-        var changedKinds: Set<GeodataKind> = []
-    }
-
     private struct Job {
         let token: UUID
         let request: Request
@@ -48,11 +42,9 @@ final class GeodataUpdateCoordinator {
 
     private let service: any GeodataUpdateServicing
     private var jobs: [GeodataKind: Job] = [:]
-    private var batch: Batch?
 
     var stateDidChange: (() -> Void)?
     var didFinish: ((GeodataKind, Outcome) -> Void)?
-    var batchDidComplete: ((Batch) -> Void)?
     var updatingKinds: Set<GeodataKind> { Set(jobs.keys) }
 
     init(service: any GeodataUpdateServicing = GeodataUpdateService()) {
@@ -63,14 +55,11 @@ final class GeodataUpdateCoordinator {
         service.hasCustomGeodata(for: kind)
     }
 
-    @discardableResult
-    func startBatch(_ requests: [Request]) -> UUID? {
-        guard !requests.isEmpty else { return nil }
-        if batch == nil { batch = Batch() }
+    func startBatch(_ requests: [Request]) {
+        guard !requests.isEmpty else { return }
         // Register every request before yielding, including bundled resets.
         for request in requests {
             jobs[request.kind]?.task.cancel()
-            batch?.outcomes[request.kind] = nil
             let token = UUID()
             let task = Task { @MainActor [weak self, service] in
                 do {
@@ -106,7 +95,6 @@ final class GeodataUpdateCoordinator {
             jobs[request.kind] = Job(token: token, request: request, task: task)
         }
         stateDidChange?()
-        return batch?.id
     }
 
     func cancel(kind: GeodataKind) {
@@ -116,16 +104,13 @@ final class GeodataUpdateCoordinator {
     }
 
     func cancelAll() {
-        // Cancel as one operation so the batch completes once, after all its jobs.
         let cancelled = jobs
         jobs.removeAll()
         for (kind, job) in cancelled {
             job.task.cancel()
-            batch?.outcomes[kind] = .cancelled
             didFinish?(kind, .cancelled)
         }
         stateDidChange?()
-        completeBatchIfReady()
     }
 
     private func isCurrent(_ kind: GeodataKind, token: UUID) -> Bool {
@@ -135,18 +120,7 @@ final class GeodataUpdateCoordinator {
     private func finish(_ kind: GeodataKind, token: UUID, outcome: Outcome) {
         guard isCurrent(kind, token: token) else { return }
         jobs[kind] = nil
-        batch?.outcomes[kind] = outcome
-        if case let .applied(change) = outcome, change.changed {
-            batch?.changedKinds.insert(kind)
-        }
         didFinish?(kind, outcome)
         stateDidChange?()
-        completeBatchIfReady()
-    }
-
-    private func completeBatchIfReady() {
-        guard jobs.isEmpty, let completed = batch else { return }
-        batch = nil
-        batchDidComplete?(completed)
     }
 }

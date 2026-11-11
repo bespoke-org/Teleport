@@ -4,7 +4,7 @@ import XCTest
 
 @MainActor
 final class AppViewModelGeodataTests: XCTestCase {
-    func testTwoSuccessfulUpdatesReconnectOnceAfterBothFinish() async throws {
+    func testTwoSuccessfulUpdatesApplyBothSourcesWithoutReconnecting() async throws {
         let fixture = try await makeFixture()
         defer { fixture.cleanUp() }
         let model = fixture.model
@@ -17,24 +17,15 @@ final class AppViewModelGeodataTests: XCTestCase {
         XCTAssertEqual(fixture.provider.connectCount, 0)
         XCTAssertEqual(model.geodataSettings.geositeURLString, "https://new.example/geosite.dat")
         await fixture.service.gate.succeed(.geoip)
-        await waitUntil { model.updatingGeodataKinds.isEmpty && fixture.provider.connectCount == 1 }
+        await waitUntil { model.updatingGeodataKinds.isEmpty }
         XCTAssertEqual(model.geodataSettings.geoipURLString, "https://new.example/geoip.dat")
         XCTAssertNil(model.geodataSettings.geositeLastError)
         XCTAssertNil(model.geodataSettings.geoipLastError)
         XCTAssertEqual(fixture.service.activationCount, 2)
-
-        // A later batch gets its own single completion, even for the same sources.
-        model.applyGeodataSources(geositeURLString: "https://new.example/geosite.dat",
-                                  geoipURLString: "https://new.example/geoip.dat", forceDownload: true)
-        await waitUntil { await fixture.service.gate.count == 4 }
-        await fixture.service.gate.succeed(.geoip, occurrence: 1)
-        await waitUntil { model.updatingGeodataKinds == [.geosite] }
-        XCTAssertEqual(fixture.provider.connectCount, 1)
-        await fixture.service.gate.succeed(.geosite, occurrence: 1)
-        await waitUntil { model.updatingGeodataKinds.isEmpty && fixture.provider.connectCount == 2 }
+        XCTAssertEqual(fixture.provider.connectCount, 0)
     }
 
-    func testPartialFailurePreservesFailedSourceAndAppliesSuccessOnce() async throws {
+    func testPartialFailurePreservesFailedSourceAndAppliesSuccessWithoutReconnecting() async throws {
         let fixture = try await makeFixture()
         defer { fixture.cleanUp() }
         fixture.model.applyGeodataSources(geositeURLString: "https://new.example/geosite.dat",
@@ -44,10 +35,12 @@ final class AppViewModelGeodataTests: XCTestCase {
         await waitUntil { fixture.model.updatingGeodataKinds == [.geoip] }
         XCTAssertEqual(fixture.provider.connectCount, 0)
         await fixture.service.gate.fail(.geoip)
-        await waitUntil { fixture.model.updatingGeodataKinds.isEmpty && fixture.provider.connectCount == 1 }
+        await waitUntil { fixture.model.updatingGeodataKinds.isEmpty }
+        XCTAssertEqual(fixture.model.geodataSettings.geositeURLString, "https://new.example/geosite.dat")
         XCTAssertEqual(fixture.model.geodataSettings.geoipURLString, "https://old.example/geoip.dat")
         XCTAssertNotNil(fixture.model.geodataSettings.geoipLastError)
         XCTAssertEqual(fixture.service.activationCount, 1)
+        XCTAssertEqual(fixture.provider.connectCount, 0)
     }
 
     func testCancelAllDiscardsLateResultsWithoutPublishingOrReconnecting() async throws {
@@ -68,7 +61,7 @@ final class AppViewModelGeodataTests: XCTestCase {
         XCTAssertEqual(fixture.provider.connectCount, 0)
     }
 
-    func testCancellationAfterPartialSuccessCompletesBatchOnce() async throws {
+    func testCancellationAfterPartialSuccessKeepsAppliedKindWithoutReconnecting() async throws {
         let fixture = try await makeFixture()
         defer { fixture.cleanUp() }
         fixture.model.applyGeodataSources(geositeURLString: "https://new.example/geosite.dat",
@@ -77,16 +70,16 @@ final class AppViewModelGeodataTests: XCTestCase {
         await fixture.service.gate.succeed(.geosite)
         await waitUntil { fixture.model.updatingGeodataKinds == [.geoip] }
         fixture.model.cancelGeodataUpdate(kind: .geoip)
-        await waitUntil { fixture.provider.connectCount == 1 }
         await fixture.service.gate.succeed(.geoip)
         await waitUntil { fixture.service.discardCount == 2 }
         XCTAssertTrue(fixture.model.updatingGeodataKinds.isEmpty)
-        XCTAssertEqual(fixture.provider.connectCount, 1)
+        XCTAssertEqual(fixture.model.geodataSettings.geositeURLString, "https://new.example/geosite.dat")
         XCTAssertEqual(fixture.model.geodataSettings.geoipURLString, "https://old.example/geoip.dat")
         XCTAssertNil(fixture.model.geodataSettings.geoipLastError)
+        XCTAssertEqual(fixture.provider.connectCount, 0)
     }
 
-    func testSupersessionKeepsBatchOpenAndRejectsLateOldResult() async throws {
+    func testSupersessionRejectsLateOldResultWithoutReconnecting() async throws {
         let fixture = try await makeFixture()
         defer { fixture.cleanUp() }
         fixture.model.applyGeodataSources(geositeURLString: "https://new.example/geosite.dat",
@@ -97,14 +90,13 @@ final class AppViewModelGeodataTests: XCTestCase {
         fixture.model.setGeoipURL("https://replacement.example/geoip.dat")
         fixture.model.updateGeodataNow(kind: .geoip)
         await waitUntil { await fixture.service.gate.count == 3 }
-        XCTAssertEqual(fixture.provider.connectCount, 0, "Replacing the last pending job must not finish its batch")
         await fixture.service.gate.succeed(.geoip, occurrence: 1)
-        await waitUntil { fixture.model.updatingGeodataKinds.isEmpty && fixture.provider.connectCount == 1 }
+        await waitUntil { fixture.model.updatingGeodataKinds.isEmpty }
         await fixture.service.gate.succeed(.geoip, occurrence: 0)
         await waitUntil { fixture.service.discardCount == 3 }
         XCTAssertEqual(fixture.model.geodataSettings.geoipURLString, "https://replacement.example/geoip.dat")
         XCTAssertEqual(fixture.service.activationCount, 2)
-        XCTAssertEqual(fixture.provider.connectCount, 1)
+        XCTAssertEqual(fixture.provider.connectCount, 0)
     }
 
     func testUnchangedDataAndFailedChecksDoNotReconnect() async throws {
@@ -119,17 +111,18 @@ final class AppViewModelGeodataTests: XCTestCase {
         XCTAssertEqual(fixture.provider.connectCount, 0)
     }
 
-    func testBundledResetCompletesAsOneBatchAndClearsSourceMetadata() async throws {
+    func testBundledResetClearsSourceMetadataWithoutReconnecting() async throws {
         let fixture = try await makeFixture()
         defer { fixture.cleanUp() }
         fixture.model.applyGeodataSources(geositeURLString: nil, geoipURLString: nil)
-        await waitUntil { fixture.model.updatingGeodataKinds.isEmpty && fixture.provider.connectCount == 1 }
+        await waitUntil { fixture.model.updatingGeodataKinds.isEmpty }
         XCTAssertNil(fixture.model.geodataSettings.geositeURLString)
         XCTAssertNil(fixture.model.geodataSettings.geoipURLString)
         XCTAssertNil(fixture.model.geodataSettings.geositeLastUpdatedAt)
         XCTAssertNil(fixture.model.geodataSettings.geoipLastUpdatedAt)
         XCTAssertFalse(fixture.model.hasCustomGeodata(kind: .geosite))
         XCTAssertFalse(fixture.model.hasCustomGeodata(kind: .geoip))
+        XCTAssertEqual(fixture.provider.connectCount, 0)
     }
 
     func testServiceCancellationCompletesItsJobWithoutAnErrorOrReconnect() async throws {

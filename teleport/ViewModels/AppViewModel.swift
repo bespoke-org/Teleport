@@ -258,9 +258,6 @@ final class AppViewModel: ObservableObject {
         geodataUpdateCoordinator.didFinish = { [weak self] kind, outcome in
             self?.applyGeodataUpdateResult(kind: kind, outcome: outcome)
         }
-        geodataUpdateCoordinator.batchDidComplete = { [weak self] batch in
-            if !batch.changedKinds.isEmpty { self?.applyGeodataLiveIfNeeded() }
-        }
         prepareSplitTunnelGeodataMatcher()
         observeConnectionState()
         observeNetworkPath()
@@ -1183,14 +1180,6 @@ final class AppViewModel: ObservableObject {
             return
         }
         schedulePersist()
-    }
-
-    /// Geodata is read by Xray at process startup, so an update only takes
-    /// effect after a restart; reuse the normal reconnect path immediately if
-    /// TUN mode is already connected instead of waiting for the user to notice.
-    private func applyGeodataLiveIfNeeded() {
-        guard !isTerminating, connectionMode == .tun, hasEstablishedConnection else { return }
-        reconnectToSelectedConnection()
     }
 
     private func prepareSplitTunnelGeodataMatcher() {
