@@ -255,6 +255,7 @@ final class ConnectionProviderTests: XCTestCase {
         return (model, store)
     }
 
+    @MainActor
     func testStoredNameSurvivesLoading() async throws {
         let root = try makeIsolatedRoot("name")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -758,6 +759,7 @@ final class ConnectionProviderTests: XCTestCase {
         )
     }
 
+    @MainActor
     func testTerminationCompletesOnlyAfterProviderDisconnect() async throws {
         let root = try makeIsolatedRoot("termination")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -779,6 +781,7 @@ final class ConnectionProviderTests: XCTestCase {
     }
 
     /// A connected view model over an isolated store, for the termination checks.
+    @MainActor
     private func makeTerminationFixture(
         root: URL
     ) async throws -> (AppViewModel, RecordingConnectionBackend, ConfigurationStore) {
@@ -826,6 +829,7 @@ final class ConnectionProviderTests: XCTestCase {
 
     /// A teardown that never returns must not keep the app from quitting: the
     /// helper's lease and the next launch finish the cleanup.
+    @MainActor
     func testTerminationGivesUpOnAStuckTeardown() async throws {
         let root = try makeIsolatedRoot("termination-limit")
         defer { try? FileManager.default.removeItem(at: root) }

@@ -23,8 +23,8 @@ nonisolated struct SubscriptionRefreshOutcome {
 /// the sources and busy flags its decisions read, and the publishing of each
 /// stage's outcome. AppViewModel is the only conformer; the protocol is the seam
 /// that keeps this type fetching and parsing while the model applies results to
-/// published state.
-protocol SubscriptionRefreshHost: AnyObject {
+/// published state. Every requirement runs on the model's main actor.
+@MainActor protocol SubscriptionRefreshHost: AnyObject {
     var subscriptionSources: [SubscriptionSource] { get }
     var refreshingSubscriptionIDs: Set<UUID> { get }
     func isSubscriptionInUse(id: UUID) -> Bool
@@ -47,6 +47,7 @@ protocol SubscriptionRefreshHost: AnyObject {
 /// scheduled refresh is due. Tokens invalidate a result whose source was
 /// deleted or refreshed again while its download was in flight; applying what a
 /// result carries stays with the model.
+@MainActor
 final class SubscriptionRefreshCoordinator {
     /// The model whose subscriptions this refreshes, attached once both are built.
     weak var host: (any SubscriptionRefreshHost)?

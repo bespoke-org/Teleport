@@ -35,6 +35,7 @@ private struct LatencySortKey: Comparable, Equatable {
     }
 }
 
+@MainActor
 final class AppViewModel: ObservableObject {
     @Published private(set) var savedConnections: [SavedConnection]
     @Published private(set) var connectionPickerItems: [ConnectionPickerItem] = []
@@ -252,9 +253,14 @@ final class AppViewModel: ObservableObject {
             self?.applyGeodataUpdateResult(kind: kind, outcome: outcome)
         }
         prepareSplitTunnelGeodataMatcher()
+        // Attached before the state stream starts delivering: a deferred proxy
+        // restore that finishes reports through the host, and it must be there.
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.sessionLifecycle.attach(host: self)
+            await self.sessionLifecycle.start()
+        }
         observeConnectionState()
-        sessionLifecycle.host = self
-        sessionLifecycle.start()
         subscriptionRefresh.host = self
         syncLeakGuardSetting()
         startAutoRefreshTimer()
@@ -1317,7 +1323,7 @@ final class AppViewModel: ObservableObject {
     /// How long a quit waits for the session's teardown. Long enough for a
     /// helper stop and a proxy restore that each time out once; short enough that
     /// a teardown stuck behind something is not a reason to force-quit the app.
-    static let terminationTeardownLimit: Duration = .seconds(20)
+    nonisolated static let terminationTeardownLimit: Duration = .seconds(20)
 
     func handleAppTermination(
         teardownLimit: Duration = AppViewModel.terminationTeardownLimit,
@@ -1370,7 +1376,7 @@ final class AppViewModel: ObservableObject {
     /// Every state change funnels through `applyConnectionState`, so logging here
     /// records transitions the app did not initiate too — a tunnel that dropped on
     /// its own is the case worth having in a file after the fact.
-    private func logConnectionState(_ state: ConnectionState, isInitialState: Bool) {
+    private func logConnectionState(_ state: ConnectionState, isInitialState: Bool) async {
         let prefix = isInitialState ? "initial connection state" : "connection state"
         switch state {
         case let .failed(failure):
@@ -1379,7 +1385,7 @@ final class AppViewModel: ObservableObject {
             // The lifecycle fills in the uplink for a session this process did not
             // start, one still up from a previous run, and hands it back for this
             // line.
-            let uplink = sessionLifecycle.noteConnectedTransition()
+            let uplink = await sessionLifecycle.noteConnectedTransition()
             log.info(Self.subsystem, "\(prefix): connected (mode \(connectionMode)) over uplink \(uplink?.summary ?? "<unknown>")")
             SystemStateDump.capture("after connect", log: log)
         case .awaitingUserApproval:
@@ -1423,7 +1429,7 @@ final class AppViewModel: ObservableObject {
             try? await provider.disconnect()
             self?.finishConnectionOperation(operationID)
             guard let self, !self.isTerminating else { return }
-            self.sessionLifecycle.continueRebuildAfterTeardown()
+            await self.sessionLifecycle.continueRebuildAfterTeardown()
         }
     }
 
@@ -1433,22 +1439,22 @@ final class AppViewModel: ObservableObject {
         connectionStateTask = Task { @MainActor [weak self] in
             for await state in stateUpdates {
                 guard !Task.isCancelled else { break }
-                self?.applyConnectionState(state)
+                await self?.applyConnectionState(state)
             }
         }
     }
 
-    private func applyConnectionState(_ state: ConnectionState) {
+    private func applyConnectionState(_ state: ConnectionState) async {
         let isInitialState = !hasObservedInitialConnectionState
         hasObservedInitialConnectionState = true
         if state != connectionState || isInitialState {
-            logConnectionState(state, isInitialState: isInitialState)
+            await logConnectionState(state, isInitialState: isInitialState)
         }
         if isInitialState, !state.isConnected {
             // Only with nothing routing: while a session from a previous run is
             // still up, the snapshot describes settings that are meant to stay
             // suspended until it stops.
-            sessionLifecycle.restoreDeferredProxyStateIfNeeded()
+            await sessionLifecycle.restoreDeferredProxyStateIfNeeded()
         }
         connectionState = state
 
@@ -1460,7 +1466,7 @@ final class AppViewModel: ObservableObject {
             inFlightConnectionRequest = nil
         case .connected:
             dismissConnectionError()
-            sessionLifecycle.noteSessionEstablished()
+            await sessionLifecycle.noteSessionEstablished()
             if let inFlightConnectionRequest {
                 appliedSplitTunnelRules = inFlightConnectionRequest.request.splitTunnelPolicy.rules
                 appliedSplitTunnelDefaultAction = inFlightConnectionRequest.request.splitTunnelPolicy.defaultAction
@@ -1475,7 +1481,7 @@ final class AppViewModel: ObservableObject {
             }
             applyDeferredSplitTunnelRulesLiveIfNeeded()
         case .idle:
-            sessionLifecycle.noteSessionIdle()
+            await sessionLifecycle.noteSessionIdle()
             inFlightConnectionRequest = nil
             appliedSplitTunnelRules = nil
             appliedSplitTunnelDefaultAction = nil
@@ -1484,19 +1490,21 @@ final class AppViewModel: ObservableObject {
             break
         }
         updateMenuBarAnimation()
-        connectOnLaunchIfNeeded()
+        await connectOnLaunchIfNeeded()
     }
 
-    func connectOnLaunchIfNeeded() {
+    func connectOnLaunchIfNeeded() async {
         guard isLaunchConnectionPending, hasObservedInitialConnectionState else { return }
         switch connectionState {
         case .preparing:
             return
         case .idle:
             // Finish restoring old proxy settings before starting a new session.
-            guard !sessionLifecycle.isRestoringDeferredProxyState else { return }
+            let isRestoring = await sessionLifecycle.isRestoringDeferredProxyState
+            guard !isRestoring else { return }
             isLaunchConnectionPending = false
-            guard !sessionLifecycle.hasRecentDeferredProxyRestoreFailure, canConnect else { return }
+            let hasRecentRestoreFailure = await sessionLifecycle.hasRecentDeferredProxyRestoreFailure
+            guard !hasRecentRestoreFailure, canConnect else { return }
             connect()
         case .connected, .failed, .awaitingUserApproval, .connecting, .disconnecting:
             // An existing session or a failed recovery consumes the launch attempt.
@@ -1527,7 +1535,6 @@ final class AppViewModel: ObservableObject {
         // A new connection captures all current settings, including imports.
         hasDeferredSubscriptionRoutingChanges = false
 
-        sessionLifecycle.noteSessionRequested()
         let request = makeConnectionRequest(configuration: configuration)
         let provider = connectionProvider
         let operationID = UUID()
@@ -1538,6 +1545,7 @@ final class AppViewModel: ObservableObject {
         setStoredError(nil)
 
         let task = Task { @MainActor [weak self] in
+            await self?.sessionLifecycle.noteSessionRequested()
             do {
                 try await provider.connect(request)
                 // Past its commit point a backend may finish despite cancellation.
@@ -1560,7 +1568,7 @@ final class AppViewModel: ObservableObject {
                 if afterUplinkChange && !hasPendingSelection {
                     switch error as? XrayTunConnectionError {
                     case .proxyAddressResolutionFailed, .proxyRouteUnavailable:
-                        self?.sessionLifecycle.retryReconnectAfterUplinkChange()
+                        await self?.sessionLifecycle.retryReconnectAfterUplinkChange()
                     default:
                         break
                     }
@@ -2066,5 +2074,15 @@ nonisolated private final class TeardownOutcome: @unchecked Sendable {
     }
 }
 
-extension AppViewModel: SessionLifecycleHost {}
+extension AppViewModel: SessionLifecycleHost {
+    func sessionLifecycleState() -> SessionLifecycleHostState {
+        SessionLifecycleHostState(
+            isTerminating: isTerminating,
+            connectionMode: connectionMode,
+            hasEstablishedConnection: hasEstablishedConnection,
+            isOperationPending: isOperationPending,
+            isLeakGuardEnabled: isLeakGuardEnabled
+        )
+    }
+}
 extension AppViewModel: SubscriptionRefreshHost {}
