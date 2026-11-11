@@ -31,6 +31,23 @@ nonisolated struct SessionLifecycleHostState: Sendable {
     let isLeakGuardEnabled: Bool
 }
 
+/// The clock face the lifecycle needs: the current instant and a sleep. Its
+/// own protocol rather than a Clock existential, whose instants and sleeps do
+/// not typecheck from outside; tests move time by conforming to this.
+nonisolated protocol LifecycleClock: Sendable {
+    var now: SuspendingClock.Instant { get }
+    func sleep(for duration: Duration) async throws
+}
+
+/// The wall clock the app runs on.
+nonisolated struct SuspendingLifecycleClock: LifecycleClock {
+    var now: SuspendingClock.Instant { SuspendingClock().now }
+
+    func sleep(for duration: Duration) async throws {
+        try await SuspendingClock().sleep(for: duration)
+    }
+}
+
 /// Watches the machine for sleep, wake, and network path changes and decides
 /// what the running session should do about them, ordering the model to carry
 /// the decisions out. The lifecycle's state and choices live here; the session
@@ -54,6 +71,9 @@ actor SessionLifecycleCoordinator {
     private let currentUplink: @Sendable () -> SystemUplinkInventory.Uplink?
     private let systemProxyService: SystemProxyService
     private let log: TeleportLog
+    /// The clock the lifecycle's delays and retry intervals run on, injectable
+    /// so tests move time instead of waiting it out.
+    private let clock: any LifecycleClock
 
     private var networkPathObserver: (any NetworkPathObserving)?
     private var systemWakeObserver: (any SystemWakeObserving)?
@@ -82,12 +102,14 @@ actor SessionLifecycleCoordinator {
         systemObserverFactory: any SystemObserverFactoring,
         uplinkProvider: @escaping @Sendable () -> SystemUplinkInventory.Uplink?,
         systemProxyService: SystemProxyService,
-        log: TeleportLog
+        log: TeleportLog,
+        clock: any LifecycleClock = SuspendingLifecycleClock()
     ) {
         self.systemObserverFactory = systemObserverFactory
         self.currentUplink = uplinkProvider
         self.systemProxyService = systemProxyService
         self.log = log
+        self.clock = clock
     }
 
     func attach(host: any SessionLifecycleHost) {
@@ -177,10 +199,12 @@ actor SessionLifecycleCoordinator {
     /// path has usually stopped changing by that time, so no further notification
     /// would start another attempt, and the leak guard armed for the reconnect
     /// would keep the machine off the network until the user stepped in.
+    private static let reconnectRetryDelay: Duration = .seconds(5)
+
     func retryReconnectAfterUplinkChange() {
         awaitsUplinkToReconnect = true
         Task {
-            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            try? await clock.sleep(for: Self.reconnectRetryDelay)
             // A connect or disconnect the user asked for in the meantime cleared
             // the flag, and this does nothing.
             await reconnectAsSoonAsAnUplinkAppears()
@@ -333,7 +357,7 @@ actor SessionLifecycleCoordinator {
     func restoreDeferredProxyStateIfNeeded() {
         guard deferredProxyRestoreTask == nil else { return }
         if let failedAt = deferredProxyRestoreFailedAt,
-           SuspendingClock().now - failedAt < Self.deferredProxyRestoreRetryInterval {
+           clock.now - failedAt < Self.deferredProxyRestoreRetryInterval {
             return
         }
         let service = systemProxyService
@@ -348,7 +372,7 @@ actor SessionLifecycleCoordinator {
                     return true
                 }
             }.value
-            self.deferredProxyRestoreFailedAt = failed ? SuspendingClock().now : nil
+            self.deferredProxyRestoreFailedAt = failed ? clock.now : nil
             self.deferredProxyRestoreTask = nil
             await self.host?.connectOnLaunchIfNeeded()
         }
