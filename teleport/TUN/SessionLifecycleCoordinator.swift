@@ -158,13 +158,18 @@ actor SessionLifecycleCoordinator {
 
     /// The teardown half of a rebuild has finished: reconnect now if an uplink is
     /// there to build on, or go back to waiting for one instead of reconnecting
-    /// into nothing.
+    /// into nothing. A user action that started while the teardown was finishing
+    /// owns the machine by then, so its pending operation stops the reconnect,
+    /// the way the other reconnect paths are stopped.
     func continueRebuildAfterTeardown() async {
         guard currentUplink() != nil else {
             awaitsUplinkToReconnect = true
             return
         }
-        await host?.reconnectToSelectedConnection(afterUplinkChange: true)
+        guard let host else { return }
+        let state = await host.sessionLifecycleState()
+        guard !state.isTerminating, !state.isOperationPending else { return }
+        await host.reconnectToSelectedConnection(afterUplinkChange: true)
     }
 
     /// An uplink can have a router address before its resolver answers, and a

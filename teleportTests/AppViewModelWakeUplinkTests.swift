@@ -66,6 +66,63 @@ final class AppViewModelWakeUplinkTests: XCTestCase {
         XCTAssertFalse(fixture.model.isConnected)
     }
 
+    /// The wake and uplink halves of a rebuild ordered on a settled path change:
+    /// the tunnel comes down once and goes back up on the new network.
+    func testUplinkChangeRebuildsTheSessionOverTheNewNetwork() async throws {
+        let fixture = try await makeFixture()
+        defer { fixture.cleanUp() }
+        fixture.uplink.value = SystemUplinkInventory.Uplink(interfaceName: "en1", routerAddress: "192.168.2.1")
+        fixture.path.simulateSettledChange()
+        await waitUntil {
+            fixture.provider.disconnectCount == 1
+                && fixture.provider.connectCount == 1
+                && fixture.model.isConnected
+        }
+    }
+
+    /// A wake rebuild can finish its teardown with the uplink still gone: the
+    /// reconnect waits for one instead of connecting into nothing.
+    func testWakeRebuildWithoutAnUplinkWaitsForOneToReturn() async throws {
+        let fixture = try await makeFixture()
+        defer { fixture.cleanUp() }
+        fixture.wake.simulateSleep()
+        try await Task.sleep(for: .milliseconds(50))
+        fixture.uplink.value = nil
+        fixture.wake.simulateWake()
+        await waitUntil { fixture.provider.disconnectCount == 1 && !fixture.model.isOperationPending }
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(fixture.provider.connectCount, 0)
+        XCTAssertFalse(fixture.model.isConnected)
+        fixture.uplink.value = SystemUplinkInventory.Uplink(interfaceName: "en1", routerAddress: "192.168.2.1")
+        fixture.path.simulateChange()
+        await waitUntil { fixture.provider.connectCount == 1 && fixture.model.isConnected }
+    }
+
+    /// A user action that lands between the teardown half of a rebuild
+    /// finishing and the reconnect being ordered owns the machine: its pending
+    /// operation stops the reconnect, the way the other reconnect paths are
+    /// stopped.
+    func testUserDisconnectInTheRebuildWindowIsNotReconnectedOver() async throws {
+        let fixture = try await makeFixture()
+        defer { fixture.provider.releaseAllDisconnects() }
+        defer { fixture.cleanUp() }
+        fixture.provider.holdDisconnects()
+        fixture.uplink.value = SystemUplinkInventory.Uplink(interfaceName: "en1", routerAddress: "192.168.2.1")
+        fixture.path.simulateSettledChange()
+        await waitUntil { fixture.provider.disconnectCount == 1 }
+        fixture.model.disconnect()
+        await waitUntil { fixture.provider.disconnectCount == 2 }
+        // The rebuild's teardown finishes while the user's is still parked, and
+        // the reconnect it would order finds that operation pending.
+        fixture.provider.releaseOneDisconnect()
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(fixture.provider.connectCount, 0)
+        fixture.provider.releaseOneDisconnect()
+        await waitUntil { !fixture.model.isOperationPending }
+        XCTAssertEqual(fixture.provider.connectCount, 0)
+        XCTAssertFalse(fixture.model.isConnected)
+    }
+
     private func makeFixture() async throws -> Fixture {
         let fixture = try Fixture()
         await waitUntil { fixture.model.isConnected }
@@ -199,6 +256,52 @@ private final class FakePathObserver: NetworkPathObserving, @unchecked Sendable 
     func stop() {}
 }
 
+/// Parks provider disconnects so a test can interleave a user action into the
+/// middle of a teardown. Waiters are released one at a time, in arrival order;
+/// while open the gate lets every disconnect through.
+private final class DisconnectGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var held = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func hold() {
+        lock.withLock { held = true }
+    }
+
+    func releaseOne() {
+        let next: CheckedContinuation<Void, Never>?
+        lock.lock()
+        next = waiters.isEmpty ? nil : waiters.removeFirst()
+        lock.unlock()
+        next?.resume()
+    }
+
+    func releaseAll() {
+        let all: [CheckedContinuation<Void, Never>]
+        lock.lock()
+        held = false
+        all = waiters
+        waiters = []
+        lock.unlock()
+        all.forEach { $0.resume() }
+    }
+
+    func wait() async {
+        await withCheckedContinuation { cont in
+            let resumeNow: Bool
+            lock.lock()
+            resumeNow = !held && waiters.isEmpty
+            if !resumeNow {
+                waiters.append(cont)
+            }
+            lock.unlock()
+            if resumeNow {
+                cont.resume()
+            }
+        }
+    }
+}
+
 /// Unlike the geodata fake, this one never finishes its state stream: the wake
 /// and uplink paths tear a session down in order to build the next one on the
 /// same provider, and the states of that rebuild have to keep arriving.
@@ -208,8 +311,13 @@ private final class WakeUplinkTestProvider: ConnectionProvider, @unchecked Senda
     private var disconnects = 0
     private let state = ConnectionState.connected(.init(id: UUID(), mode: .tun, connectedAt: Date()))
     private let updates = AsyncStream<ConnectionState>.makeStream()
+    private let disconnectGate = DisconnectGate()
     var connectCount: Int { lock.withLock { connects } }
     var disconnectCount: Int { lock.withLock { disconnects } }
+
+    func holdDisconnects() { disconnectGate.hold() }
+    func releaseOneDisconnect() { disconnectGate.releaseOne() }
+    func releaseAllDisconnects() { disconnectGate.releaseAll() }
 
     func currentState() async -> ConnectionState { state }
     func stateUpdates() -> AsyncStream<ConnectionState> { updates.continuation.yield(state); return updates.stream }
@@ -219,6 +327,7 @@ private final class WakeUplinkTestProvider: ConnectionProvider, @unchecked Senda
     }
     func disconnect() async throws {
         lock.withLock { disconnects += 1 }
+        await disconnectGate.wait()
         updates.continuation.yield(.idle)
     }
 }
