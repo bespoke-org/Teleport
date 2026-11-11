@@ -17,7 +17,12 @@ import Network
 /// running has no session to protect and every reason to hurry, because until it
 /// acts the machine is routing directly. Waiting out the quiet period after an
 /// address is published costs seconds that a browser does not wait for.
-nonisolated final class NetworkPathObserver: @unchecked Sendable {
+nonisolated protocol NetworkPathObserving: AnyObject, Sendable {
+    func start()
+    func stop()
+}
+
+nonisolated final class NetworkPathObserver: NetworkPathObserving, @unchecked Sendable {
     private let monitor = NWPathMonitor()
     private let queue = DispatchQueue(label: "dev.x.teleport.network-path", qos: .utility)
     private let quietPeriod: TimeInterval

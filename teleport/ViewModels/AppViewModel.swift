@@ -93,8 +93,10 @@ final class AppViewModel: ObservableObject {
     /// Only used to finish a proxy restore an earlier run could not complete.
     /// Injected so a verification script never reaches the real system settings.
     private let systemProxyService: SystemProxyService
-    private var networkPathObserver: NetworkPathObserver?
-    private var systemWakeObserver: SystemWakeObserver?
+    /// Builds the wake and path observers; tests replace them to fire events.
+    private let systemObserverFactory: any SystemObserverFactoring
+    private var networkPathObserver: (any NetworkPathObserving)?
+    private var systemWakeObserver: (any SystemWakeObserving)?
     /// Held across teardowns and rebuilds, which is where the leak it guards
     /// against happens. Owned here rather than by a provider for that reason.
     private let leakGuard: LeakGuardService
@@ -111,6 +113,9 @@ final class AppViewModel: ObservableObject {
     private var sessionEstablishedAt: Date?
     /// The uplink the running session was built on, recorded when it connects.
     private var sessionUplink: SystemUplinkInventory.Uplink?
+    /// The lookup behind every uplink comparison in the session lifecycle,
+    /// injectable so tests steer it without a real network.
+    private let currentUplink: @Sendable () -> SystemUplinkInventory.Uplink?
     /// Set when a session was torn down because the uplink vanished, so the next
     /// uplink to appear reconnects instead of leaving the user disconnected.
     private var awaitsUplinkToReconnect = false
@@ -185,6 +190,8 @@ final class AppViewModel: ObservableObject {
         subscriptionClient: SubscriptionClient,
         healthProbeService: ConnectionHealthProbeService,
         systemProxyService: SystemProxyService = SystemProxyService(),
+        systemObserverFactory: any SystemObserverFactoring = SystemObserverFactory(),
+        uplinkProvider: @escaping @Sendable () -> SystemUplinkInventory.Uplink? = { SystemUplinkInventory.current() },
         geodataUpdateCoordinator: GeodataUpdateCoordinator? = nil,
         log: TeleportLog = .shared
     ) {
@@ -199,6 +206,8 @@ final class AppViewModel: ObservableObject {
         self.subscriptionClient = subscriptionClient
         self.healthProbeService = healthProbeService
         self.systemProxyService = systemProxyService
+        self.systemObserverFactory = systemObserverFactory
+        self.currentUplink = uplinkProvider
         self.geodataUpdateCoordinator = geodataUpdateCoordinator
         self.log = log
 
@@ -1384,7 +1393,7 @@ final class AppViewModel: ObservableObject {
             // Normally recorded when the session was requested, which is closer to
             // the moment the helper pinned its routes. Read here only for a session
             // this process did not start — one still up from a previous run.
-            sessionUplink = sessionUplink ?? SystemUplinkInventory.current()
+            sessionUplink = sessionUplink ?? currentUplink()
             awaitsUplinkToReconnect = false
             log.info(Self.subsystem, "\(prefix): connected (mode \(connectionMode)) over uplink \(sessionUplink?.summary ?? "<unknown>")")
             SystemStateDump.capture("after connect", log: log)
@@ -1401,7 +1410,7 @@ final class AppViewModel: ObservableObject {
     /// leaves the machine routing into a tunnel whose own transport can no longer
     /// get out — reachable only by tearing the session down.
     private func observeNetworkPath() {
-        let observer = NetworkPathObserver(
+        let observer = systemObserverFactory.makePathObserver(
             onChange: { [weak self] in
                 Task { @MainActor [weak self] in
                     self?.reconnectAsSoonAsAnUplinkAppears()
@@ -1423,7 +1432,7 @@ final class AppViewModel: ObservableObject {
     /// would keep it running; wake itself is the trigger. System Proxy mode is
     /// left alone, as nothing pins it to the machine's sleep state.
     private func observeSystemWake() {
-        let observer = SystemWakeObserver(
+        let observer = systemObserverFactory.makeWakeObserver(
             onSleep: { [weak self] in
                 Task { @MainActor [weak self] in
                     self?.lastSleepAt = Date()
@@ -1452,7 +1461,7 @@ final class AppViewModel: ObservableObject {
             log.info(Self.subsystem, "machine woke from sleep; session is newer than the sleep, keeping it")
             return
         }
-        log.warn(Self.subsystem, "machine woke from sleep; rebuilding the session over \(SystemUplinkInventory.current()?.summary ?? "<no uplink>")")
+        log.warn(Self.subsystem, "machine woke from sleep; rebuilding the session over \(currentUplink()?.summary ?? "<no uplink>")")
         sessionUplink = nil
         rebuildSessionForNewUplink()
     }
@@ -1487,21 +1496,21 @@ final class AppViewModel: ObservableObject {
     /// callback will come back to it.
     private func reconnectAsSoonAsAnUplinkAppears() {
         guard !isTerminating, awaitsUplinkToReconnect, !isOperationPending else { return }
-        guard let currentUplink = SystemUplinkInventory.current(), currentUplink.routerAddress != nil else { return }
+        guard let uplink = currentUplink(), uplink.routerAddress != nil else { return }
         awaitsUplinkToReconnect = false
-        log.info(Self.subsystem, "uplink is back (\(currentUplink.summary)); reconnecting without waiting for the path to settle")
+        log.info(Self.subsystem, "uplink is back (\(uplink.summary)); reconnecting without waiting for the path to settle")
         reconnectToSelectedConnection(afterUplinkChange: true)
     }
 
     private func reconcileSessionWithUplink() {
         guard !isTerminating else { return }
 
-        let currentUplink = SystemUplinkInventory.current()
+        let uplink = currentUplink()
 
         if awaitsUplinkToReconnect {
-            guard currentUplink != nil else { return }
+            guard uplink != nil else { return }
             awaitsUplinkToReconnect = false
-            log.info(Self.subsystem, "uplink is back (\(currentUplink?.summary ?? "<unknown>")); reconnecting")
+            log.info(Self.subsystem, "uplink is back (\(uplink?.summary ?? "<unknown>")); reconnecting")
             reconnectToSelectedConnection(afterUplinkChange: true)
             return
         }
@@ -1519,7 +1528,7 @@ final class AppViewModel: ObservableObject {
         // uplink invalidates. Only a routed session pins itself to one.
         guard connectionMode == .tun, hasEstablishedConnection, !isOperationPending else { return }
 
-        switch UplinkChangeDecision.decide(sessionUplink: sessionUplink, currentUplink: currentUplink) {
+        switch UplinkChangeDecision.decide(sessionUplink: sessionUplink, currentUplink: uplink) {
         case .keepRunning:
             return
         case .tearDownAndWaitForUplink:
@@ -1534,7 +1543,7 @@ final class AppViewModel: ObservableObject {
             // disconnects on purpose is never reconnected behind their back.
             awaitsUplinkToReconnect = true
         case .reconnect:
-            log.warn(Self.subsystem, "uplink changed from \(sessionUplink?.summary ?? "<unknown>") to \(currentUplink?.summary ?? "<unknown>"); rebuilding the session")
+            log.warn(Self.subsystem, "uplink changed from \(sessionUplink?.summary ?? "<unknown>") to \(uplink?.summary ?? "<unknown>"); rebuilding the session")
             sessionUplink = nil
             rebuildSessionForNewUplink()
         }
@@ -1555,7 +1564,7 @@ final class AppViewModel: ObservableObject {
             try? await provider.disconnect()
             self?.finishConnectionOperation(operationID)
             guard let self, !self.isTerminating else { return }
-            guard SystemUplinkInventory.current() != nil else {
+            guard currentUplink() != nil else {
                 self.awaitsUplinkToReconnect = true
                 return
             }
@@ -1713,7 +1722,7 @@ final class AppViewModel: ObservableObject {
         // The helper pins routes to the gateway that is current when its script
         // runs, which is moments from now; the connected state can arrive seconds
         // later, by which time a roaming machine may already be on another one.
-        sessionUplink = SystemUplinkInventory.current()
+        sessionUplink = currentUplink()
         let request = makeConnectionRequest(configuration: configuration)
         let provider = connectionProvider
         let operationID = UUID()
