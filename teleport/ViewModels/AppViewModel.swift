@@ -93,32 +93,13 @@ final class AppViewModel: ObservableObject {
     /// Only used to finish a proxy restore an earlier run could not complete.
     /// Injected so a verification script never reaches the real system settings.
     private let systemProxyService: SystemProxyService
-    /// Builds the wake and path observers; tests replace them to fire events.
-    private let systemObserverFactory: any SystemObserverFactoring
-    private var networkPathObserver: (any NetworkPathObserving)?
-    private var systemWakeObserver: (any SystemWakeObserving)?
+    /// Decides what the running session does about sleep, wake, and network path
+    /// changes; this model carries out what it orders and reports session events
+    /// back to it.
+    private let sessionLifecycle: SessionLifecycleCoordinator
     /// Held across teardowns and rebuilds, which is where the leak it guards
     /// against happens. Owned here rather than by a provider for that reason.
     private let leakGuard: LeakGuardService
-    /// When the machine last went to sleep, so a session built after that instant
-    /// is known to be newer than the sleep and needs no rebuild.
-    private var lastSleepAt: Date?
-    /// Set between `willSleep` and `didWake`. A dark wake — Wi-Fi coming back for a
-    /// maintenance window — posts neither notification, so the machine can be awake
-    /// enough to rebuild a session while this is still true.
-    private var isAsleep = false
-    /// When the running session was established, compared against `lastSleepAt`.
-    /// Left `nil` for a session built while the machine was asleep: such a session
-    /// has the rest of the sleep still ahead of it, so the wake has to rebuild it.
-    private var sessionEstablishedAt: Date?
-    /// The uplink the running session was built on, recorded when it connects.
-    private var sessionUplink: SystemUplinkInventory.Uplink?
-    /// The lookup behind every uplink comparison in the session lifecycle,
-    /// injectable so tests steer it without a real network.
-    private let currentUplink: @Sendable () -> SystemUplinkInventory.Uplink?
-    /// Set when a session was torn down because the uplink vanished, so the next
-    /// uplink to appear reconnects instead of leaving the user disconnected.
-    private var awaitsUplinkToReconnect = false
 
     nonisolated static let subsystem = "app"
     private lazy var healthProbeQueue = ConnectionHealthProbeQueue(
@@ -138,15 +119,13 @@ final class AppViewModel: ObservableObject {
     )
     private var autoRefreshTimerCancellable: AnyCancellable?
     private var connectionStateTask: Task<Void, Never>?
-    private var deferredProxyRestoreTask: Task<Void, Never>?
-    private var deferredProxyRestoreFailedAt: SuspendingClock.Instant?
     private var pendingOperationCount = 0
     /// Only the latest pick is retained while a connect is touching the machine.
     private var pendingConnectionSelectionID: UUID?
     private var connectionTask: (operationID: UUID, task: Task<Void, Never>)?
     private var hasObservedInitialConnectionState = false
     private var isLaunchConnectionPending = false
-    private var isTerminating = false
+    private(set) var isTerminating = false
     private var persistWorkItem: DispatchWorkItem?
     private var splitTunnelApplyWorkItem: DispatchWorkItem?
     private var pendingSplitTunnelLiveApply = false
@@ -206,8 +185,12 @@ final class AppViewModel: ObservableObject {
         self.subscriptionClient = subscriptionClient
         self.healthProbeService = healthProbeService
         self.systemProxyService = systemProxyService
-        self.systemObserverFactory = systemObserverFactory
-        self.currentUplink = uplinkProvider
+        self.sessionLifecycle = SessionLifecycleCoordinator(
+            systemObserverFactory: systemObserverFactory,
+            uplinkProvider: uplinkProvider,
+            systemProxyService: systemProxyService,
+            log: log
+        )
         self.geodataUpdateCoordinator = geodataUpdateCoordinator
         self.log = log
 
@@ -269,8 +252,8 @@ final class AppViewModel: ObservableObject {
         }
         prepareSplitTunnelGeodataMatcher()
         observeConnectionState()
-        observeNetworkPath()
-        observeSystemWake()
+        sessionLifecycle.host = self
+        sessionLifecycle.start()
         syncLeakGuardSetting()
         startAutoRefreshTimer()
         updateMenuBarAnimation()
@@ -1237,7 +1220,7 @@ final class AppViewModel: ObservableObject {
         guard !isUninstallingHelper, !isTerminating else { return }
         isUninstallingHelper = true
         helperUninstallMessage = nil
-        awaitsUplinkToReconnect = false
+        sessionLifecycle.cancelAutoReconnect()
         log.info(Self.subsystem, "helper uninstall requested: mode \(connectionMode), session \(hasActiveConnectionSession ? "active" : "none")")
         let provider = connectionProvider
         let leakGuard = leakGuard
@@ -1281,7 +1264,7 @@ final class AppViewModel: ObservableObject {
             return
         }
 
-        awaitsUplinkToReconnect = false
+        sessionLifecycle.cancelAutoReconnect()
         log.info(Self.subsystem, "connect requested: mode \(connectionMode), server \(LogFormat.host(selectedConfiguration.host)):\(selectedConfiguration.port), split routing \(isSplitTunnelEnabled ? "on" : "off") with \(activeSplitTunnelRules.count) rules")
         SystemStateDump.capture("before connect", log: log)
         startConnection(using: selectedConfiguration)
@@ -1299,11 +1282,11 @@ final class AppViewModel: ObservableObject {
     /// session down in order to build another one. Releasing and re-arming around
     /// those would open the window the guard exists to close — and, since both are
     /// asynchronous, could land in either order.
-    private func tearDownSession() {
+    func tearDownSession() {
         guard !isTerminating else { return }
         pendingConnectionSelectionID = nil
         connectingSelection = nil
-        awaitsUplinkToReconnect = false
+        sessionLifecycle.cancelAutoReconnect()
         let provider = connectionProvider
         let operationID = UUID()
         dismissConnectionError()
@@ -1343,8 +1326,7 @@ final class AppViewModel: ObservableObject {
         log.info(Self.subsystem, "terminating")
         let provider = connectionProvider
         let leakGuard = leakGuard
-        networkPathObserver?.stop()
-        systemWakeObserver?.stop()
+        sessionLifecycle.stop()
         Task { @MainActor [weak self] in
             let tornDown = await Self.awaitTeardown({ try? await provider.disconnect() }, limit: teardownLimit)
             if tornDown {
@@ -1390,80 +1372,17 @@ final class AppViewModel: ObservableObject {
         case let .failed(failure):
             log.error(Self.subsystem, "\(prefix): failed — \(failure.summary)")
         case .connected:
-            // Normally recorded when the session was requested, which is closer to
-            // the moment the helper pinned its routes. Read here only for a session
-            // this process did not start — one still up from a previous run.
-            sessionUplink = sessionUplink ?? currentUplink()
-            awaitsUplinkToReconnect = false
-            log.info(Self.subsystem, "\(prefix): connected (mode \(connectionMode)) over uplink \(sessionUplink?.summary ?? "<unknown>")")
+            // The lifecycle fills in the uplink for a session this process did not
+            // start, one still up from a previous run, and hands it back for this
+            // line.
+            let uplink = sessionLifecycle.noteConnectedTransition()
+            log.info(Self.subsystem, "\(prefix): connected (mode \(connectionMode)) over uplink \(uplink?.summary ?? "<unknown>")")
             SystemStateDump.capture("after connect", log: log)
         case .awaitingUserApproval:
             log.info(Self.subsystem, "\(prefix): awaiting administrator approval for the helper install")
         default:
             log.info(Self.subsystem, "\(prefix): \(state)")
         }
-    }
-
-    /// A tunnel pins its proxy-server routes to the gateway that was current when
-    /// it started, and installs both default halves through its TUN. Neither is
-    /// revisited afterwards, so an uplink that changes underneath a running session
-    /// leaves the machine routing into a tunnel whose own transport can no longer
-    /// get out — reachable only by tearing the session down.
-    private func observeNetworkPath() {
-        let observer = systemObserverFactory.makePathObserver(
-            onChange: { [weak self] in
-                Task { @MainActor [weak self] in
-                    self?.reconnectAsSoonAsAnUplinkAppears()
-                }
-            },
-            onSettledChange: { [weak self] in
-                Task { @MainActor [weak self] in
-                    self?.reconcileSessionWithUplink()
-                }
-            }
-        )
-        networkPathObserver = observer
-        observer.start()
-    }
-
-    /// A routed session does not survive sleep in practice: after wake its Xray
-    /// reaches the server but no tunneled stream receives a byte, and only a
-    /// rebuild recovers it. The uplink is usually unchanged, so the path observer
-    /// would keep it running; wake itself is the trigger. System Proxy mode is
-    /// left alone, as nothing pins it to the machine's sleep state.
-    private func observeSystemWake() {
-        let observer = systemObserverFactory.makeWakeObserver(
-            onSleep: { [weak self] in
-                Task { @MainActor [weak self] in
-                    self?.lastSleepAt = Date()
-                    self?.isAsleep = true
-                }
-            },
-            onWake: { [weak self] in
-                Task { @MainActor [weak self] in
-                    self?.isAsleep = false
-                    self?.rebuildSessionAfterWake()
-                }
-            }
-        )
-        systemWakeObserver = observer
-        observer.start()
-    }
-
-    private func rebuildSessionAfterWake() {
-        guard !isTerminating, connectionMode == .tun, hasEstablishedConnection, !isOperationPending else { return }
-        // A session built after the machine went to sleep did not live through the
-        // sleep and does not need rebuilding. The path observer routinely gets
-        // there first — a wake onto a different network is a path change, and its
-        // notification arrives before this one — and rebuilding again would tear
-        // down a working tunnel seconds old, for a second window of direct routing.
-        if let lastSleepAt, let sessionEstablishedAt, sessionEstablishedAt > lastSleepAt {
-            log.info(Self.subsystem, "machine woke from sleep; session is newer than the sleep, keeping it")
-            return
-        }
-        log.warn(Self.subsystem, "machine woke from sleep; rebuilding the session over \(currentUplink()?.summary ?? "<no uplink>")")
-        sessionUplink = nil
-        rebuildSessionForNewUplink()
     }
 
     /// The guard's own copy of the setting: it runs off the main actor and cannot
@@ -1474,7 +1393,7 @@ final class AppViewModel: ObservableObject {
         Task { await leakGuard.setEnabled(isEnabled) }
     }
 
-    private func armLeakGuardStandby() {
+    func armLeakGuardStandby() {
         guard isLeakGuardEnabled, connectionMode == .tun else { return }
         let leakGuard = leakGuard
         Task { await leakGuard.armStandby() }
@@ -1485,74 +1404,10 @@ final class AppViewModel: ObservableObject {
         Task { await leakGuard.disarm() }
     }
 
-    /// The uncoalesced half of the path observer, and the only thing it is used
-    /// for: a session that is waiting to be rebuilt is rebuilt the moment there is
-    /// an uplink to rebuild it on.
-    ///
-    /// Nothing is running, so there is no session for an intermediate path state to
-    /// damage, and the quiet period would only extend the window in which the
-    /// machine routes directly. A router address is still required: an interface
-    /// that has come up without one cannot carry a tunnel yet, and the settled
-    /// callback will come back to it.
-    private func reconnectAsSoonAsAnUplinkAppears() {
-        guard !isTerminating, awaitsUplinkToReconnect, !isOperationPending else { return }
-        guard let uplink = currentUplink(), uplink.routerAddress != nil else { return }
-        awaitsUplinkToReconnect = false
-        log.info(Self.subsystem, "uplink is back (\(uplink.summary)); reconnecting without waiting for the path to settle")
-        reconnectToSelectedConnection(afterUplinkChange: true)
-    }
-
-    private func reconcileSessionWithUplink() {
-        guard !isTerminating else { return }
-
-        let uplink = currentUplink()
-
-        if awaitsUplinkToReconnect {
-            guard uplink != nil else { return }
-            awaitsUplinkToReconnect = false
-            log.info(Self.subsystem, "uplink is back (\(uplink?.summary ?? "<unknown>")); reconnecting")
-            reconnectToSelectedConnection(afterUplinkChange: true)
-            return
-        }
-
-        guard hasEstablishedConnection || isOperationPending else {
-            // Nothing is routing. If an earlier teardown could not put a service's
-            // proxy settings back because that service was down, the path change
-            // that just fired may be it coming back — the moment to finish the job,
-            // rather than waiting for the next launch.
-            restoreDeferredProxyStateIfNeeded()
-            return
-        }
-
-        // System Proxy mode points applications at a local port, which no change of
-        // uplink invalidates. Only a routed session pins itself to one.
-        guard connectionMode == .tun, hasEstablishedConnection, !isOperationPending else { return }
-
-        switch UplinkChangeDecision.decide(sessionUplink: sessionUplink, currentUplink: uplink) {
-        case .keepRunning:
-            return
-        case .tearDownAndWaitForUplink:
-            log.warn(Self.subsystem, "uplink \(sessionUplink?.summary ?? "<unknown>") is gone; tearing down the session, guard \(isLeakGuardEnabled ? "armed" : "off")")
-            sessionUplink = nil
-            // Armed before the teardown, and kept across it: this is the longest
-            // window of the two — it lasts until an uplink comes back, which on a
-            // commute is the commute.
-            armLeakGuardStandby()
-            tearDownSession()
-            // After, not before: the teardown clears the flag so that a user who
-            // disconnects on purpose is never reconnected behind their back.
-            awaitsUplinkToReconnect = true
-        case .reconnect:
-            log.warn(Self.subsystem, "uplink changed from \(sessionUplink?.summary ?? "<unknown>") to \(uplink?.summary ?? "<unknown>"); rebuilding the session")
-            sessionUplink = nil
-            rebuildSessionForNewUplink()
-        }
-    }
-
     /// Disconnect and reconnect as one operation, so the tunnel's routes are removed
     /// before new ones are pinned to the new gateway. Reconnecting without waiting
     /// would install the second set on top of the first.
-    private func rebuildSessionForNewUplink() {
+    func rebuildSessionForNewUplink() {
         guard !isTerminating else { return }
         // Armed before the teardown so no packet leaves between the tunnel's routes
         // being removed and the next tunnel's being installed.
@@ -1564,44 +1419,7 @@ final class AppViewModel: ObservableObject {
             try? await provider.disconnect()
             self?.finishConnectionOperation(operationID)
             guard let self, !self.isTerminating else { return }
-            guard currentUplink() != nil else {
-                self.awaitsUplinkToReconnect = true
-                return
-            }
-            self.reconnectToSelectedConnection(afterUplinkChange: true)
-        }
-    }
-
-    /// A teardown that ran while an interface was down could not put that service's
-    /// proxy settings back, and kept its entry instead of discarding it. Launching
-    /// with no session running is the moment to finish that.
-    /// One restore at a time, and after a failure none for a while. Path changes
-    /// arrive in bursts, and each restore that times out takes 5 s per networksetup
-    /// call; the log once held 60 such failures in 50 minutes, with two restores
-    /// overlapping and each deleting a snapshot the other had already read.
-    private static let deferredProxyRestoreRetryInterval: Duration = .seconds(30)
-
-    private func restoreDeferredProxyStateIfNeeded() {
-        guard deferredProxyRestoreTask == nil else { return }
-        if let failedAt = deferredProxyRestoreFailedAt,
-           SuspendingClock().now - failedAt < Self.deferredProxyRestoreRetryInterval {
-            return
-        }
-        let service = systemProxyService
-        let log = log
-        deferredProxyRestoreTask = Task { @MainActor [weak self] in
-            let failed = await Task.detached(priority: .utility) { () -> Bool in
-                do {
-                    try service.restoreDeferredProxyStateIfNeeded()
-                    return false
-                } catch {
-                    log.error(AppViewModel.subsystem, "could not restore deferred proxy state: \(LogFormat.error(error))")
-                    return true
-                }
-            }.value
-            self?.deferredProxyRestoreFailedAt = failed ? SuspendingClock().now : nil
-            self?.deferredProxyRestoreTask = nil
-            self?.connectOnLaunchIfNeeded()
+            self.sessionLifecycle.continueRebuildAfterTeardown()
         }
     }
 
@@ -1626,7 +1444,7 @@ final class AppViewModel: ObservableObject {
             // Only with nothing routing: while a session from a previous run is
             // still up, the snapshot describes settings that are meant to stay
             // suspended until it stops.
-            restoreDeferredProxyStateIfNeeded()
+            sessionLifecycle.restoreDeferredProxyStateIfNeeded()
         }
         connectionState = state
 
@@ -1638,11 +1456,7 @@ final class AppViewModel: ObservableObject {
             inFlightConnectionRequest = nil
         case .connected:
             dismissConnectionError()
-            // A dark wake brings the uplink back for a maintenance window, and the
-            // path observer rebuilds the session on it. That session is not newer
-            // than the sleep — the sleep has not ended — so it is recorded as having
-            // no establishment time at all, and the wake that follows rebuilds it.
-            sessionEstablishedAt = isAsleep ? nil : Date()
+            sessionLifecycle.noteSessionEstablished()
             if let inFlightConnectionRequest {
                 appliedSplitTunnelRules = inFlightConnectionRequest.request.splitTunnelPolicy.rules
                 appliedSplitTunnelDefaultAction = inFlightConnectionRequest.request.splitTunnelPolicy.defaultAction
@@ -1657,7 +1471,7 @@ final class AppViewModel: ObservableObject {
             }
             applyDeferredSplitTunnelRulesLiveIfNeeded()
         case .idle:
-            sessionEstablishedAt = nil
+            sessionLifecycle.noteSessionIdle()
             inFlightConnectionRequest = nil
             appliedSplitTunnelRules = nil
             appliedSplitTunnelDefaultAction = nil
@@ -1669,16 +1483,16 @@ final class AppViewModel: ObservableObject {
         connectOnLaunchIfNeeded()
     }
 
-    private func connectOnLaunchIfNeeded() {
+    func connectOnLaunchIfNeeded() {
         guard isLaunchConnectionPending, hasObservedInitialConnectionState else { return }
         switch connectionState {
         case .preparing:
             return
         case .idle:
             // Finish restoring old proxy settings before starting a new session.
-            guard deferredProxyRestoreTask == nil else { return }
+            guard !sessionLifecycle.isRestoringDeferredProxyState else { return }
             isLaunchConnectionPending = false
-            guard deferredProxyRestoreFailedAt == nil, canConnect else { return }
+            guard !sessionLifecycle.hasRecentDeferredProxyRestoreFailure, canConnect else { return }
             connect()
         case .connected, .failed, .awaitingUserApproval, .connecting, .disconnecting:
             // An existing session or a failed recovery consumes the launch attempt.
@@ -1686,12 +1500,12 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    private var hasEstablishedConnection: Bool {
+    var hasEstablishedConnection: Bool {
         if case .connected = connectionState { return true }
         return false
     }
 
-    private func reconnectToSelectedConnection(afterUplinkChange: Bool = false) {
+    func reconnectToSelectedConnection(afterUplinkChange: Bool = false) {
         guard let selectedConfiguration else {
             setStoredError("Add and select a portal first")
             return
@@ -1704,25 +1518,12 @@ final class AppViewModel: ObservableObject {
     /// path has usually stopped changing by that time, so no further notification
     /// would start another attempt, and the leak guard armed for the reconnect
     /// would keep the machine off the network until the user stepped in.
-    private func retryReconnectAfterUplinkChange() {
-        awaitsUplinkToReconnect = true
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 5_000_000_000)
-            // A connect or disconnect the user asked for in the meantime cleared
-            // the flag, and this does nothing.
-            self?.reconnectAsSoonAsAnUplinkAppears()
-        }
-    }
-
     private func startConnection(using configuration: ConnectionConfiguration, afterUplinkChange: Bool = false) {
         guard !isTerminating else { return }
         // A new connection captures all current settings, including imports.
         hasDeferredSubscriptionRoutingChanges = false
 
-        // The helper pins routes to the gateway that is current when its script
-        // runs, which is moments from now; the connected state can arrive seconds
-        // later, by which time a roaming machine may already be on another one.
-        sessionUplink = currentUplink()
+        sessionLifecycle.noteSessionRequested()
         let request = makeConnectionRequest(configuration: configuration)
         let provider = connectionProvider
         let operationID = UUID()
@@ -1755,7 +1556,7 @@ final class AppViewModel: ObservableObject {
                 if afterUplinkChange && !hasPendingSelection {
                     switch error as? XrayTunConnectionError {
                     case .proxyAddressResolutionFailed, .proxyRouteUnavailable:
-                        self?.retryReconnectAfterUplinkChange()
+                        self?.sessionLifecycle.retryReconnectAfterUplinkChange()
                     default:
                         break
                     }
@@ -2344,3 +2145,5 @@ nonisolated private final class TeardownOutcome: @unchecked Sendable {
         continuation?.resume(returning: tornDown)
     }
 }
+
+extension AppViewModel: SessionLifecycleHost {}
