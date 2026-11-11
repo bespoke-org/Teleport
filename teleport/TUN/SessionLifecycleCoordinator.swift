@@ -48,6 +48,14 @@ nonisolated struct SuspendingLifecycleClock: LifecycleClock {
     }
 }
 
+/// The piece of the system proxy service the lifecycle coordinator needs:
+/// finishing a restore an earlier teardown could not complete. Split off as a
+/// protocol so a check can park the restore mid-flight, the way a stuck
+/// networksetup call would.
+nonisolated protocol DeferredProxyRestoring: Sendable {
+    func restoreDeferredProxyStateIfNeeded() throws
+}
+
 /// Watches the machine for sleep, wake, and network path changes and decides
 /// what the running session should do about them, ordering the model to carry
 /// the decisions out. The lifecycle's state and choices live here; the session
@@ -69,7 +77,7 @@ actor SessionLifecycleCoordinator {
     /// The lookup behind every uplink comparison in the session lifecycle,
     /// injectable so tests steer it without a real network.
     private let currentUplink: @Sendable () -> SystemUplinkInventory.Uplink?
-    private let systemProxyService: SystemProxyService
+    private let systemProxyService: any DeferredProxyRestoring
     private let log: TeleportLog
     /// The clock the lifecycle's delays and retry intervals run on, injectable
     /// so tests move time instead of waiting it out.
@@ -101,7 +109,7 @@ actor SessionLifecycleCoordinator {
     init(
         systemObserverFactory: any SystemObserverFactoring,
         uplinkProvider: @escaping @Sendable () -> SystemUplinkInventory.Uplink?,
-        systemProxyService: SystemProxyService,
+        systemProxyService: any DeferredProxyRestoring,
         log: TeleportLog,
         clock: any LifecycleClock = SuspendingLifecycleClock()
     ) {

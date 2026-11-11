@@ -1,10 +1,11 @@
 import Foundation
 import XCTest
 
-/// The retry half of the session lifecycle, exercised on the coordinator
-/// directly: a scripted host records the commands it receives, and the clock
-/// is moved by hand, because a five-second retry wait is not something a check
-/// can afford on the machine it runs on.
+/// The retry and deferred-restore halves of the session lifecycle, exercised
+/// on the coordinator directly: a scripted host records the commands it
+/// receives, the clock is moved by hand, and the restore service is a gate the
+/// test opens, because neither a five-second retry wait nor a hung
+/// networksetup call is something a check can afford on the machine it runs on.
 @MainActor
 final class SessionLifecycleCoordinatorTests: XCTestCase {
     /// A reconnect that failed on the uplink's resolver comes back after the
@@ -34,6 +35,49 @@ final class SessionLifecycleCoordinatorTests: XCTestCase {
         XCTAssertEqual(fixture.host.commands, [])
     }
 
+    /// A deferred proxy restore that is still running holds the launch
+    /// connect: the host hears about it only once the restore has finished.
+    func testARunningRestoreHoldsTheLaunchConnectUntilItFinishes() async throws {
+        let fixture = Fixture()
+        defer { fixture.cleanUp() }
+        await fixture.attach()
+        await fixture.coordinator.restoreDeferredProxyStateIfNeeded()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(fixture.host.commands, [])
+        let isRestoring = await fixture.coordinator.isRestoringDeferredProxyState
+        XCTAssertTrue(isRestoring)
+        fixture.restoreService.finish()
+        await waitUntil { fixture.host.commands == ["connectOnLaunchIfNeeded"] }
+        let stillRestoring = await fixture.coordinator.isRestoringDeferredProxyState
+        XCTAssertFalse(stillRestoring)
+    }
+
+    /// A failed restore backs off: another attempt inside the retry interval
+    /// is refused, and one after it runs.
+    func testAFailedRestoreBacksOffForTheRetryInterval() async throws {
+        let fixture = Fixture()
+        defer { fixture.cleanUp() }
+        await fixture.attach()
+        await fixture.coordinator.restoreDeferredProxyStateIfNeeded()
+        await waitUntil { fixture.restoreService.attemptCount == 1 }
+        fixture.restoreService.fail(URLError(.cannotConnectToHost))
+        await waitUntil { fixture.host.commands == ["connectOnLaunchIfNeeded"] }
+        let hasRecentFailure = await fixture.coordinator.hasRecentDeferredProxyRestoreFailure
+        XCTAssertTrue(hasRecentFailure)
+
+        await fixture.coordinator.restoreDeferredProxyStateIfNeeded()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(fixture.restoreService.attemptCount, 1)
+
+        fixture.clock.advance(by: .seconds(31))
+        await fixture.coordinator.restoreDeferredProxyStateIfNeeded()
+        await waitUntil { fixture.restoreService.attemptCount == 2 }
+        fixture.restoreService.finish()
+        await waitUntil { fixture.host.commands.count == 2 }
+        let failureCleared = await fixture.coordinator.hasRecentDeferredProxyRestoreFailure
+        XCTAssertFalse(failureCleared)
+    }
+
     private func waitUntil(_ condition: @MainActor () async -> Bool) async {
         let deadline = ContinuousClock.now + .seconds(3)
         while ContinuousClock.now < deadline {
@@ -49,6 +93,7 @@ private final class Fixture {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     let host: ScriptedHost
     let clock = ControlledClock()
+    let restoreService = ControlledRestoreService()
     let coordinator: SessionLifecycleCoordinator
 
     init(
@@ -63,7 +108,7 @@ private final class Fixture {
         coordinator = SessionLifecycleCoordinator(
             systemObserverFactory: UnusedObservers(),
             uplinkProvider: { uplink },
-            systemProxyService: SystemProxyService(fileManager: FileManager.default, log: log),
+            systemProxyService: restoreService,
             log: log,
             clock: clock
         )
@@ -178,5 +223,34 @@ private final class ControlledClock: LifecycleClock, @unchecked Sendable {
                 cont.resume()
             }
         }
+    }
+}
+
+/// The restore service half of the seam, gated: the call parks the detached
+/// thread it arrives on until the test opens the gate, the way a stuck
+/// networksetup call would, and every attempt is counted for the test to read.
+private final class ControlledRestoreService: DeferredProxyRestoring, @unchecked Sendable {
+    private let lock = NSLock()
+    private let gate = DispatchSemaphore(value: 0)
+    private var attempts = 0
+    private var pendingError: Error?
+
+    var attemptCount: Int { lock.withLock { attempts } }
+
+    func finish() {
+        lock.withLock { pendingError = nil }
+        gate.signal()
+    }
+
+    func fail(_ error: Error) {
+        lock.withLock { pendingError = error }
+        gate.signal()
+    }
+
+    func restoreDeferredProxyStateIfNeeded() throws {
+        lock.withLock { attempts += 1 }
+        gate.wait()
+        let error = lock.withLock { pendingError }
+        if let error { throw error }
     }
 }
