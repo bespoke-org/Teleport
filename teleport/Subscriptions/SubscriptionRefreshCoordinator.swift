@@ -1,14 +1,14 @@
 import Foundation
 
 /// Whether a subscription refresh was asked for by the user or by the schedule.
-enum SubscriptionRefreshOrigin {
+nonisolated enum SubscriptionRefreshOrigin {
     case userInitiated
     case background
 }
 
 /// A finished subscription download, parsed and ready to be applied to the
 /// published state.
-struct SubscriptionRefreshOutcome {
+nonisolated struct SubscriptionRefreshOutcome {
     let sourceID: UUID
     let fetchedAt: Date
     let importedEntries: [ImportedSubscriptionEntry]
@@ -34,7 +34,7 @@ protocol SubscriptionRefreshHost: AnyObject {
     func beginSubscriptionRefresh(id: UUID, userInitiated: Bool)
     /// Publishes the end of a refresh: the busy flag off.
     func endSubscriptionRefresh(id: UUID)
-    func applySubscriptionRefresh(_ outcome: SubscriptionRefreshOutcome)
+    func applySubscriptionRefresh(_ outcome: SubscriptionRefreshOutcome) async
     /// Records the failure on the source and, for a user-initiated refresh, in
     /// the stored error.
     func subscriptionRefreshDidFail(id: UUID, error: Error, userInitiated: Bool)
@@ -146,16 +146,18 @@ final class SubscriptionRefreshCoordinator {
                 // A newer refresh (or source deletion) invalidates this request.
                 // Cosmetic URL edits do not invalidate a pending import.
                 guard self?.tokens[source.id] == refreshToken else { return }
-                let importResult = try SubscriptionImportProcessor.importEntries(
-                    candidates: fetched.candidates,
-                    parser: parser,
-                    sourceID: source.id,
-                    filterDuplicateImports: source.filterDuplicateImports
-                )
+                let importResult = try await Task.detached(priority: .userInitiated) {
+                    try SubscriptionImportProcessor.importEntries(
+                        candidates: fetched.candidates,
+                        parser: parser,
+                        sourceID: source.id,
+                        filterDuplicateImports: source.filterDuplicateImports
+                    )
+                }.value
                 let importStatus = [importResult.statusMessage, fetched.routingWarning]
                     .compactMap { $0 }.joined(separator: " ")
 
-                self?.host?.applySubscriptionRefresh(SubscriptionRefreshOutcome(
+                await self?.host?.applySubscriptionRefresh(SubscriptionRefreshOutcome(
                     sourceID: source.id,
                     fetchedAt: Date(),
                     importedEntries: importResult.importedEntries,

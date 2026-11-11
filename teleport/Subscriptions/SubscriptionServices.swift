@@ -21,12 +21,12 @@ nonisolated struct ImportedSubscriptionEntry {
     let configuration: ConnectionConfiguration
 }
 
-struct SubscriptionReplacementResult {
+nonisolated struct SubscriptionReplacementResult {
     let savedConnections: [SavedConnection]
     let selectedConnectionID: UUID?
 }
 
-struct SubscriptionConnectionReconciler {
+nonisolated struct SubscriptionConnectionReconciler {
     func reconcile(
         existingConnections: [SavedConnection],
         sourceID: UUID,
@@ -107,7 +107,7 @@ struct SubscriptionConnectionReconciler {
     }
 }
 
-struct SubscriptionFetchResult {
+nonisolated struct SubscriptionFetchResult {
     let candidates: [SubscriptionCandidate]
     let routing: SubscriptionRoutingImport?
     let routingWarning: String?
@@ -158,6 +158,10 @@ struct SubscriptionClient {
             throw SubscriptionError.emptyPayload
         }
 
-        return try SubscriptionFetchResult(data: responseData, response: httpResponse)
+        // The payload decoder is proportional to subscription size, so it runs
+        // on the cooperative pool rather than the caller's actor.
+        return try await Task.detached(priority: .userInitiated) {
+            try SubscriptionFetchResult(data: responseData, response: httpResponse)
+        }.value
     }
 }

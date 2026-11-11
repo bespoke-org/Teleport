@@ -1704,19 +1704,10 @@ final class AppViewModel: ObservableObject {
         refreshingSubscriptionIDs.remove(id)
     }
 
-    func applySubscriptionRefresh(_ outcome: SubscriptionRefreshOutcome) {
+    func applySubscriptionRefresh(_ outcome: SubscriptionRefreshOutcome) async {
         let sourceID = outcome.sourceID
         if isSubscriptionInUse(id: sourceID) {
-            refreshingSubscriptionIDs.remove(sourceID)
-            // A connection can start while the download is in flight. Keep the
-            // active configs and refresh timestamp so the next timer can retry.
-            if outcome.origin == .userInitiated {
-                updateSubscriptionSource(sourceID) {
-                    $0.lastError = "Disconnect before refreshing the active subscription"
-                }
-                setStoredError("Disconnect before refreshing the active subscription")
-                persistSettingError()
-            }
+            refuseSubscriptionRefresh(id: sourceID, userInitiated: outcome.origin == .userInitiated)
             return
         }
 
@@ -1725,14 +1716,25 @@ final class AppViewModel: ObservableObject {
             connection.healthCheck = healthChecksByConnectionID[connection.id] ?? connection.healthCheck
             return connection
         }
-        let replacementResult = SubscriptionConnectionReconciler().reconcile(
-            existingConnections: existingConnectionsForReconcile,
-            sourceID: sourceID,
-            selectedConnectionID: selectedConnectionID,
-            importedEntries: outcome.importedEntries,
-            fetchedAt: outcome.fetchedAt,
-            autoSelectFirstImported: outcome.autoSelectFirstImported
-        )
+        let previousSelectedConnectionID = selectedConnectionID
+        // Reconcile is proportional to subscription size, so it runs on the
+        // cooperative pool; everything it reads was gathered above.
+        let replacementResult = await Task.detached(priority: .userInitiated) {
+            SubscriptionConnectionReconciler().reconcile(
+                existingConnections: existingConnectionsForReconcile,
+                sourceID: sourceID,
+                selectedConnectionID: previousSelectedConnectionID,
+                importedEntries: outcome.importedEntries,
+                fetchedAt: outcome.fetchedAt,
+                autoSelectFirstImported: outcome.autoSelectFirstImported
+            )
+        }.value
+        // A connection can start while the reconcile is running; the same
+        // refusal applies.
+        if isSubscriptionInUse(id: sourceID) {
+            refuseSubscriptionRefresh(id: sourceID, userInitiated: outcome.origin == .userInitiated)
+            return
+        }
 
         savedConnections = replacementResult.savedConnections
         syncHealthChecksFromSavedConnections()
@@ -1767,6 +1769,20 @@ final class AppViewModel: ObservableObject {
         updateMenuBarAnimation()
         persistSettingError()
         refreshSubscriptionHealth(id: sourceID, force: true)
+    }
+
+    /// Ends a refresh that found one of its connections in the running session.
+    /// A connection can start while the download or the reconcile is in flight.
+    /// The active configs and refresh timestamp are kept so the next timer can
+    /// retry; only a user-initiated attempt reports it.
+    private func refuseSubscriptionRefresh(id: UUID, userInitiated: Bool) {
+        refreshingSubscriptionIDs.remove(id)
+        guard userInitiated else { return }
+        updateSubscriptionSource(id) {
+            $0.lastError = "Disconnect before refreshing the active subscription"
+        }
+        setStoredError("Disconnect before refreshing the active subscription")
+        persistSettingError()
     }
 
     func subscriptionRefreshDidFail(id: UUID, error: Error, userInitiated: Bool) {
