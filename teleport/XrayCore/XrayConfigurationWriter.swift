@@ -20,13 +20,11 @@ nonisolated struct TunnelDNSPolicy: Sendable, Equatable {
     var ipv6Enabled: Bool = true
 }
 
-/// The resolvers one connection publishes, and the names they answer for. Both
-/// the DNS module and routing need this pairing: the servers are only reachable
-/// through that connection's outbound.
+/// The resolvers one connection publishes and the outbound that reaches them.
+/// Domain selection follows routing-rule order when the DNS section is built.
 private struct TunnelConnectionDNSRoute {
     let tag: String
     let servers: [String]
-    let domains: [String]
 }
 
 /// One proxy outbound of a session. A session dials one server per selected
@@ -289,8 +287,8 @@ nonisolated struct XrayConfigurationWriter {
             let domains = enabledSplitTunnelRules
                 .filter { outboundTag(for: $0, tagsByConnectionID: tagsByConnectionID) == tag }
                 .flatMap { dnsDomains(for: $0) }
-            guard !domains.isEmpty else { return nil }
-            return TunnelConnectionDNSRoute(tag: tag, servers: servers, domains: domains)
+            guard index == 0 || !domains.isEmpty else { return nil }
+            return TunnelConnectionDNSRoute(tag: tag, servers: servers)
         }
         let localProxyRoutingRules: [[String: Any]] = [[
             "type": "field",
@@ -308,7 +306,7 @@ nonisolated struct XrayConfigurationWriter {
                 policy: $0,
                 rules: enabledSplitTunnelRules,
                 defaultAction: defaultAction,
-                connectionRoutes: connectionDNSRoutes
+                connectionRoutes: connectionDNSRoutes, connectionTags: tagsByConnectionID
             )
         }
         let dnsOutbounds: [[String: Any]] = dnsSection == nil ? [] : [[
@@ -324,12 +322,11 @@ nonisolated struct XrayConfigurationWriter {
                 "port": 53,
                 "outboundTag": "dns-out"
             ]]
-            let localResolverAddresses = Self.resolverAddresses(policy.localResolvers)
-            if !localResolverAddresses.isEmpty {
+            // Resolver identity comes from its tag, never its possibly shared IP.
+            if !Self.resolverAddresses(policy.localResolvers).isEmpty {
                 rules.append([
                     "type": "field",
-                    "inboundTag": [Self.dnsQueryTag],
-                    "ip": localResolverAddresses,
+                    "inboundTag": ["dns-local"],
                     "outboundTag": "direct"
                 ])
             }
@@ -338,8 +335,7 @@ nonisolated struct XrayConfigurationWriter {
             for route in connectionDNSRoutes {
                 rules.append([
                     "type": "field",
-                    "inboundTag": [Self.dnsQueryTag],
-                    "ip": route.servers,
+                    "inboundTag": ["dns-" + route.tag],
                     "outboundTag": route.tag
                 ])
             }
@@ -508,43 +504,41 @@ nonisolated struct XrayConfigurationWriter {
         return payload
     }
 
-    /// Server order matters to Xray: servers carrying `domains` are consulted first
-    /// for matching names and, with `skipFallback`, never for anything else. The
-    /// default-action resolver goes first so every unmatched name lands there.
-    private func makeDNSSection(policy: TunnelDNSPolicy, rules: [SplitTunnelRule], defaultAction: SplitTunnelRuleAction, connectionRoutes: [TunnelConnectionDNSRoute] = []) -> [String: Any] {
+    /// Preserve routing-rule order for overlapping domains. A group's last
+    /// resolver stops fallback so failed queries cannot cross into another group.
+    private func makeDNSSection(policy: TunnelDNSPolicy, rules: [SplitTunnelRule], defaultAction: SplitTunnelRuleAction, connectionRoutes: [TunnelConnectionDNSRoute] = [], connectionTags: [UUID: String] = [:]) -> [String: Any] {
         let localResolverAddresses = Self.resolverAddresses(policy.localResolvers)
-        let proxyDomains = rules.filter { $0.action == .proxy }.flatMap { dnsDomains(for: $0) }
-        let directDomains = rules.filter { $0.action == .direct }.flatMap { dnsDomains(for: $0) }
-
-        func remoteServer(domains: [String]) -> Any {
-            guard !domains.isEmpty else { return policy.remoteResolver }
-            return ["address": policy.remoteResolver, "domains": domains, "skipFallback": true] as [String: Any]
-        }
-        func localServers(domains: [String]) -> [Any] {
-            localResolverAddresses.map { address -> Any in
-                guard !domains.isEmpty else { return address }
-                return ["address": address, "domains": domains, "skipFallback": true] as [String: Any]
+        func group(domains: [String], outboundTag: String) -> [[String: Any]] {
+            let addresses: [String]
+            let tag: String
+            if outboundTag == "direct", !localResolverAddresses.isEmpty {
+                addresses = localResolverAddresses
+                tag = "dns-local"
+            } else if let peer = connectionRoutes.first(where: { $0.tag == outboundTag }) {
+                addresses = peer.servers
+                tag = "dns-" + peer.tag
+            } else {
+                addresses = [policy.remoteResolver]
+                tag = Self.dnsQueryTag
+            }
+            return addresses.enumerated().map { index, address in
+                var server: [String: Any] = [
+                    "address": address, "tag": tag,
+                    "skipFallback": !domains.isEmpty,
+                    "finalQuery": index == addresses.count - 1
+                ]
+                if !domains.isEmpty { server["domains"] = domains }
+                return server
             }
         }
 
-        var servers: [Any] = []
-        // A connection's own resolvers come first and answer only for the names
-        // routed through that connection, so an internal zone resolves inside the
-        // tunnel that serves it instead of leaking to a public resolver.
-        for route in connectionRoutes {
-            for server in route.servers {
-                servers.append(["address": server, "domains": route.domains, "skipFallback": true] as [String: Any])
-            }
+        var servers: [[String: Any]] = []
+        for rule in rules {
+            let domains = dnsDomains(for: rule)
+            guard !domains.isEmpty else { continue }
+            servers += group(domains: domains, outboundTag: outboundTag(for: rule, tagsByConnectionID: connectionTags))
         }
-        // Without any usable system resolver every name goes to the remote one;
-        // that keeps resolution working instead of failing every direct domain.
-        if defaultAction == .direct, !localResolverAddresses.isEmpty {
-            servers.append(contentsOf: localServers(domains: []))
-            servers.append(remoteServer(domains: proxyDomains))
-        } else {
-            servers.append(remoteServer(domains: []))
-            servers.append(contentsOf: localServers(domains: directDomains))
-        }
+        servers += group(domains: [], outboundTag: defaultAction.rawValue)
         return [
             "tag": Self.dnsQueryTag,
             "queryStrategy": policy.ipv6Enabled ? "UseIP" : "UseIPv4",
