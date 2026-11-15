@@ -37,19 +37,21 @@ final class MenuBarContextMenuTests: XCTestCase {
         defer { NSStatusBar.system.removeStatusItem(statusItem) }
         let button = statusItem.button!
         button.image = NSImage(systemSymbolName: "circle", accessibilityDescription: nil)
-        XCTAssertTrue(MenuBarContextMenuController.statusItem(for: button) === statusItem)
         let previousMenu = NSMenu(title: "Previous menu")
         statusItem.menu = previousMenu
         let originalTarget = button.target
         let originalAction = button.action
         var sawMenu = false
+        let checkAttachedMenu: @MainActor @Sendable () -> Void = {
+            XCTAssertTrue(statusItem.menu === controller.activeMenu)
+        }
         let observer = NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main) { notification in
             MainActor.assumeIsolated {
                 guard let trackingMenu = notification.object as? NSMenu,
                       let menu = controller.activeMenu else { return }
                 sawMenu = true
                 let check: @MainActor @Sendable () -> Void = {
-                    XCTAssertTrue(MenuBarContextMenuController.statusItem(for: button)?.menu === menu)
+                    checkAttachedMenu()
                     trackingMenu.cancelTracking()
                     menu.cancelTracking()
                 }
@@ -61,35 +63,11 @@ final class MenuBarContextMenuTests: XCTestCase {
             }
         }
         defer { NotificationCenter.default.removeObserver(observer) }
-        controller.showMenu(for: button)
+        controller.showMenu(for: statusItem)
         XCTAssertTrue(sawMenu)
         XCTAssertNil(controller.activeMenu)
         XCTAssertTrue(statusItem.menu === previousMenu)
         XCTAssertTrue(button.target === originalTarget)
         XCTAssertEqual(button.action, originalAction)
-    }
-
-    func testOnlySecondaryClicksInsideStatusIconAreHandled() throws {
-        _ = NSApplication.shared
-        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        defer { NSStatusBar.system.removeStatusItem(item) }
-        let button = try XCTUnwrap(item.button)
-        let window = try XCTUnwrap(button.window)
-        let center = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
-        XCTAssertTrue(MenuBarContextMenuController.statusButton(for: event(.rightMouseDown, in: window, at: center)) === button)
-        XCTAssertTrue(MenuBarContextMenuController.statusButton(for: event(.leftMouseDown, in: window, at: center, modifiers: .control)) === button)
-        XCTAssertNil(MenuBarContextMenuController.statusButton(for: event(.leftMouseDown, in: window, at: center)))
-        XCTAssertNil(MenuBarContextMenuController.statusButton(for: event(.rightMouseDown, in: window, at: NSPoint(x: -100, y: -100))))
-        let other = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 200), styleMask: .titled, backing: .buffered, defer: false)
-        other.isReleasedWhenClosed = false
-        defer { other.close() }
-        XCTAssertNil(MenuBarContextMenuController.statusButton(for: event(.rightMouseDown, in: other, at: NSPoint(x: 50, y: 50))))
-    }
-
-    private func event(_ type: NSEvent.EventType, in window: NSWindow, at point: NSPoint,
-                       modifiers: NSEvent.ModifierFlags = []) -> NSEvent {
-        NSEvent.mouseEvent(with: type, location: point, modifierFlags: modifiers, timestamp: 0,
-                          windowNumber: window.windowNumber, context: nil, eventNumber: 0,
-                          clickCount: 1, pressure: 1)!
     }
 }

@@ -18,6 +18,7 @@ final class TeleportAppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindowCloseSubscription: AnyCancellable?
     private weak var settingsWindow: NSWindow?
     private var showsInDock = true
+    private var menuBarController: MenuBarController?
 
     func observeDockVisibility(of viewModel: AppViewModel) {
         dockVisibilitySubscription = viewModel.$showsInDock
@@ -25,6 +26,24 @@ final class TeleportAppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] showsInDock in
                 self?.showsInDock = showsInDock
             }
+    }
+
+    func configureMenuBar(viewModel: AppViewModel, onShowSettings: @escaping (SettingsSection?) -> Void) {
+        guard menuBarController == nil else { return }
+        let controller = MenuBarController(onShowSettings: onShowSettings)
+        controller.popover.contentViewController = NSHostingController(rootView:
+            MenuBarView(onShowSettings: { [weak controller] in controller?.showSettings() }, viewModel: viewModel)
+        )
+        controller.observe(viewModel)
+        menuBarController = controller
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        menuBarController?.stop()
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -84,6 +103,8 @@ struct TeleportApp: App {
     @NSApplicationDelegateAdaptor(TeleportAppDelegate.self) private var appDelegate
     @StateObject private var viewModel: AppViewModel
     @State private var settingsNavigation = SettingsNavigation()
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.scenePhase) private var scenePhase
 
     init() {
         let viewModel = AppViewModel()
@@ -96,19 +117,6 @@ struct TeleportApp: App {
     }
 
     var body: some Scene {
-        MenuBarExtra {
-            MenuBarView(viewModel: viewModel)
-        } label: {
-            MenuBarIconView(
-                phase: viewModel.connectionPhase,
-                proxyPhase: viewModel.proxyPhase,
-                animates: viewModel.animatesMenuBarIcon
-            )
-            .frame(width: 18, height: 18)
-            .modifier(MenuBarContextMenu(navigation: $settingsNavigation))
-        }
-        .menuBarExtraStyle(.window)
-
         Window("Settings", id: "settings") {
             SettingsView(viewModel: viewModel, navigation: $settingsNavigation)
                 .environmentObject(appDelegate.xrayVersion)
@@ -117,6 +125,13 @@ struct TeleportApp: App {
                     NSApplication.shared.sendAction(#selector(NSSplitViewController.toggleSidebar(_:)), to: nil, from: nil)
                 }
                 .background(SettingsWindowObserver(onWindowAvailable: appDelegate.observeSettingsWindow))
+        }
+        .defaultLaunchBehavior(.suppressed)
+        .onChange(of: scenePhase, initial: true) {
+            appDelegate.configureMenuBar(viewModel: viewModel) { section in
+                if let section { settingsNavigation.select(section) }
+                openWindow(id: "settings")
+            }
         }
         .windowResizability(.contentSize)
         .commands { SettingsCommands(settingsNavigation: $settingsNavigation) }
