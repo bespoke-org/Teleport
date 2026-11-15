@@ -2659,7 +2659,7 @@ final class AppViewModel: ObservableObject {
     }
 
     private func updateMenuBarAnimation() {
-        // Animation timing is owned by MenuBarIconView. Keeping this hook avoids
+        // Animation timing is owned by MenuBarIconAnimator. Keeping this hook avoids
         // broad call-site churn while preventing high-frequency AppViewModel
         // publications that re-render the entire menu/settings UI while connected.
     }

@@ -1,52 +1,15 @@
 import AppKit
-import Combine
-import SwiftUI
 
-struct MenuBarIconView: View {
-    let phase: ConnectionPhase
-    let proxyPhase: ProxyPhase
-    let animates: Bool
-    @State private var animationFrame = 0
-
-    private let animationTimer = Timer.publish(
-        every: 1.0 / MenuBarIconImageFactory.animationFPS,
-        on: .main,
-        in: .common
-    ).autoconnect()
-
-    private var isConnected: Bool {
-        proxyPhase == .enabled
-    }
-
-    var body: some View {
-        iconImage(frame: shouldAnimate ? animationFrame : 0, animated: shouldAnimate)
-            .onReceive(animationTimer) { _ in
-                guard shouldAnimate else {
-                    if animationFrame != 0 {
-                        animationFrame = 0
-                    }
-                    return
-                }
-                animationFrame = (animationFrame + 1) % MenuBarIconImageFactory.animationFrameCount
-            }
-    }
-
-    private var shouldAnimate: Bool {
-        animates && (proxyPhase == .enabled || phase == .starting || phase == .stopping)
-    }
-
-    private func iconImage(frame: Int, animated: Bool) -> some View {
-        Image(nsImage: MenuBarIconImageFactory.image(for: phase, proxyPhase: proxyPhase, frame: frame, isAnimated: animated))
-            .renderingMode(.template)
-            .frame(width: MenuBarIconImageFactory.size.width, height: MenuBarIconImageFactory.size.height)
-            .accessibilityLabel(isConnected ? "Teleport connected" : "Teleport")
-    }
-}
-
+@MainActor
 enum MenuBarIconImageFactory {
     static let animationFPS = 8.0
     static let animationFrameCount = 36
     static let size = NSSize(width: 18, height: 18)
+    static let placeholder: NSImage = {
+        let image = NSImage(size: size, flipped: false) { _ in true }
+        image.isTemplate = true
+        return image
+    }()
 
     private static let animationCycleDuration = 1.0 / 0.22
     private static let particleSeeds: [Double] = [0.0, 0.14, 0.28, 0.42, 0.56, 0.7, 0.84]
@@ -63,32 +26,49 @@ enum MenuBarIconImageFactory {
             ? Double(normalizedFrame) / Double(animationFrameCount) * animationCycleDuration
             : 0
         let image = NSImage(size: size)
-        image.lockFocus()
+        // Explicit bitmap reps avoid the NSCachedImageRep produced by lockFocus,
+        // which makes AppKit do extra work when updating a status item.
+        for scale in [1, 2] {
+            guard let bitmap = NSBitmapImageRep(
+                bitmapDataPlanes: nil, pixelsWide: Int(size.width) * scale,
+                pixelsHigh: Int(size.height) * scale, bitsPerSample: 8,
+                samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+            ), let context = NSGraphicsContext(bitmapImageRep: bitmap) else { continue }
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = context
+            context.cgContext.scaleBy(x: CGFloat(scale), y: CGFloat(scale))
+            draw(phase: phase, proxyPhase: proxyPhase, time: time, isAnimated: isAnimated)
+            NSGraphicsContext.restoreGraphicsState()
+            bitmap.size = size
+            image.addRepresentation(bitmap)
+        }
+        image.isTemplate = true
+        imageCache[key] = image
+        return image
+    }
 
+    private static func draw(phase: ConnectionPhase, proxyPhase: ProxyPhase,
+                             time: TimeInterval, isAnimated: Bool) {
         let outer = NSBezierPath(ovalIn: NSRect(x: 6.0, y: 1.8, width: 8.4, height: 14.4))
         let inner = NSBezierPath(ovalIn: NSRect(x: 7.8, y: 4.0, width: 4.9, height: 10.0))
 
-        NSColor.labelColor.withAlphaComponent(outerAlpha(for: phase)).setStroke()
+        NSColor.black.withAlphaComponent(outerAlpha(for: phase)).setStroke()
         outer.lineWidth = 1.8
         outer.stroke()
 
         if proxyPhase == .enabled {
-            NSColor.labelColor.withAlphaComponent(fillAlpha(for: phase, time: time, isAnimated: isAnimated)).setFill()
+            NSColor.black.withAlphaComponent(fillAlpha(for: phase, time: time, isAnimated: isAnimated)).setFill()
             inner.fill()
 
             if isAnimated {
                 drawParticles(time: time)
             }
         } else {
-            NSColor.labelColor.withAlphaComponent(innerAlpha(for: phase)).setStroke()
+            NSColor.black.withAlphaComponent(innerAlpha(for: phase)).setStroke()
             inner.lineWidth = 1.0
             inner.stroke()
         }
-
-        image.unlockFocus()
-        image.isTemplate = true
-        imageCache[key] = image
-        return image
     }
 
     private struct CacheKey: Hashable {
@@ -119,7 +99,7 @@ enum MenuBarIconImageFactory {
             let radius: CGFloat = 0.86 + 0.38 * (1 - progress)
             let rect = NSRect(x: x - radius, y: y - radius, width: radius * 2, height: radius * 2)
 
-            NSColor.labelColor.withAlphaComponent(alpha).setFill()
+            NSColor.black.withAlphaComponent(alpha).setFill()
             NSBezierPath(ovalIn: rect).fill()
         }
     }
@@ -161,14 +141,4 @@ enum MenuBarIconImageFactory {
         guard isAnimated else { return base }
         return base + 0.06 * CGFloat(sin(time * 2 * .pi / animationCycleDuration))
     }
-}
-
-#Preview {
-    VStack(spacing: 12) {
-        MenuBarIconView(phase: .unconfigured, proxyPhase: .disabled, animates: true)
-        MenuBarIconView(phase: .stopped, proxyPhase: .disabled, animates: true)
-        MenuBarIconView(phase: .running, proxyPhase: .disabled, animates: true)
-        MenuBarIconView(phase: .running, proxyPhase: .enabled, animates: true)
-    }
-    .padding()
 }
