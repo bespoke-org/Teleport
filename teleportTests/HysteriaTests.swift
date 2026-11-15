@@ -126,7 +126,10 @@ final class HysteriaTests: XCTestCase {
                 // over HTTPS/TCP. A server disabling UDP relay does not disable
                 // this resolver. Its QUIC transport still requires network UDP.
                 let dns = payload["dns"] as! [String: Any]
-                XCTAssert((dns["servers"] as! [Any])[0] as? String == "https://1.1.1.1/dns-query")
+                let server = try XCTUnwrap((dns["servers"] as? [[String: Any]])?.first)
+                XCTAssertEqual(server["address"] as? String, "https://1.1.1.1/dns-query")
+                XCTAssertEqual(server["tag"] as? String, XrayConfigurationWriter.dnsQueryTag)
+                XCTAssertEqual(server["finalQuery"] as? Bool, true)
                 let rules = (payload["routing"] as! [String: Any])["rules"] as! [[String: Any]]
                 let resolverRoute = rules.first { $0["inboundTag"] as? [String] == ["dns-internal"] && $0["ip"] == nil }!
                 XCTAssert(resolverRoute["outboundTag"] as? String == "proxy" && resolverRoute["network"] == nil)

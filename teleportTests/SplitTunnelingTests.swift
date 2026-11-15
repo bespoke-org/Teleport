@@ -247,20 +247,22 @@ final class SplitTunnelingTests: XCTestCase {
         let direct = try payload(defaultAction: .direct)
         let directDNS = direct["dns"] as? [String: Any]
         XCTAssert(directDNS?["tag"] as? String == "dns-internal")
-        let directServers = directDNS?["servers"] as? [Any] ?? []
-        XCTAssert(directServers.count == 2, "one local resolver plus the remote resolver, got \(directServers.count)")
-        XCTAssert(directServers[0] as? String == "192.0.2.53", "default direct: unmatched names resolve locally")
-        let remote = directServers[1] as? [String: Any]
-        XCTAssert(remote?["address"] as? String == TunnelDNSPolicy.defaultRemoteResolver)
-        XCTAssert(remote?["domains"] as? [String] == ["domain:example.com"], "proxy domains resolve remotely")
-        XCTAssert(remote?["skipFallback"] as? Bool == true)
+        let directServers = try XCTUnwrap(directDNS?["servers"] as? [[String: Any]])
+        XCTAssertEqual(directServers.last?["address"] as? String, "192.0.2.53", "default direct: unmatched names resolve locally")
+        XCTAssertEqual(directServers.last?["tag"] as? String, "dns-local")
+        XCTAssertNil(directServers.last?["domains"])
+        let remote = try XCTUnwrap(directServers.first { $0["domains"] as? [String] == ["domain:example.com"] })
+        XCTAssertEqual(remote["address"] as? String, TunnelDNSPolicy.defaultRemoteResolver)
+        XCTAssertEqual(remote["tag"] as? String, "dns-internal")
+        XCTAssertEqual(remote["skipFallback"] as? Bool, true)
+        XCTAssert(directServers.allSatisfy { $0["finalQuery"] as? Bool == true })
 
         let proxy = try payload(defaultAction: .proxy)
-        let proxyServers = (proxy["dns"] as? [String: Any])?["servers"] as? [Any] ?? []
-        XCTAssert(proxyServers[0] as? String == TunnelDNSPolicy.defaultRemoteResolver, "default proxy: unmatched names resolve remotely")
-        let local = proxyServers[1] as? [String: Any]
-        XCTAssert(local?["address"] as? String == "192.0.2.53")
-        XCTAssert(local?["domains"] as? [String] == ["domain:direct.example"], "direct domains resolve locally")
+        let proxyServers = try XCTUnwrap((proxy["dns"] as? [String: Any])?["servers"] as? [[String: Any]])
+        XCTAssertEqual(proxyServers.last?["address"] as? String, TunnelDNSPolicy.defaultRemoteResolver, "default proxy: unmatched names resolve remotely")
+        let local = try XCTUnwrap(proxyServers.first { $0["domains"] as? [String] == ["domain:direct.example"] })
+        XCTAssertEqual(local["address"] as? String, "192.0.2.53")
+        XCTAssertEqual(local["tag"] as? String, "dns-local")
 
         let outbounds = direct["outbounds"] as? [[String: Any]] ?? []
         XCTAssert(outbounds.contains { $0["tag"] as? String == "dns-out" && $0["protocol"] as? String == "dns" })
@@ -272,9 +274,12 @@ final class SplitTunnelingTests: XCTestCase {
         XCTAssert(routingRules[hijackIndex]["port"] as? Int == 53)
         XCTAssert(routingRules[hijackIndex]["inboundTag"] as? [String] == ["tun"])
         let internalRules = routingRules.filter { $0["inboundTag"] as? [String] == ["dns-internal"] }
-        XCTAssert(internalRules.count == 2, "local resolvers go direct, everything else through the proxy")
-        XCTAssert(internalRules[0]["ip"] as? [String] == ["192.0.2.53"] && internalRules[0]["outboundTag"] as? String == "direct")
-        XCTAssert(internalRules[1]["ip"] == nil && internalRules[1]["outboundTag"] as? String == "proxy")
+        XCTAssertEqual(internalRules.count, 1)
+        XCTAssertNil(internalRules[0]["ip"], "shared resolver addresses must not select the outbound")
+        XCTAssertEqual(internalRules[0]["outboundTag"] as? String, "proxy")
+        let localRule = try XCTUnwrap(routingRules.first { $0["inboundTag"] as? [String] == ["dns-local"] })
+        XCTAssertEqual(localRule["outboundTag"] as? String, "direct")
+        XCTAssertNil(localRule["ip"])
         XCTAssert(hijackIndex < routingRules.firstIndex { $0["domain"] != nil }!, "DNS rules must precede split rules")
 
         // No usable local resolver: everything resolves remotely rather than failing.
@@ -284,7 +289,8 @@ final class SplitTunnelingTests: XCTestCase {
             dnsPolicy: TunnelDNSPolicy(localResolvers: [])
         )
         let orphanServers = (((try JSONSerialization.jsonObject(with: orphan) as? [String: Any])?["dns"] as? [String: Any])?["servers"] as? [Any]) ?? []
-        XCTAssert(orphanServers.count == 1 && orphanServers[0] as? String == TunnelDNSPolicy.defaultRemoteResolver)
+        XCTAssertFalse(orphanServers.isEmpty)
+        XCTAssert(orphanServers.allSatisfy { ($0 as? [String: Any])?["address"] as? String == TunnelDNSPolicy.defaultRemoteResolver })
     }
 
     func testSplitRoutingConfigurationIsAcceptedByBundledXray() throws {
@@ -449,11 +455,11 @@ final class SplitTunnelingTests: XCTestCase {
         // for anything else.
         XCTAssert(firstServer["domains"] as? [String] == ["domain:internal.example"])
         XCTAssert(firstServer["skipFallback"] as? Bool == true)
+        XCTAssertEqual(firstServer["finalQuery"] as? Bool, true)
 
         let rules = ((payload?["routing"] as? [String: Any])?["rules"] as? [[String: Any]]) ?? []
         let resolverRule = rules.first {
-            ($0["inboundTag"] as? [String])?.contains("dns-internal") == true
-                && ($0["ip"] as? [String]) == ["10.72.0.53"]
+            ($0["inboundTag"] as? [String]) == ["dns-proxy-1"]
         }
         XCTAssert(resolverRule?["outboundTag"] as? String == "proxy-1",
                      "expected queries to the peer's resolver to leave through that peer's outbound")
@@ -474,6 +480,88 @@ final class SplitTunnelingTests: XCTestCase {
         let unusedServers = (unusedPayload?["dns"] as? [String: Any])?["servers"] as? [Any] ?? []
         XCTAssert(!unusedServers.contains { ($0 as? [String: Any])?["address"] as? String == "10.72.0.53" })
 
+        try assertAcceptedByBundledXray(data)
+    }
+
+    func testDirectAndPeersWithSameResolverIPStayIsolated() throws {
+        let parser = ConnectionLinkParser()
+        let firstID = UUID(), secondID = UUID()
+        let peer = try parser.parse(sampleWireGuardConfigurationFile(dnsServers: "10.72.0.53"))
+        let outbounds = [
+            RoutedProxyOutbound(connectionID: UUID(), configuration: try parser.parse(sampleVLESSLink()), serverAddress: "203.0.113.7"),
+            RoutedProxyOutbound(connectionID: firstID, configuration: peer, serverAddress: "198.51.100.1"),
+            RoutedProxyOutbound(connectionID: secondID, configuration: peer, serverAddress: "198.51.100.2")
+        ]
+        let data = try XrayConfigurationWriter(proxyEndpoint: .default).tunnelConfigData(
+            for: outbounds, interfaceName: "utun9", outboundInterface: "en0",
+            splitTunnelRules: [
+                .init(value: "home.arpa", kind: .domain, action: .direct),
+                .init(value: "first.example", kind: .domain, action: .proxy, connectionID: firstID),
+                .init(value: "second.example", kind: .domain, action: .proxy, connectionID: secondID)
+            ], dnsPolicy: .init(localResolvers: ["10.72.0.53"]))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let servers = try XCTUnwrap((payload["dns"] as? [String: Any])?["servers"] as? [[String: Any]])
+        XCTAssertEqual(servers.map { $0["tag"] as? String }, ["dns-local", "dns-proxy-1", "dns-proxy-2", "dns-internal"])
+        XCTAssert(servers.allSatisfy { $0["finalQuery"] as? Bool == true })
+        let rules = try XCTUnwrap((payload["routing"] as? [String: Any])?["rules"] as? [[String: Any]])
+        for (tag, outbound) in [("dns-local", "direct"), ("dns-proxy-1", "proxy-1"), ("dns-proxy-2", "proxy-2")] {
+            let rule = try XCTUnwrap(rules.first { $0["inboundTag"] as? [String] == [tag] })
+            XCTAssertEqual(rule["outboundTag"] as? String, outbound)
+            XCTAssertNil(rule["ip"])
+        }
+        try assertAcceptedByBundledXray(data)
+    }
+
+    func testRemoteDoHDoesNotFollowPeerWithTheSameResolverAddress() throws {
+        let peerID = UUID()
+        let outbounds = [
+            RoutedProxyOutbound(connectionID: UUID(), configuration: try ConnectionLinkParser().parse(sampleVLESSLink())),
+            RoutedProxyOutbound(connectionID: peerID, configuration: try ConnectionLinkParser().parse(sampleWireGuardConfigurationFile(dnsServers: "1.1.1.1")))
+        ]
+        let data = try XrayConfigurationWriter(proxyEndpoint: .default).tunnelConfigData(
+            for: outbounds, interfaceName: "utun9", outboundInterface: "en0",
+            splitTunnelRules: [.init(value: "internal.example", kind: .domain, action: .proxy, connectionID: peerID)],
+            dnsPolicy: .init(localResolvers: ["1.1.1.1"]))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let rules = try XCTUnwrap((payload["routing"] as? [String: Any])?["rules"] as? [[String: Any]])
+        let publicDNSRules = rules.filter { $0["inboundTag"] as? [String] == ["dns-internal"] }
+        XCTAssertEqual(publicDNSRules.count, 1)
+        XCTAssertEqual(publicDNSRules.first?["outboundTag"] as? String, "proxy")
+        XCTAssertNil(publicDNSRules.first?["ip"])
+        XCTAssertEqual(rules.first { $0["inboundTag"] as? [String] == ["dns-proxy-1"] }?["outboundTag"] as? String, "proxy-1")
+    }
+
+    func testDNSPrecedenceFollowsRulesInsteadOfOutboundOrder() throws {
+        let firstID = UUID(), secondID = UUID()
+        let peer = try ConnectionLinkParser().parse(sampleWireGuardConfigurationFile(dnsServers: "10.72.0.53"))
+        let outbounds = [
+            RoutedProxyOutbound(connectionID: UUID(), configuration: try ConnectionLinkParser().parse(sampleVLESSLink())),
+            RoutedProxyOutbound(connectionID: firstID, configuration: peer),
+            RoutedProxyOutbound(connectionID: secondID, configuration: peer)
+        ]
+        let data = try XrayConfigurationWriter(proxyEndpoint: .default).tunnelConfigData(
+            for: outbounds, interfaceName: "utun9", outboundInterface: "en0",
+            splitTunnelRules: [
+                .init(value: "internal.example", kind: .domain, action: .proxy, connectionID: secondID),
+                .init(value: "internal.example", kind: .domain, action: .proxy, connectionID: firstID)
+            ], dnsPolicy: .init(localResolvers: []))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let servers = try XCTUnwrap((payload["dns"] as? [String: Any])?["servers"] as? [[String: Any]])
+        XCTAssertEqual(servers.first?["tag"] as? String, "dns-proxy-2")
+        XCTAssertEqual(servers.first?["finalQuery"] as? Bool, true)
+        XCTAssertEqual(servers.first?["domains"] as? [String], ["domain:internal.example"])
+    }
+
+    func testDefaultWireGuardResolverNeverFallsBackToPublicDNS() throws {
+        let peer = try ConnectionLinkParser().parse(sampleWireGuardConfigurationFile(dnsServers: "10.72.0.53, 10.72.0.54"))
+        let data = try XrayConfigurationWriter(proxyEndpoint: .default).tunnelConfigData(
+            for: peer, interfaceName: "utun9", outboundInterface: "en0",
+            dnsPolicy: .init(localResolvers: ["192.168.1.1"]))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let servers = try XCTUnwrap((payload["dns"] as? [String: Any])?["servers"] as? [[String: Any]])
+        XCTAssertEqual(servers.map { $0["address"] as? String }, ["10.72.0.53", "10.72.0.54"])
+        XCTAssertEqual(servers.map { $0["finalQuery"] as? Bool }, [false, true])
+        XCTAssert(servers.allSatisfy { $0["tag"] as? String == "dns-proxy" })
         try assertAcceptedByBundledXray(data)
     }
 
