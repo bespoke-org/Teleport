@@ -154,7 +154,11 @@ final class XrayOutputCaptureTests: XCTestCase {
     func testDiskWriteFailureDoesNotStopPipeDrainOrGrowMemory() throws {
         let pipe = Pipe()
         let session = try XrayOutputCapture(reader: pipe.fileHandleForReading, directory: directory,
-                                            policy: .standard, write: { _, _ in throw CocoaError(.fileWriteOutOfSpace) })
+                                            policy: .standard, write: { handle, data in
+            if data.starts(with: Data("\n=====".utf8)) { try handle.write(contentsOf: data) }
+            else { throw CocoaError(.fileWriteOutOfSpace) }
+        })
+        XCTAssertFalse(session.hasDiskFailure)
         try pipe.fileHandleForWriting.write(contentsOf: Data(repeating: 65, count: 1024 * 1024))
         try pipe.fileHandleForWriting.close()
         session.close()
@@ -198,12 +202,37 @@ final class XrayOutputCaptureTests: XCTestCase {
     func testFailedSpawnAndRepeatedStopRetireCapture() throws {
         let directory = try XCTUnwrap(directory)
         let manager = XrayRuntimeManager(assetDirectoryURLProvider: { directory },
+            log: TeleportLog(directoryURL: directory.appendingPathComponent("structured"), fileName: "test.log"),
             executableURLProvider: { directory.appendingPathComponent("does-not-exist") },
             logDirectoryURLProvider: { directory })
         XCTAssertThrowsError(try manager.start(configURL: directory.appendingPathComponent("unused")))
         manager.stop()
         manager.stop()
         XCTAssertFalse(manager.isRunning)
+    }
+
+    func testSyntheticChildRestartDoesNotReusePreviousDiagnostics() throws {
+        let directory = try XCTUnwrap(directory)
+        let script = directory.appendingPathComponent("synthetic-child")
+        try Data("#!/bin/sh\nprintf '%s\\n' \"$3\"\n".utf8).write(to: script)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
+        var executable: URL? = script
+        let manager = XrayRuntimeManager(assetDirectoryURLProvider: { directory },
+            log: TeleportLog(directoryURL: directory.appendingPathComponent("structured"), fileName: "test.log"),
+            executableURLProvider: { executable }, logDirectoryURLProvider: { directory })
+        for marker in ["first-run", "second-run"] {
+            try manager.start(configURL: directory.appendingPathComponent(marker))
+            let deadline = Date().addingTimeInterval(3)
+            while manager.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
+            XCTAssertFalse(manager.isRunning)
+            let output = try XCTUnwrap(manager.stopAndCaptureErrorOutput())
+            XCTAssertTrue(output.contains(marker))
+            if marker == "second-run" { XCTAssertFalse(output.contains("first-run")) }
+        }
+        executable = nil
+        XCTAssertThrowsError(try manager.start(configURL: directory.appendingPathComponent("third-run")))
+        XCTAssertNil(manager.capturedErrorOutput())
+        manager.stop()
     }
 
     func testPolicyDistinguishesMissingNullZeroAndInvalidValues() throws {
