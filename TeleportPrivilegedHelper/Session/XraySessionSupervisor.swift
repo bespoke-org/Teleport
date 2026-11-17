@@ -16,6 +16,7 @@ final class XraySessionSupervisor: @unchecked Sendable {
     private let queue = DispatchQueue(label: "dev.x.teleport.helper.supervisor", qos: .utility)
     private var source: DispatchSourceProcess?
     private var watchedPID: pid_t?
+    private var watchID: UUID?
     /// Set the moment a stop is requested, before the stop script runs, so an
     /// exit event that races with it does not start a second teardown.
     private var isStopRequested = false
@@ -26,15 +27,17 @@ final class XraySessionSupervisor: @unchecked Sendable {
     func watch(pid: pid_t, onUnexpectedExit: @escaping @Sendable (pid_t) -> Void) {
         cancel()
 
+        let watchID = UUID()
         let source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: queue)
         source.setEventHandler { [weak self] in
-            guard let self, self.consumeWatch(of: pid) else { return }
+            guard let self, self.consumeWatch(of: pid, watchID: watchID) else { return }
             onUnexpectedExit(pid)
         }
 
         lock.lock()
         self.source = source
         watchedPID = pid
+        self.watchID = watchID
         isStopRequested = false
         lock.unlock()
 
@@ -46,7 +49,7 @@ final class XraySessionSupervisor: @unchecked Sendable {
         // delivered, so only the reaped case needs catching here.
         if kill(pid, 0) != 0, errno == ESRCH {
             queue.async { [weak self] in
-                guard let self, self.consumeWatch(of: pid) else { return }
+                guard let self, self.consumeWatch(of: pid, watchID: watchID) else { return }
                 onUnexpectedExit(pid)
             }
         }
@@ -55,11 +58,12 @@ final class XraySessionSupervisor: @unchecked Sendable {
     /// One teardown per watched process. The exit source and the already-reaped
     /// fallback can both report the same pid; whichever arrives first takes the
     /// watch, and the other finds nothing to act on.
-    private func consumeWatch(of pid: pid_t) -> Bool {
+    private func consumeWatch(of pid: pid_t, watchID: UUID) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard watchedPID == pid, !isStopRequested else { return false }
+        guard watchedPID == pid, self.watchID == watchID, !isStopRequested else { return false }
         watchedPID = nil
+        self.watchID = nil
         return true
     }
 
@@ -79,6 +83,7 @@ final class XraySessionSupervisor: @unchecked Sendable {
         let source = self.source
         self.source = nil
         watchedPID = nil
+        watchID = nil
         lock.unlock()
         source?.cancel()
     }
