@@ -46,6 +46,15 @@ jobs:
       - run: just test
         timeout-minutes: 15
 
+      - name: Check Xray capture with app actor isolation
+        if: matrix.macos == 26 && matrix.arch == 'arm64'
+        env:
+          XCODE_XCCONFIG_FILE: ${{ github.workspace }}/Config/AppActorIsolationTests.xcconfig
+        run: |
+          just test-case XrayOutputCaptureTests
+          just test-case CoreTests
+          just test-case LogReaderTests
+
       - name: Upload test diagnostics
         if: ${{ failure() || cancelled() }}
         uses: actions/upload-artifact@v7.0.2
