@@ -96,6 +96,20 @@ final class XrayOutputCaptureTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("xray.log")), Data([66, 67]))
     }
 
+    func testOverlappingRuntimeSinksDoNotKeepWritingRenamedGenerations() throws {
+        let policy = try XrayLogPolicy(maxLogSize: 16, retentionDays: nil)
+        let first = try XrayLogSink(directory: directory, policy: policy)
+        let second = try XrayLogSink(directory: directory, policy: policy)
+        for _ in 0..<30 {
+            try first.append(Data(repeating: 65, count: 13))
+            try second.append(Data(repeating: 66, count: 13))
+        }
+        first.close()
+        second.close()
+        XCTAssertEqual(try files().reduce(0) { try $0 + bytes($1) }, 780)
+        for url in try files() { XCTAssertLessThanOrEqual(try bytes(url), 16) }
+    }
+
     func testBothNullRotateDailyWithoutAgeDeletionOrSizeTrigger() throws {
         var now = Date(timeIntervalSince1970: 1_700_006_400)
         let sink = try XrayLogSink(directory: directory, policy: XrayLogPolicy(maxLogSize: nil, retentionDays: nil),
