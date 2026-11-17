@@ -39,6 +39,9 @@ nonisolated struct XrayLogPolicy: Decodable, Sendable {
 
 /// Queue-confined raw-byte sink. No asynchronous write queue and no formatting of child output.
 nonisolated final class XrayLogSink {
+    // Health probes can run alongside the active connection. No sink keeps an open
+    // generation between appends; serialize path mutation across all runtime instances.
+    private static let diskLock = NSLock()
     private let directory: URL
     private let policy: XrayLogPolicy
     private let clock: () -> Date
@@ -60,6 +63,8 @@ nonisolated final class XrayLogSink {
         self.calendar = calendar
         self.write = write
         day = calendar.startOfDay(for: clock())
+        Self.diskLock.lock()
+        defer { close(); Self.diskLock.unlock() }
         try fm.createDirectory(at: directory, withIntermediateDirectories: true)
         // Normalize legacy oversized generations with bounded streaming IO, not Data(contentsOf:).
         for url in try ownedFiles() { try normalize(url) }
@@ -74,6 +79,13 @@ nonisolated final class XrayLogSink {
     deinit { close() }
 
     func append(_ data: Data) throws {
+        Self.diskLock.lock()
+        defer { close(); Self.diskLock.unlock() }
+        let attrs = try fm.attributesOfItem(atPath: currentURL.path)
+        if let modified = attrs[.modificationDate] as? Date {
+            day = calendar.startOfDay(for: modified)
+        }
+        try open()
         try maintain()
         var offset = 0
         while offset < data.count {
@@ -99,6 +111,7 @@ nonisolated final class XrayLogSink {
             guard fm.createFile(atPath: currentURL.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
                 throw CocoaError(.fileWriteUnknown)
             }
+            try fm.setAttributes([.modificationDate: clock()], ofItemAtPath: currentURL.path)
         }
         try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: currentURL.path)
         let opened = try FileHandle(forWritingTo: currentURL)
