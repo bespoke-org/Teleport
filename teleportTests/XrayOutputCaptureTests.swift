@@ -70,6 +70,36 @@ final class XrayOutputCaptureTests: XCTestCase {
         XCTAssertEqual(session.storedByteCount, 6)
     }
 
+    func testUTF8AtTruncatedHeadAndTailRemainsReadable() throws {
+        let pipe = Pipe()
+        let session = try capture(pipe, maximum: nil)
+        let prefix = Data("startup🙂\n".utf8)
+        try pipe.fileHandleForWriting.write(contentsOf: prefix)
+        let text = Data(String(repeating: "🙂", count: 100_000).utf8)
+        try pipe.fileHandleForWriting.write(contentsOf: text)
+        try pipe.fileHandleForWriting.write(contentsOf: Data("\nfinal-échec".utf8))
+        try pipe.fileHandleForWriting.close()
+        session.close()
+        let output = try XCTUnwrap(session.capturedOutput())
+        XCTAssertTrue(output.hasPrefix("startup🙂\n"))
+        XCTAssertTrue(output.hasSuffix("final-échec"))
+        XCTAssertTrue(output.contains("output omitted"))
+        XCTAssertLessThanOrEqual(session.storedByteCount, 256 * 1024)
+    }
+
+    func testDiskOpenFailureStillCapturesAndCloses() throws {
+        let pipe = Pipe()
+        let obstruction = directory.appendingPathComponent("not-a-directory")
+        try Data([65]).write(to: obstruction)
+        let session = try XrayOutputCapture(reader: pipe.fileHandleForReading, directory: obstruction, policy: .standard)
+        try pipe.fileHandleForWriting.write(contentsOf: Data("spawn-diagnostic".utf8))
+        try pipe.fileHandleForWriting.close()
+        session.close()
+        session.close()
+        XCTAssertTrue(session.hasDiskFailure)
+        XCTAssertTrue(try XCTUnwrap(session.capturedOutput()).hasSuffix("spawn-diagnostic"))
+    }
+
     func testOversizedAppendNeverExceedsFileSizeAndPreservesAllNewBytes() throws {
         let sink = try XrayLogSink(directory: directory, policy: XrayLogPolicy(maxLogSize: 17, retentionDays: nil))
         let data = Data(String(repeating: "🙂abc", count: 1000).utf8)
