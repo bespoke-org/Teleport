@@ -198,6 +198,23 @@ XCODE_XCCONFIG_FILE="$PWD/Config/AppActorIsolationTests.xcconfig" just test-case
 
 These cover subscription processing, asynchronous persistence, and probe runtime setup/cleanup. Without the override, the hostless tests can miss work that hops onto the main actor only in the app build.
 
+### System Proxy Xray output
+
+Each Xray run owns a capture that drains its pipe on a dedicated serial IO queue. Read readiness is coalesced; reads and writes are inline in 16 KiB pieces, not enqueued per output chunk. After the child exits, stop drains the remaining pipe bytes, cancels the read source and waits for descriptor closure before a new run opens the log. Diagnostics retain up to 256 KiB of raw bytes (64 KiB startup context plus recent output and an omission marker); malformed or split UTF-8 is decoded lossily rather than hiding the error. Disk failure disables disk logging for that run, while bounded diagnostic capture and pipe draining continue.
+
+The current path stays `~/Library/Application Support/teleport/xray.log` (the existing log viewer reads its tail). Rotated files are `xray.log.<day-epoch>.<UUID>`, with permissions 0600. Engineering defaults are 5 MiB **per file**, rotation at size **or local calendar day change**, and deletion of archives older than 7 calendar days. Maintenance runs on startup and on output after a day change; idle sessions do not need a timer. Existing oversized current/legacy archives are trimmed to their last file-budget bytes using bounded streaming IO, preserving their age; this intentionally drops their oldest history. New output is split across files without dropping bytes. The limit includes run separators. A restart appends to the current day's file when there is room.
+
+Internal configuration has no UI and does not alter the sealed connection snapshot. Set one JSON string in the existing UserDefaults domain, then reconnect (do not restart a running connection just to change logging):
+
+```sh
+defaults write dev.x.teleport xrayLogPolicy -string '{"max_log_size":5242880,"retention_days":7}'
+# Example only: daily rotation without a size trigger or age deletion
+defaults write dev.x.teleport xrayLogPolicy -string '{"max_log_size":null,"retention_days":null}'
+defaults delete dev.x.teleport xrayLogPolicy  # restore engineering defaults
+```
+
+`max_log_size` is a positive integer in bytes; `retention_days` is a positive integer in days. Missing fields use defaults; JSON `null` disables only that field's trigger. Zero, negatives, strings (including `"None"`) and malformed JSON are invalid and fall back to defaults with a warning. Retention is not a rotation interval. With both values null, daily files accumulate without age deletion; the RAM limit is unchanged. Even with defaults this is an age policy, not a total disk quota or fixed generation count: enough output in one day can create many bounded files. TUN/helper logs and the structured app logger are unchanged. Hostless tests exercise synthetic pipes and temporary files, not a real Xray connection, helper installation or network settings.
+
 ## Buy us some tokens
 
 Although Teleport is built with LLMs, we put a lot of time and tokens into its stability and UX. If Teleport is useful to you, you can support that work with USDT.
