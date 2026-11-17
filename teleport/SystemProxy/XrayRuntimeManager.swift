@@ -61,6 +61,7 @@ nonisolated final class XrayRuntimeManager: @unchecked Sendable {
         guard process?.isRunning != true else { return }
         // Retire the previous run before opening the same log path for another run.
         stop()
+        capture = nil
         guard let runtimeURL = runtimeURL() else {
             throw RuntimeError.binaryNotFound
         }
