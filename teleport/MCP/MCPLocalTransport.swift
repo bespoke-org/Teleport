@@ -144,6 +144,9 @@ nonisolated final class MCPLocalServer {
         source.setEventHandler {
             let client = accept(fd, nil, nil)
             guard client >= 0 else { return }
+            // Darwin inherits O_NONBLOCK from the listener. Workers use blocking frame I/O.
+            let flags = fcntl(client, F_GETFL)
+            guard flags >= 0, fcntl(client, F_SETFL, flags & ~O_NONBLOCK) == 0 else { close(client); return }
             guard slots.wait(timeout: .now()) == .success else { close(client); return }
             MCPLocalTransport.configure(client)
             DispatchQueue.global(qos: .utility).async {

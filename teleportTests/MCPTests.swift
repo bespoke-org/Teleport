@@ -491,6 +491,25 @@ final class MCPTests: XCTestCase {
         XCTAssertFalse(String(decoding: reply, as: UTF8.self).contains("secret-token"))
     }
 
+    func testSocketWaitsForClientToSendRequest() async throws {
+        let directory = "/tmp/teleport-mcp-test-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let server = try MCPLocalServer(directory: directory) { $0 }
+        defer { server.stop() }
+
+        let client = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard client >= 0 else { return XCTFail("Cannot open client socket") }
+        defer { close(client) }
+        MCPLocalTransport.configure(client)
+        let connected = try MCPLocalTransport.withAddress(directory + "/socket") { Darwin.connect(client, $0, $1) }
+        guard connected == 0 else { return XCTFail("Cannot connect to test server") }
+        // Let the server accept and start reading before the client writes its frame.
+        try await Task.sleep(for: .milliseconds(200))
+        let request = Data("hello".utf8)
+        try MCPLocalTransport.writeFrame(request, to: client)
+        XCTAssertEqual(try MCPLocalTransport.readFrame(client), request)
+    }
+
     func testSocketRoundTripLockAndPrivatePermissions() async throws {
         let directory = "/tmp/teleport-mcp-test-\(UUID().uuidString)"
         defer { try? FileManager.default.removeItem(atPath: directory) }
