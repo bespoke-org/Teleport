@@ -40,6 +40,8 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
         return try EndpointResolver.resolve(request)
     }
 
+    var isLeakGuardEngaged: Bool { leakGuard.isEngaged }
+
     func status(request: StatusRequest) throws -> StatusResponse {
         // The exit watch is the authority on a process this helper started: its
         // event has not come, so the process is there, whatever a momentary
@@ -57,7 +59,7 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
             details: nil,
             tunnelInterfaceName: interfaces?.tunnel,
             outboundInterface: interfaces?.outbound,
-            isLeakGuardEngaged: leakGuard.isEngaged
+            isLeakGuardEngaged: isLeakGuardEngaged
         )
     }
 

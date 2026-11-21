@@ -130,7 +130,8 @@ actor HelperCommandDispatcher {
                             helperVersion: PrivilegedHelperConstants.version,
                             phase: projectedPhase,
                             summary: projectedFailureSummary,
-                            details: projectedFailureDetails
+                            details: projectedFailureDetails,
+                            isLeakGuardEngaged: executor.isLeakGuardEngaged
                         )
                     }
                     return try executor.status(request: request.payload)
