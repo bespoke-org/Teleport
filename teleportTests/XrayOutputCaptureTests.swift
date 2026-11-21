@@ -58,6 +58,22 @@ final class XrayOutputCaptureTests: XCTestCase {
         XCTAssertFalse(session.hasDiskFailure)
     }
 
+    func testHandshakeVerdictSurvivesTruncatedOutput() throws {
+        let pipe = Pipe()
+        let session = try XrayOutputCapture(reader: pipe.fileHandleForReading, directory: directory,
+                                            policy: .standard, trackWireGuardHandshake: true)
+        defer { session.close() }
+        let writer = pipe.fileHandleForWriting
+        try writer.write(contentsOf: Data(repeating: 65, count: 80 * 1024))
+        try writer.write(contentsOf: Data("\nSending handshake initiation\nReceiving handshake response\n".utf8))
+        try writer.write(contentsOf: Data(repeating: 66, count: 300 * 1024))
+        try writer.close()
+        session.close()
+        XCTAssertEqual(session.handshakeEvidence?.attempted, true)
+        XCTAssertEqual(session.handshakeEvidence?.responded, true)
+        XCTAssertFalse(try XCTUnwrap(session.capturedOutput()).contains("handshake"))
+    }
+
     func testEmptyShortAndSplitMalformedUTF8() throws {
         let pipe = Pipe()
         let session = try capture(pipe)
@@ -157,7 +173,8 @@ final class XrayOutputCaptureTests: XCTestCase {
         let now = Date(timeIntervalSince1970: 1_700_006_400)
         let old = directory.appendingPathComponent("xray.log.1")
         let unrelated = directory.appendingPathComponent("xray.log.keep")
-        for url in [old, unrelated] {
+        let lookalike = directory.appendingPathComponent("xray..log.123." + UUID().uuidString)
+        for url in [old, unrelated, lookalike] {
             try Data([65]).write(to: url)
             try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-10 * 86400)], ofItemAtPath: url.path)
         }
@@ -166,6 +183,22 @@ final class XrayOutputCaptureTests: XCTestCase {
         sink.close()
         XCTAssertFalse(FileManager.default.fileExists(atPath: old.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: unrelated.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: lookalike.path))
+    }
+
+    func testExpiredOversizedArchiveIsUnlinkedBeforeNormalization() throws {
+        let archive = directory.appendingPathComponent("xray.log.1")
+        let alias = directory.appendingPathComponent("witness")
+        try Data(repeating: 65, count: 128).write(to: archive)
+        try FileManager.default.setAttributes([.modificationDate: Date.distantPast, .posixPermissions: 0o640],
+                                              ofItemAtPath: archive.path)
+        try FileManager.default.linkItem(at: archive, to: alias)
+        let sink = try XrayLogSink(directory: directory, policy: XrayLogPolicy(maxLogSize: 32, retentionDays: 1))
+        sink.close()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: archive.path))
+        // Normalization chmods the original inode before creating a trimmed copy.
+        let attrs = try FileManager.default.attributesOfItem(atPath: alias.path)
+        XCTAssertEqual((attrs[.posixPermissions] as? NSNumber)?.intValue, 0o640)
     }
 
     func testOldOversizedFilesAreTrimmedWithAgeAndPermissionsPreserved() throws {
@@ -212,6 +245,12 @@ final class XrayOutputCaptureTests: XCTestCase {
         try pipe.fileHandleForWriting.write(contentsOf: Data("late-old-output".utf8))
         XCTAssertEqual(entered.wait(timeout: .now() + 3), .success)
         try pipe.fileHandleForWriting.close()
+        let marked = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            old.expectExit()
+            if old.expectsExit { marked.signal() }
+        }
+        XCTAssertEqual(marked.wait(timeout: .now() + 1), .success, "Stop can signal the child while disk I/O is blocked")
         let closed = DispatchSemaphore(value: 0)
         DispatchQueue.global().async { old.close(); closed.signal() }
         XCTAssertEqual(closed.wait(timeout: .now() + 0.05), .timedOut)

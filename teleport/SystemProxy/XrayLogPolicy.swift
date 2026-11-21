@@ -66,6 +66,9 @@ nonisolated final class XrayLogSink {
         Self.diskLock.lock()
         defer { close(); Self.diskLock.unlock() }
         try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        // Free expired archives before normalization needs temporary disk space.
+        try pruneExpiredFiles(today: day, includeCurrent: true)
+        retainedOnDay = day
         // Normalize legacy oversized generations with bounded streaming IO, not Data(contentsOf:).
         for url in try ownedFiles() { try normalize(url) }
         let attributes = try? fm.attributesOfItem(atPath: currentURL.path)
@@ -129,16 +132,21 @@ nonisolated final class XrayLogSink {
         if day != today { try rotate() }
         // Retention is independent of size rotation, including idle/new sessions.
         guard retainedOnDay != today else { return }
+        try pruneExpiredFiles(today: today, includeCurrent: false)
+        retainedOnDay = today
+    }
+
+    private func pruneExpiredFiles(today: Date, includeCurrent: Bool) throws {
         if let days = policy.retentionDays,
            let cutoff = calendar.date(byAdding: .day, value: -days, to: today) {
-            for url in try ownedFiles() where url != currentURL {
+            for url in try ownedFiles() where includeCurrent || url != currentURL {
                 let attrs = try fm.attributesOfItem(atPath: url.path)
+                guard attrs[.type] as? FileAttributeType == .typeRegular else { throw CocoaError(.fileReadUnsupportedScheme) }
                 if let date = attrs[.modificationDate] as? Date, date < cutoff {
                     try fm.removeItem(at: url)
                 }
             }
         }
-        retainedOnDay = today
     }
 
     private func rotate() throws {
@@ -155,9 +163,10 @@ nonisolated final class XrayLogSink {
         try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil).filter { url in
             let name = url.lastPathComponent
             if name == "xray.log" || name == "xray.log.1" { return true }
-            let parts = name.split(separator: ".")
-            return parts.count == 4 && parts[0] == "xray" && parts[1] == "log"
-                && Int(parts[2]) != nil && UUID(uuidString: String(parts[3])) != nil
+            let parts = name.split(separator: ".", omittingEmptySubsequences: false)
+            guard parts.count == 4, parts[0] == "xray", parts[1] == "log",
+                  let timestamp = Int(parts[2]), let id = UUID(uuidString: String(parts[3])) else { return false }
+            return String(timestamp) == parts[2] && id.uuidString == parts[3]
         }
     }
 

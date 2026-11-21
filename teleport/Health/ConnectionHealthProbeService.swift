@@ -159,7 +159,7 @@ nonisolated final class ConnectionHealthProbeService: @unchecked Sendable {
                 // succeeded.
                 outboundInterface: SystemUplinkInventory.primaryInterfaceName()
             )
-            try runtimeManager.start(configURL: configURL)
+            try runtimeManager.start(configURL: configURL, trackWireGuardHandshake: peer != nil)
             let isReady = await waitForLocalProxyReady(endpoint: probeEndpoint, connectionID: connection.id)
             guard isReady else {
                 // The local proxy never came up — the probe's own runtime, not the
@@ -231,25 +231,25 @@ nonisolated final class ConnectionHealthProbeService: @unchecked Sendable {
         let triggerTask = Task { await Self.sendHandshakeTrigger(to: target, through: endpoint) }
         defer { triggerTask.cancel() }
 
-        while clock.now < deadline {
-            let output = runtimeManager.capturedErrorOutput() ?? ""
-            if Self.containsWireGuardHandshakeResponse(output) {
+        while true {
+            let evidence = runtimeManager.handshakeEvidence
+            if evidence?.responded == true {
                 let elapsed = DispatchTime.now().uptimeNanoseconds - startTime
                 return .measured(max(1, Int((Double(elapsed) / 1_000_000).rounded())), .wireGuardHandshake)
             }
             // The probe's own runtime died mid-question; the server was never given
             // a chance to answer.
             if !runtimeManager.isRunning {
+                let output = runtimeManager.capturedErrorOutput() ?? ""
                 return .indeterminate(Self.summarizedRuntimeFailure(output.isEmpty ? "The probe's local proxy stopped" : output))
+            }
+            if clock.now >= deadline {
+                return evidence?.attempted == true
+                    ? .unreachable("The peer did not answer the WireGuard handshake")
+                    : .indeterminate("Teleport could not send a WireGuard handshake to this peer")
             }
             try? await Task.sleep(for: .milliseconds(100))
         }
-
-        let output = runtimeManager.capturedErrorOutput() ?? ""
-        // Silence from the peer is a verdict; never having asked is not.
-        return Self.containsWireGuardHandshakeAttempt(output)
-            ? .unreachable("The peer did not answer the WireGuard handshake")
-            : .indeterminate("Teleport could not send a WireGuard handshake to this peer")
     }
 
     /// An address the peer is known to carry: its own resolver if it publishes one,
@@ -264,13 +264,6 @@ nonisolated final class ConnectionHealthProbeService: @unchecked Sendable {
                 return base
             }
         return candidates.first { !$0.contains(":") } ?? candidates.first
-    }
-
-    /// Whether Xray tried at all. wireguard-go only handshakes when it has traffic
-    /// to send, so an absent initiation means the probe's own request never reached
-    /// the outbound, not that the peer is down.
-    nonisolated static func containsWireGuardHandshakeAttempt(_ output: String) -> Bool {
-        output.lowercased().contains("handshake initiation")
     }
 
     private static func sendHandshakeTrigger(to target: String, through endpoint: ProxyEndpoint) async {
@@ -298,16 +291,6 @@ nonisolated final class ConnectionHealthProbeService: @unchecked Sendable {
         // Whether this answers is irrelevant: sending it is what makes WireGuard
         // start its handshake.
         _ = try? await session.data(from: url)
-    }
-
-    /// Xray's wording has changed between releases, so the marker is matched
-    /// loosely: any handshake line that is about receiving rather than sending.
-    nonisolated static func containsWireGuardHandshakeResponse(_ output: String) -> Bool {
-        output.split(separator: "\n").contains { line in
-            let lowercased = line.lowercased()
-            guard lowercased.contains("handshake") else { return false }
-            return lowercased.contains("receiving") || lowercased.contains("received")
-        }
     }
 
     private func proxyRequestLatencySample(endpoint: ProxyEndpoint) async throws -> Int {

@@ -57,7 +57,9 @@ nonisolated final class XrayRuntimeManager: @unchecked Sendable {
         return bundle.url(forResource: "xray", withExtension: nil)
     }
 
-    func start(configURL: URL) throws {
+    var handshakeEvidence: WireGuardHandshakeEvidence? { capture?.handshakeEvidence }
+
+    func start(configURL: URL, trackWireGuardHandshake: Bool = false) throws {
         guard process?.isRunning != true else { return }
         // Retire the previous run before opening the same log path for another run.
         stop()
@@ -83,7 +85,8 @@ nonisolated final class XrayRuntimeManager: @unchecked Sendable {
             log.warn(Self.subsystem, "Invalid internal Xray log policy; using 5 MiB / 7 day defaults")
             policy = .standard
         }
-        let capture = try XrayOutputCapture(reader: pipe.fileHandleForReading, directory: directory, policy: policy)
+        let capture = try XrayOutputCapture(reader: pipe.fileHandleForReading, directory: directory, policy: policy,
+                                            trackWireGuardHandshake: trackWireGuardHandshake)
         self.capture = capture
 
         process.standardError = pipe
