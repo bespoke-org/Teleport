@@ -23,7 +23,8 @@ struct TunnelSettingsView: View {
         return List {
             Section {
                 profileHeader
-                    .padding(.vertical, 8)
+                    .padding(.top, 24)
+                    .padding(.bottom, 8)
                     .listRowSeparator(.hidden)
                     .listRowInsets(EdgeInsets(top: 0, leading: horizontalInset, bottom: 0, trailing: horizontalInset))
                     .listRowBackground(Color.clear)
@@ -135,9 +136,8 @@ struct TunnelSettingsView: View {
             }
         }
         .listStyle(.inset)
-        // The editor starts below the toolbar, while its rows can still scroll
-        // underneath the glass. Match the other settings pages' top spacing.
-        .contentMargins(.top, 16, for: .scrollContent)
+        // Keep the toolbar spacing in the first row so List updates preserve the scroll origin.
+        .contentMargins(.top, 0, for: .scrollContent)
         .scrollContentBackground(.hidden)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(SettingsClickAwayMonitor(scope: ruleClickScope, isActive: selectedRuleID != nil) {
