@@ -29,7 +29,7 @@ final class AppViewModelGeodataTests: XCTestCase {
     func testSharedCacheRefreshDoesNotDisableActiveProfileAutomaticUpdates() async throws {
         let fixture = try Fixture(sharedProfile: true)
         defer { fixture.cleanUp() }
-        await waitUntil { fixture.model.isConnected }
+        await waitUntil { fixture.model.isConnected && !fixture.model.isOperationPending }
         await waitUntil { await fixture.service.gate.count == 2 }
         await fixture.service.gate.succeed(.geosite)
         await fixture.service.gate.succeed(.geoip)
@@ -196,7 +196,7 @@ final class AppViewModelGeodataTests: XCTestCase {
 
     private func makeFixture() async throws -> Fixture {
         let fixture = try Fixture()
-        await waitUntil { fixture.model.isConnected }
+        await waitUntil { fixture.model.isConnected && !fixture.model.isOperationPending }
         return fixture
     }
 
@@ -316,22 +316,21 @@ private final class GeodataTestProvider: ConnectionProvider, @unchecked Sendable
     private let lock = NSLock()
     private var connects = 0
     private let state = ConnectionState.connected(.init(id: UUID(), mode: .tun, connectedAt: Date()))
-    private let initialState: ConnectionState
+    private let stateStore: ConnectionStateStore
     private let geodata: ControlledGeodataService
     private var connectedWithCustomGeodata = false
-    private let updates = AsyncStream<ConnectionState>.makeStream()
     var connectCount: Int { lock.withLock { connects } }
     var startedWithCustomGeodata: Bool { lock.withLock { connectedWithCustomGeodata } }
     init(initiallyConnected: Bool, geodata: ControlledGeodataService) {
-        initialState = initiallyConnected ? state : .idle
+        stateStore = ConnectionStateStore(initialState: initiallyConnected ? state : .idle)
         self.geodata = geodata
     }
-    func currentState() async -> ConnectionState { initialState }
-    func stateUpdates() -> AsyncStream<ConnectionState> { updates.continuation.yield(initialState); return updates.stream }
+    func currentState() async -> ConnectionState { stateStore.current() }
+    func stateUpdates() -> AsyncStream<ConnectionState> { stateStore.stream() }
     func connect(_ request: ConnectionRequest) async throws {
         let hasCustomGeodata = geodata.hasCustomGeodata(for: .geosite) || geodata.hasCustomGeodata(for: .geoip)
         lock.withLock { connects += 1; connectedWithCustomGeodata = hasCustomGeodata }
-        updates.continuation.yield(state)
+        stateStore.update(state)
     }
-    func disconnect() async throws { updates.continuation.yield(.idle); updates.continuation.finish() }
+    func disconnect() async throws { stateStore.update(.idle) }
 }
