@@ -333,9 +333,12 @@ final class SettingsToolbarLayoutTests: XCTestCase {
             XCTAssertEqual(route.convert(route.bounds, to: nil), routeFrame)
             for action in [SplitTunnelRuleAction.direct, .proxy] {
                 model.setSplitTunnelDefaultAction(action)
-                await awaitUIUpdate("The default route description changes")
+                await awaitUIUpdate("The default route description changes") {
+                    window.contentView?.layoutSubtreeIfNeeded()
+                    return route.selectedSegment == (action == .proxy ? 0 : 1)
+                }
                 XCTAssertEqual(route.convert(route.bounds, to: nil), routeFrame,
-                               "Changing description must not resize or shift its row")
+                               "Changing description must not resize or shift its row; name before=\(nameFrame) after=\(field.convert(field.bounds, to: nil)); scroll=\(String(describing: route.enclosingScrollView?.contentView.bounds))")
             }
         }
         XCTAssertTrue(window.makeFirstResponder(field))
@@ -393,7 +396,7 @@ final class SettingsToolbarLayoutTests: XCTestCase {
         try key("\r", code: 36, in: window)
         await awaitUIUpdate("The typed name is saved") { model.selectedSplitTunnelProfile?.name == "Work" }
         XCTAssertEqual(menu.frame, frame)
-        XCTAssertFalse(library.isVisible, "Creating a profile closes the manager")
+        await awaitUIUpdate("Creating a profile closes the manager") { !library.isVisible }
         XCTAssertEqual(model.tunnelAssignments, assignments)
         XCTAssertEqual(menu.frame, frame)
     }

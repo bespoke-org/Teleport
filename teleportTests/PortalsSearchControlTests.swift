@@ -65,7 +65,9 @@ final class PortalsSearchControlTests: XCTestCase {
         let window = makeWindow(state)
         defer { window.close() }
         window.title = "Search"
-        window.setContentSize(NSSize(width: 500, height: 400))
+        // Below Settings' supported minimum, AppKit may move the entire
+        // toolbar item into overflow instead of compressing the field.
+        window.setContentSize(NSSize(width: SettingsSidebarLayout.minimumContentSize.width, height: 400))
         try await settle()
         let field = try XCTUnwrap(searchField(in: window.contentView!.superview!))
         let restingFrame = field.convert(field.bounds, to: nil)
@@ -82,7 +84,7 @@ final class PortalsSearchControlTests: XCTestCase {
     private func makeWindow(_ state: SearchState) -> NSWindow {
         _ = NSApplication.shared
         let window = NSWindow(contentViewController: NSHostingController(rootView: SearchFixture(state: state)))
-        window.setContentSize(NSSize(width: 700, height: 400))
+        window.setContentSize(NSSize(width: 1000, height: 400))
         window.isReleasedWhenClosed = false
         window.makeKeyAndOrderFront(nil)
         return window

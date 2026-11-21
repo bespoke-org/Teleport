@@ -20,10 +20,10 @@ final class SettingsHoverHintTests: XCTestCase {
         window.contentView = root
         defer { window.close() }
         window.makeKeyAndOrderFront(nil)
-        await awaitUIUpdate("Warning is attached") { host.window != nil }
         func hints(_ view: NSView) -> [SettingsHoverHint.HintView] {
             (view as? SettingsHoverHint.HintView).map { [$0] } ?? view.subviews.flatMap(hints)
         }
+        await awaitUIUpdate("Warning is attached") { hints(host).first?.window === window }
         let hint = try XCTUnwrap(hints(host).first)
         XCTAssertTrue(window.makeFirstResponder(field))
         let editor = try XCTUnwrap(field.currentEditor())
