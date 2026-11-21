@@ -57,11 +57,14 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
             contextMenu.showMenu(for: statusItem)
         } else if popover.isShown {
             popover.performClose(nil)
-        } else if let button = statusItem.button, popover.contentViewController != nil {
+        } else if let button = statusItem.button, button.window != nil, popover.contentViewController != nil {
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            popover.contentViewController?.view.window?.makeKey()
-            button.highlight(true)
         }
+    }
+
+    func popoverDidShow(_ notification: Notification) {
+        popover.contentViewController?.view.window?.makeKey()
+        statusItem.button?.highlight(true)
     }
 
     func popoverDidClose(_ notification: Notification) {
