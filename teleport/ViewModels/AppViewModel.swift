@@ -80,7 +80,7 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var helperUninstallFailure: ConnectionFailure?
     @Published private(set) var isOperationPending = false
     /// Kept until the connect call returns, even if its final state arrives first.
-    @Published private var connectingSelection: (operationID: UUID, connectionID: UUID)?
+    @Published private var connectingSelection: UUID?
     @Published private(set) var refreshingSubscriptionIDs: Set<UUID> = []
     @Published private(set) var refreshingHealthConnectionIDs: Set<UUID> = []
     @Published private(set) var queuedHealthConnectionIDs: Set<UUID> = []
@@ -92,7 +92,6 @@ final class AppViewModel: ObservableObject {
     /// on its own; see `addBundledSubscriptions`.
     let bundledSubscriptionTitles: [String]
     private let connectionProviderFactory: ConnectionProviderFactory
-    private var connectionProvider: any ConnectionProvider
     private let subscriptionClient: SubscriptionClient
     private let healthProbeService: ConnectionHealthProbeService
     private var splitTunnelGeodataMatcher: SplitTunnelGeodataMatcher
@@ -101,31 +100,14 @@ final class AppViewModel: ObservableObject {
     private let helperUninstaller = PrivilegedHelperUninstaller()
     private let persistenceQueue = DispatchQueue(label: "dev.x.teleport.persistence", qos: .utility)
     private let log: TeleportLog
-    /// Only used to finish a proxy restore an earlier run could not complete.
-    /// Injected so a verification script never reaches the real system settings.
-    private let systemProxyService: SystemProxyService
-    private var networkPathObserver: NetworkPathObserver?
-    private var systemWakeObserver: SystemWakeObserver?
+    /// System observations feed the intent runtime; only that runtime executes
+    /// lifecycle transitions independently of presentation.
+    private let sessionLifecycle: SessionLifecycleCoordinator
+    private let connectionIntent: ConnectionIntentRuntime
+    @Published private(set) var isWaitingForNetwork = false
     /// Held across teardowns and rebuilds, which is where the leak it guards
     /// against happens. Owned here rather than by a provider for that reason.
     private let leakGuard: LeakGuardService
-    /// When the machine last went to sleep, so a session built after that instant
-    /// is known to be newer than the sleep and needs no rebuild.
-    private var lastSleepAt: Date?
-    /// Set between `willSleep` and `didWake`. A dark wake — Wi-Fi coming back for a
-    /// maintenance window — posts neither notification, so the machine can be awake
-    /// enough to rebuild a session while this is still true.
-    private var isAsleep = false
-    /// When the running session was established, compared against `lastSleepAt`.
-    /// Left `nil` for a session built while the machine was asleep: such a session
-    /// has the rest of the sleep still ahead of it, so the wake has to rebuild it.
-    private var sessionEstablishedAt: Date?
-    /// The uplink the running session was built on, recorded when it connects.
-    private var sessionUplink: SystemUplinkInventory.Uplink?
-    private let currentUplink: () -> SystemUplinkInventory.Uplink?
-    /// Set when a session was torn down because the uplink vanished, so the next
-    /// uplink to appear reconnects instead of leaving the user disconnected.
-    private var awaitsUplinkToReconnect = false
 
     nonisolated static let subsystem = "app"
     private lazy var healthProbeQueue = ConnectionHealthProbeQueue(
@@ -146,16 +128,11 @@ final class AppViewModel: ObservableObject {
     private var autoRefreshTimerCancellable: AnyCancellable?
     private var connectionStateTask: Task<Void, Never>?
     private var leakGuardStateTask: Task<Void, Never>?
-    private var isAllowingDirectTraffic = false
-    private var deferredProxyRestoreTask: Task<Void, Never>?
-    private var deferredProxyRestoreFailedAt: SuspendingClock.Instant?
-    private var pendingOperationCount = 0
     @Published private(set) var isDisconnecting = false
-    private var connectionStateObservationID = UUID()
-    /// Only the latest pick is retained while a connect is touching the machine.
-    private var pendingConnectionSelectionID: UUID?
-    private var connectionTask: (operationID: UUID, task: Task<Void, Never>)?
     private var hasObservedInitialConnectionState = false
+    private var allowsLaunchConnection = false
+    private var lastPresentedFailure: (revision: UInt64, error: ConnectionFailure)?
+    private var geodataRevision: UInt64 = 0
     private var isLaunchConnectionPending = false
     private var isTerminating = false
     private var persistWorkItem: DispatchWorkItem?
@@ -166,7 +143,7 @@ final class AppViewModel: ObservableObject {
     private var hasDeferredSubscriptionRoutingChanges = false
     /// The request whose `connect` is still running, kept so the applied split-tunnel
     /// policy can be recorded once the provider reports `.connected`. Not a queue.
-    private var inFlightConnectionRequest: (operationID: UUID, request: ConnectionRequest, sources: GeodataSources)?
+    private var inFlightConnectionRequest: ConnectionRequest?
     private var appliedSplitTunnelRules: [SplitTunnelRule]?
     private var appliedConnectionIDs: Set<UUID> = []
     private var appliedSplitTunnelDefaultAction: SplitTunnelRuleAction?
@@ -208,7 +185,8 @@ final class AppViewModel: ObservableObject {
         healthProbeService: ConnectionHealthProbeService,
         systemProxyService: SystemProxyService = SystemProxyService(),
         geodataUpdateCoordinator: GeodataUpdateCoordinator? = nil,
-        currentUplink: @escaping () -> SystemUplinkInventory.Uplink? = SystemUplinkInventory.current,
+        systemObserverFactory: any SystemObserverFactoring = SystemObserverFactory(),
+        currentUplink: @escaping @Sendable () -> SystemUplinkInventory.Uplink? = { SystemUplinkInventory.current() },
         log: TeleportLog = .shared
     ) {
         let geodataService = GeodataUpdateService(fileManager: store.fileManager)
@@ -223,10 +201,8 @@ final class AppViewModel: ObservableObject {
         self.leakGuard = leakGuard
         self.subscriptionClient = subscriptionClient
         self.healthProbeService = healthProbeService
-        self.systemProxyService = systemProxyService
         self.geodataUpdateCoordinator = geodataUpdateCoordinator
         profileGeodataLibrary = ProfileGeodataLibrary(coordinator: geodataUpdateCoordinator)
-        self.currentUplink = currentUplink
         self.log = log
 
         log.info(
@@ -259,7 +235,17 @@ final class AppViewModel: ObservableObject {
         geodataSettings = snapshot.geodataSettings
         tunnelAssignments = snapshot.tunnelAssignments
         startsAtLogin = loginItemService.isEnabled
-        connectionProvider = connectionProviderFactory.makeProvider(for: snapshot.connectionMode)
+        let provider = connectionProviderFactory.makeProvider(for: snapshot.connectionMode)
+        let connectionIntent = ConnectionIntentRuntime(
+            provider: provider, mode: snapshot.connectionMode, guardService: leakGuard,
+            proxyRestorer: DeferredProxyRestorer(service: systemProxyService, log: log), log: log
+        )
+        self.connectionIntent = connectionIntent
+        self.sessionLifecycle = SessionLifecycleCoordinator(
+            systemObserverFactory: systemObserverFactory,
+            uplinkProvider: currentUplink,
+            runtime: connectionIntent
+        )
         proxyEndpoint = snapshot.proxyEndpoint
         subscriptionSources = snapshot.subscriptionSources
 
@@ -290,7 +276,6 @@ final class AppViewModel: ObservableObject {
         geodataUpdateCoordinator.batchDidComplete = { [weak self] batch in
             if !batch.changedKinds.isEmpty { self?.applyGeodataLiveIfNeeded() }
             if self?.pendingSplitTunnelLiveApply == true { self?.applyDeferredSplitTunnelRulesLiveIfNeeded() }
-            self?.reconnectAsSoonAsAnUplinkAppears()
         }
         profileGeodataLibrary.didChange = { [weak self] in self?.objectWillChange.send() }
         profileGeodataLibrary.didCache = { [weak self] key in
@@ -313,8 +298,15 @@ final class AppViewModel: ObservableObject {
         prepareSplitTunnelGeodataMatcher()
         observeConnectionState()
         observeLeakGuardState()
-        observeNetworkPath()
-        observeSystemWake()
+        let adoptionRequest = selectedConfiguration.map { makeConnectionRequest(configuration: $0) }
+        let sessionLifecycle = self.sessionLifecycle
+        Task { [weak self] in
+            await sessionLifecycle.start()
+            await connectionIntent.start(adopting: adoptionRequest) { [weak self] request in
+                guard let profileName = request.geodataProfileName else { return }
+                try await self?.prepareConnectionGeodata(request.geodataSources, profileName: profileName)
+            }
+        }
         syncLeakGuardSetting()
         startAutoRefreshTimer()
         updateMenuBarAnimation()
@@ -323,6 +315,7 @@ final class AppViewModel: ObservableObject {
     }
 
     deinit {
+        connectionStateTask?.cancel()
         leakGuardStateTask?.cancel()
     }
 
@@ -379,6 +372,7 @@ final class AppViewModel: ObservableObject {
 
     var canConnect: Bool {
         !isTerminating
+            && !isWaitingForNetwork
             && !isDisconnecting
             && hasObservedInitialConnectionState
             && selectedConfiguration != nil
@@ -388,11 +382,11 @@ final class AppViewModel: ObservableObject {
 
     var canDisconnect: Bool {
         !isTerminating
-            && !isAllowingDirectTraffic
+            && !isUninstallingHelper
             && !isDisconnecting
             && connectionPhase != .stopping
             && hasObservedInitialConnectionState
-            && (isOperationPending || connectionPresentation.canDisconnect)
+            && (isOperationPending || isWaitingForNetwork || connectionPresentation.canDisconnect)
     }
 
     var canAllowDirectTraffic: Bool {
@@ -410,7 +404,7 @@ final class AppViewModel: ObservableObject {
     var isConnecting: Bool { isOperationPending && connectingSelection != nil }
 
     var hasActiveConnectionSession: Bool {
-        isOperationPending || connectionPresentation.hasActiveConnectionSession
+        isOperationPending || isWaitingForNetwork || connectionPresentation.hasActiveConnectionSession
     }
 
     func isConnectionInUse(id: UUID) -> Bool {
@@ -418,9 +412,9 @@ final class AppViewModel: ObservableObject {
         return selectedConnectionID == id
             || appliedConnectionIDs.contains(id)
             || removedSessionConnections[id] != nil
-            || connectingSelection?.connectionID == id
+            || connectingSelection == id
             || routedConnections.contains { $0.id == id }
-            || inFlightConnectionRequest?.request.additionalConnections.contains { $0.id == id } == true
+            || inFlightConnectionRequest?.connections.contains { $0.id == id } == true
     }
 
     private func isSubscriptionInUse(id: UUID) -> Bool {
@@ -735,7 +729,6 @@ final class AppViewModel: ObservableObject {
         guard savedConnectionsByID[id] != nil else { return }
 
         let previousSelectionID = selectedConnectionID
-        let shouldReconnect = previousSelectionID != id && hasEstablishedConnection
 
         if !canChangeSelection, previousSelectionID != id {
             setStoredError("Please wait for the current connection action to finish")
@@ -747,15 +740,7 @@ final class AppViewModel: ObservableObject {
         persistSettingError()
         enqueueHealthProbes(for: [id], force: false, priority: true)
 
-        if let connectingSelection, isOperationPending {
-            // A cancelled attempt cannot be uncancelled. Picking its target again
-            // requests a fresh attempt if cancellation actually takes effect.
-            let wasCancelled = connectionTask?.task.isCancelled == true
-            pendingConnectionSelectionID = id == connectingSelection.connectionID && !wasCancelled ? nil : id
-            if pendingConnectionSelectionID != nil {
-                connectionTask?.task.cancel()
-            }
-        } else if shouldReconnect {
+        if previousSelectionID != id && (hasEstablishedConnection || connectingSelection != nil || isWaitingForNetwork) {
             reconnectToSelectedConnection()
         }
     }
@@ -848,26 +833,22 @@ final class AppViewModel: ObservableObject {
         }
 
         isLaunchConnectionPending = false
-        let previousProvider = connectionProvider
         connectionStateTask?.cancel()
-        isResolvingConnectionProvider = true
         connectionMode = mode
-        connectionProvider = connectionProviderFactory.makeProvider(for: mode)
+        isResolvingConnectionProvider = true
+        appliedGeodataSources = nil
+        appliedConnectionIDs = []
+        connectionIntent.replaceProvider(connectionProviderFactory.makeProvider(for: mode), mode: mode,
+                                         adopting: selectedConfiguration.map { makeConnectionRequest(configuration: $0) })
         connectionState = .idle
         hasObservedInitialConnectionState = false
         inFlightConnectionRequest = nil
-        appliedConnectionIDs = []
         appliedSplitTunnelRules = nil
         appliedSplitTunnelDefaultAction = nil
-        appliedGeodataSources = nil
         observeConnectionState()
         setStoredError(nil)
         updateMenuBarAnimation()
         schedulePersist()
-
-        Task {
-            try? await previousProvider.disconnect()
-        }
     }
 
     func selectSubscriptionConnectionSort(_ sort: SubscriptionConnectionSort) {
@@ -1461,6 +1442,7 @@ final class AppViewModel: ObservableObject {
         guard !isTerminating, !isOperationPending, !hasDeferredSubscriptionRoutingChanges,
               connectionMode == .tun, routingIsEnabled(for: connectionTunnelProfile), hasEstablishedConnection,
               geodataIsReady(for: connectionGeodataSources) else { return }
+        geodataRevision += 1
         reconnectToSelectedConnection()
     }
 
@@ -1538,30 +1520,28 @@ final class AppViewModel: ObservableObject {
         isUninstallingHelper = true
         helperUninstallMessage = nil
         helperUninstallFailure = nil
-        awaitsUplinkToReconnect = false
-        log.info(Self.subsystem, "helper uninstall requested: mode \(connectionMode), session \(hasActiveConnectionSession ? "active" : "none")")
-        let provider = connectionProvider
-        let leakGuard = leakGuard
+        let revision = connectionIntent.request(.disconnected)
+        let runtime = connectionIntent
         let uninstaller = helperUninstaller
-        let operationID = UUID()
-        beginConnectionOperation()
+        let leakGuard = leakGuard
+        log.info(Self.subsystem, "helper uninstall requested: mode \(connectionMode)")
+        isOperationPending = true
         Task { @MainActor [weak self] in
-            // A teardown that fails is not a reason to keep the helper: the user
-            // asked for it gone, and the lease and anchor flush cover what it left.
-            try? await provider.disconnect()
+            try? await runtime.waitForDisconnect(revision: revision)
+            // Explicit removal also stops guard renewal if cleanup failed.
             await leakGuard.disarm()
             do {
                 try await uninstaller.uninstall()
                 self?.helperUninstallMessage = "Teleport's helper was removed. TUN mode will ask to install it again on the next connect."
                 self?.log.info(AppViewModel.subsystem, "helper uninstalled")
             } catch {
-                self?.helperUninstallMessage = error.localizedDescription
                 self?.helperUninstallFailure = ConnectionFailure(error: error)
+                self?.helperUninstallMessage = error.localizedDescription
                 self?.log.warn(AppViewModel.subsystem, "helper uninstall failed: \(LogFormat.error(error))")
             }
             self?.refreshHelperInstallationStatus()
             self?.isUninstallingHelper = false
-            self?.finishConnectionOperation(operationID)
+            self?.isOperationPending = false
         }
     }
 
@@ -1587,122 +1567,56 @@ final class AppViewModel: ObservableObject {
     }
 
     func connect() {
+        guard !isTerminating, !isDisconnecting, !isUninstallingHelper else { return }
         isLaunchConnectionPending = false
         discardRemovedSessionConnections()
         guard let selectedConfiguration else {
             setStoredError("Add and select a portal first")
             return
         }
-
-        awaitsUplinkToReconnect = false
-        log.info(Self.subsystem, "connect requested: mode \(connectionMode), server \(LogFormat.host(selectedConfiguration.host)):\(selectedConfiguration.port), split routing \(routingIsEnabled(for: connectionTunnelProfile) ? "on" : "off") with \(activeSplitTunnelRules.count) rules")
-        SystemStateDump.capture("before connect", log: log)
-        startConnection(using: selectedConfiguration)
+        log.info(Self.subsystem, "connect requested: mode \(connectionMode), server \(LogFormat.host(selectedConfiguration.host)):\(selectedConfiguration.port)")
+        requestConnection(using: selectedConfiguration)
     }
 
-    /// A disconnect the user asked for. The guard comes off with it: someone who
-    /// disconnects on purpose is asking to be back on the network, not filtered.
+    /// A user command replaces the desired state. The runtime finishes its
+    /// current operation, then observes this value before choosing another one.
     func disconnect() {
-        guard !isTerminating, !isDisconnecting else { return }
+        guard !isTerminating, !isUninstallingHelper else { return }
         isLaunchConnectionPending = false
-        tearDownSession(releaseGuard: true)
+        guard !isDisconnecting else { return }
+        isDisconnecting = true
+        isWaitingForNetwork = false
+        connectingSelection = nil
+        isOperationPending = true
+        dismissConnectionError()
+        connectionIntent.request(.disconnected)
     }
 
-    /// A failed attempt still holds the guard until the user explicitly asks to
-    /// route directly. Finish its release before accepting a replacement session.
     func allowDirectTraffic() {
         guard canAllowDirectTraffic else { return }
-        isLaunchConnectionPending = false
-        awaitsUplinkToReconnect = false
-        pendingConnectionSelectionID = nil
-        isAllowingDirectTraffic = true
-        beginConnectionOperation()
-        let operationID = UUID()
-        let leakGuard = leakGuard
-        Task.detached { [weak self] in
-            await leakGuard.disarm()
-            await Self.onConnectionRunLoop { [weak self] in
-                self?.isAllowingDirectTraffic = false
-                self?.finishConnectionOperation(operationID)
-            }
-        }
-    }
-
-    /// Automatic teardown holds standby across the gap between sessions. Manual
-    /// teardown releases the guard after all committed startup and stop work.
-    private func tearDownSession(releaseGuard: Bool = false) {
-        guard !isTerminating, !isDisconnecting else { return }
-        connectionTask?.task.cancel()
-        isDisconnecting = true
-        pendingConnectionSelectionID = nil
-        connectingSelection = nil
-        awaitsUplinkToReconnect = false
-        let provider = connectionProvider
-        let operationID = UUID()
-        dismissConnectionError()
-        log.info(Self.subsystem, "disconnect requested: mode \(connectionMode)")
-        SystemStateDump.capture("before disconnect", log: log)
-        beginConnectionOperation()
-        let log = log
-        let leakGuard = leakGuard
-        let armStandby = isLeakGuardEnabled && connectionMode == .tun
-        Task.detached { [weak self] in
-            // Complete guard changes before declaring the teardown finished.
-            // These actor calls must also run while AppKit tracks an open menu.
-            if !releaseGuard && armStandby { await leakGuard.armStandby() }
-            var failure: Error?
-            do {
-                try await provider.disconnect()
-            } catch {
-                if await provider.currentState().isTerminalFailure == false {
-                    failure = error
-                }
-            }
-            // A connect past its commit point may arm the guard while disconnect
-            // waits behind it. Release last, even when the stop reports an error.
-            if releaseGuard { await leakGuard.disarm() }
-            // Captured whether or not the disconnect reported success: routes and
-            // proxy settings left behind by a failed teardown are exactly what this
-            // dump exists to show.
-            SystemStateDump.capture("after disconnect", log: log)
-            let reportedFailure = failure
-            await Self.onConnectionRunLoop { [weak self] in
-                if let reportedFailure { self?.applyConnectionError(reportedFailure) }
-                else if self?.connectionState.isTerminalFailure == false { self?.setStoredError(nil) }
-                self?.isDisconnecting = false
-                self?.finishConnectionOperation(operationID)
-                self?.reconnectAsSoonAsAnUplinkAppears()
-            }
-        }
+        disconnect()
     }
 
     /// How long a quit waits for the session's teardown. Long enough for a
     /// helper stop and a proxy restore that each time out once; short enough that
     /// a teardown stuck behind something is not a reason to force-quit the app.
-    static let terminationTeardownLimit: Duration = .seconds(20)
+    nonisolated static let terminationTeardownLimit: Duration = .seconds(20)
 
     func handleAppTermination(
         teardownLimit: Duration = AppViewModel.terminationTeardownLimit,
         completion: @escaping () -> Void
     ) {
         isTerminating = true
-        connectionTask?.task.cancel()
         geodataUpdateCoordinator.cancelAll()
         profileGeodataLibrary.cancelAll()
-        pendingConnectionSelectionID = nil
         connectingSelection = nil
         log.info(Self.subsystem, "terminating")
-        let provider = connectionProvider
-        let leakGuard = leakGuard
-        networkPathObserver?.stop()
-        systemWakeObserver?.stop()
+        let runtime = connectionIntent
+        runtime.request(.disconnected)
+        sessionLifecycle.stop()
         Task { @MainActor [weak self] in
-            let tornDown = await Self.awaitTeardown({ try? await provider.disconnect() }, limit: teardownLimit)
-            if tornDown {
-                // After the teardown, not before: the guard covers the moment the
-                // tunnel's routes come out from under the machine.
-                await leakGuard.disarm()
-            } else {
+            let tornDown = await Self.awaitTeardown({ try? await runtime.close() }, limit: teardownLimit)
+            if !tornDown {
                 // The guard stays with the helper, whose lease flushes it; the
                 // proxy snapshot is restored on the next launch.
                 self?.log.warn(Self.subsystem, "teardown did not finish within \(teardownLimit); quitting with the session's cleanup left to the helper's lease and the next launch")
@@ -1732,7 +1646,7 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    /// Every state change funnels through `applyConnectionState`, so logging here
+    /// Every state change funnels through `applyConnectionSnapshot`, so logging here
     /// records transitions the app did not initiate too — a tunnel that dropped on
     /// its own is the case worth having in a file after the fact.
     private func logConnectionState(_ state: ConnectionState, isInitialState: Bool) {
@@ -1741,12 +1655,11 @@ final class AppViewModel: ObservableObject {
         case let .failed(failure):
             log.error(Self.subsystem, "\(prefix): failed — \(failure.summary)")
         case .connected:
-            // Normally recorded when the session was requested, which is closer to
-            // the moment the helper pinned its routes. Read here only for a session
-            // this process did not start — one still up from a previous run.
-            sessionUplink = sessionUplink ?? currentUplink()
-            awaitsUplinkToReconnect = false
-            log.info(Self.subsystem, "\(prefix): connected (mode \(connectionMode)) over uplink \(sessionUplink?.summary ?? "<unknown>")")
+            // The lifecycle fills in the uplink for a session this process did not
+            // start, one still up from a previous run, and hands it back for this
+            // line.
+            let uplink = connectionIntent.currentUplink
+            log.info(Self.subsystem, "\(prefix): connected (mode \(connectionMode)) over uplink \(uplink?.summary ?? "<unknown>")")
             SystemStateDump.capture("after connect", log: log)
         case .awaitingUserApproval:
             log.info(Self.subsystem, "\(prefix): awaiting administrator approval for the helper install")
@@ -1755,195 +1668,12 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    /// A tunnel pins its proxy-server routes to the gateway that was current when
-    /// it started, and installs both default halves through its TUN. Neither is
-    /// revisited afterwards, so an uplink that changes underneath a running session
-    /// leaves the machine routing into a tunnel whose own transport can no longer
-    /// get out — reachable only by tearing the session down.
-    private func observeNetworkPath() {
-        let observer = NetworkPathObserver(
-            onChange: { [weak self] in
-                Task { @MainActor [weak self] in
-                    self?.reconnectAsSoonAsAnUplinkAppears()
-                }
-            },
-            onSettledChange: { [weak self] in
-                Task { @MainActor [weak self] in
-                    self?.reconcileSessionWithUplink()
-                }
-            }
-        )
-        networkPathObserver = observer
-        observer.start()
-    }
-
-    /// A routed session does not survive sleep in practice: after wake its Xray
-    /// reaches the server but no tunneled stream receives a byte, and only a
-    /// rebuild recovers it. The uplink is usually unchanged, so the path observer
-    /// would keep it running; wake itself is the trigger. System Proxy mode is
-    /// left alone, as nothing pins it to the machine's sleep state.
-    private func observeSystemWake() {
-        let observer = SystemWakeObserver(
-            onSleep: { [weak self] in
-                Task { @MainActor [weak self] in
-                    self?.lastSleepAt = Date()
-                    self?.isAsleep = true
-                }
-            },
-            onWake: { [weak self] in
-                Task { @MainActor [weak self] in
-                    self?.isAsleep = false
-                    self?.rebuildSessionAfterWake()
-                }
-            }
-        )
-        systemWakeObserver = observer
-        observer.start()
-    }
-
-    private func rebuildSessionAfterWake() {
-        guard !isTerminating, connectionMode == .tun, hasEstablishedConnection, !isOperationPending else { return }
-        // A session built after the machine went to sleep did not live through the
-        // sleep and does not need rebuilding. The path observer routinely gets
-        // there first — a wake onto a different network is a path change, and its
-        // notification arrives before this one — and rebuilding again would tear
-        // down a working tunnel seconds old, for a second window of direct routing.
-        if let lastSleepAt, let sessionEstablishedAt, sessionEstablishedAt > lastSleepAt {
-            log.info(Self.subsystem, "machine woke from sleep; session is newer than the sleep, keeping it")
-            return
-        }
-        log.warn(Self.subsystem, "machine woke from sleep; rebuilding the session over \(currentUplink()?.summary ?? "<no uplink>")")
-        sessionUplink = nil
-        rebuildSessionForNewUplink()
-    }
-
     /// The guard's own copy of the setting: it runs off the main actor and cannot
     /// read the published one.
     private func syncLeakGuardSetting() {
         let leakGuard = leakGuard
         let isEnabled = isLeakGuardEnabled
-        Task.detached { await leakGuard.setEnabled(isEnabled) }
-    }
-
-    /// The uncoalesced half of the path observer, and the only thing it is used
-    /// for: a session that is waiting to be rebuilt is rebuilt the moment there is
-    /// an uplink to rebuild it on.
-    ///
-    /// Nothing is running, so there is no session for an intermediate path state to
-    /// damage, and the quiet period would only extend the window in which the
-    /// machine routes directly. A router address is still required: an interface
-    /// that has come up without one cannot carry a tunnel yet, and the settled
-    /// callback will come back to it.
-    private func reconnectAsSoonAsAnUplinkAppears() {
-        guard !isTerminating, awaitsUplinkToReconnect, !isOperationPending,
-              !isDisconnecting else { return }
-        guard let currentUplink = currentUplink(), currentUplink.routerAddress != nil else { return }
-        awaitsUplinkToReconnect = false
-        log.info(Self.subsystem, "uplink is back (\(currentUplink.summary)); reconnecting without waiting for the path to settle")
-        reconnectToSelectedConnection(afterUplinkChange: true)
-    }
-
-    func reconcileSessionWithUplink() {
-        guard !isTerminating else { return }
-
-        let currentUplink = currentUplink()
-
-        if awaitsUplinkToReconnect {
-            reconnectAsSoonAsAnUplinkAppears()
-            return
-        }
-
-        guard hasEstablishedConnection || isOperationPending else {
-            // Nothing is routing. If an earlier teardown could not put a service's
-            // proxy settings back because that service was down, the path change
-            // that just fired may be it coming back — the moment to finish the job,
-            // rather than waiting for the next launch.
-            restoreDeferredProxyStateIfNeeded()
-            return
-        }
-
-        // System Proxy mode points applications at a local port, which no change of
-        // uplink invalidates. Only a routed session pins itself to one.
-        guard connectionMode == .tun, hasEstablishedConnection, !isOperationPending else { return }
-
-        switch UplinkChangeDecision.decide(sessionUplink: sessionUplink, currentUplink: currentUplink) {
-        case .keepRunning:
-            return
-        case .tearDownAndWaitForUplink:
-            log.warn(Self.subsystem, "uplink \(sessionUplink?.summary ?? "<unknown>") is gone; tearing down the session, guard \(isLeakGuardEnabled ? "armed" : "off")")
-            sessionUplink = nil
-            // Armed before the teardown, and kept across it: this is the longest
-            // window of the two — it lasts until an uplink comes back, which on a
-            // commute is the commute.
-            tearDownSession()
-            // After, not before: the teardown clears the flag so that a user who
-            // disconnects on purpose is never reconnected behind their back.
-            awaitsUplinkToReconnect = true
-        case .reconnect:
-            log.warn(Self.subsystem, "uplink changed from \(sessionUplink?.summary ?? "<unknown>") to \(currentUplink?.summary ?? "<unknown>"); rebuilding the session")
-            sessionUplink = nil
-            rebuildSessionForNewUplink()
-        }
-    }
-
-    /// Disconnect and reconnect as one operation, so the tunnel's routes are removed
-    /// before new ones are pinned to the new gateway. Reconnecting without waiting
-    /// would install the second set on top of the first.
-    private func rebuildSessionForNewUplink() {
-        guard !isTerminating else { return }
-        // Teardown arms standby before removing routes, then its completion
-        // checks the latest uplink. No second path notification is required.
-        tearDownSession()
-        awaitsUplinkToReconnect = true
-    }
-
-    /// A teardown that ran while an interface was down could not put that service's
-    /// proxy settings back, and kept its entry instead of discarding it. Launching
-    /// with no session running is the moment to finish that.
-    /// One restore at a time, and after a failure none for a while. Path changes
-    /// arrive in bursts, and each restore that times out takes 5 s per networksetup
-    /// call; the log once held 60 such failures in 50 minutes, with two restores
-    /// overlapping and each deleting a snapshot the other had already read.
-    private static let deferredProxyRestoreRetryInterval: Duration = .seconds(30)
-
-    private func restoreDeferredProxyStateIfNeeded() {
-        guard deferredProxyRestoreTask == nil else { return }
-        if let failedAt = deferredProxyRestoreFailedAt,
-           SuspendingClock().now - failedAt < Self.deferredProxyRestoreRetryInterval {
-            return
-        }
-        let service = systemProxyService
-        let log = log
-        deferredProxyRestoreTask = Task { @MainActor [weak self] in
-            let failed = await Task.detached(priority: .utility) { () -> Bool in
-                do {
-                    try service.restoreDeferredProxyStateIfNeeded()
-                    return false
-                } catch {
-                    log.error(AppViewModel.subsystem, "could not restore deferred proxy state: \(LogFormat.error(error))")
-                    return true
-                }
-            }.value
-            self?.deferredProxyRestoreFailedAt = failed ? SuspendingClock().now : nil
-            self?.deferredProxyRestoreTask = nil
-            self?.connectOnLaunchIfNeeded()
-        }
-    }
-
-    private func observeConnectionState() {
-        connectionStateTask?.cancel()
-        let observationID = UUID()
-        connectionStateObservationID = observationID
-        let stateUpdates = connectionProvider.stateUpdates()
-        connectionStateTask = Task.detached { [weak self] in
-            for await state in stateUpdates {
-                guard !Task.isCancelled else { break }
-                await Self.onConnectionRunLoop { [weak self] in
-                    guard self?.connectionStateObservationID == observationID else { return }
-                    self?.applyConnectionState(state)
-                }
-            }
-        }
+        Task { await leakGuard.setEnabled(isEnabled) }
     }
 
     private func observeLeakGuardState() {
@@ -1965,65 +1695,66 @@ final class AppViewModel: ObservableObject {
         await MainRunLoopWork.run(update)
     }
 
-    private func applyConnectionState(_ state: ConnectionState) {
-        if state != .preparing {
-            isResolvingConnectionProvider = false
+    private func observeConnectionState() {
+        connectionStateTask?.cancel()
+        let updates = connectionIntent.updates()
+        connectionStateTask = Task.detached { [weak self] in
+            for await snapshot in updates {
+                guard !Task.isCancelled else { break }
+                await Self.onConnectionRunLoop { [weak self] in self?.applyConnectionSnapshot(snapshot) }
+            }
         }
+    }
+
+    private func applyConnectionSnapshot(_ snapshot: ConnectionIntentRuntime.Presentation) {
+        guard snapshot.providerID == connectionIntent.providerID else { return }
         let isInitialState = !hasObservedInitialConnectionState
         hasObservedInitialConnectionState = true
-        if state != connectionState || isInitialState {
-            logConnectionState(state, isInitialState: isInitialState)
+        if snapshot.state != connectionState || isInitialState {
+            logConnectionState(snapshot.state, isInitialState: isInitialState)
         }
-        if isInitialState, !state.isConnected {
-            // Only with nothing routing: while a session from a previous run is
-            // still up, the snapshot describes settings that are meant to stay
-            // suspended until it stops.
-            restoreDeferredProxyStateIfNeeded()
+        if snapshot.state != .preparing { isResolvingConnectionProvider = false }
+        connectionState = snapshot.state
+        allowsLaunchConnection = snapshot.isSettled && snapshot.allowsLaunchConnection
+        if case let .connecting(request) = snapshot.activity {
+            inFlightConnectionRequest = request
+        } else {
+            inFlightConnectionRequest = nil
         }
-        connectionState = state
-
-        switch state {
-        case let .failed(failure):
-            connectionError = failure
-            lastError = failure.summary
-            lastErrorDetails = failure.details
-            inFlightConnectionRequest = nil
-        case .connected:
-            dismissConnectionError()
-            // A dark wake brings the uplink back for a maintenance window, and the
-            // path observer rebuilds the session on it. That session is not newer
-            // than the sleep — the sleep has not ended — so it is recorded as having
-            // no establishment time at all, and the wake that follows rebuilds it.
-            sessionEstablishedAt = isAsleep ? nil : Date()
-            if let inFlightConnectionRequest {
-                appliedConnectionIDs = Set(inFlightConnectionRequest.request.connections.map(\.id))
-                appliedSplitTunnelRules = inFlightConnectionRequest.request.splitTunnelPolicy.rules
-                appliedSplitTunnelDefaultAction = inFlightConnectionRequest.request.splitTunnelPolicy.defaultAction
-                appliedGeodataSources = inFlightConnectionRequest.sources
-                self.inFlightConnectionRequest = nil
-                setStoredError(nil)
-            } else if appliedSplitTunnelRules == nil {
-                appliedConnectionIDs = Set(routedConnections.map(\.id))
-                appliedSplitTunnelRules = activeSplitTunnelRules
-                appliedSplitTunnelDefaultAction = activeSplitTunnelDefaultAction
-                appliedGeodataSources = connectionGeodataSources
-                if !isInitialState {
-                    setStoredError(nil)
-                }
-            }
-            applyDeferredSplitTunnelRulesLiveIfNeeded()
-        case .idle:
-            sessionEstablishedAt = nil
-            inFlightConnectionRequest = nil
+        if let applied = snapshot.appliedRequest {
+            appliedConnectionIDs = Set(applied.connections.map(\.id))
+            appliedGeodataSources = applied.geodataSources
+            appliedSplitTunnelRules = applied.splitTunnelPolicy.rules
+            appliedSplitTunnelDefaultAction = applied.splitTunnelPolicy.defaultAction
+        } else if snapshot.state == .idle {
             appliedConnectionIDs = []
+            appliedGeodataSources = nil
             appliedSplitTunnelRules = nil
             appliedSplitTunnelDefaultAction = nil
-            appliedGeodataSources = nil
             pendingSplitTunnelLiveApply = false
-        case .preparing, .awaitingUserApproval, .connecting, .disconnecting:
-            break
         }
-        if case .idle = state, !isOperationPending { discardRemovedSessionConnections() }
+        // A snapshot for an older intent may update actual state, but cannot
+        // finish or clear the pending UI for the user's newer command.
+        if snapshot.intentRevision == connectionIntent.intentRevision {
+            isOperationPending = !snapshot.isSettled || isUninstallingHelper
+            isWaitingForNetwork = snapshot.activity == .waitingForNetwork
+            if case let .connecting(request) = snapshot.activity {
+                connectingSelection = request.defaultConnection.id
+            } else if snapshot.isSettled {
+                connectingSelection = nil
+            }
+            if let failure = snapshot.failure, lastPresentedFailure?.revision != snapshot.intentRevision || lastPresentedFailure?.error != failure {
+                lastPresentedFailure = (snapshot.intentRevision, failure)
+                connectionError = failure
+                lastError = failure.summary
+                lastErrorDetails = failure.details
+            } else if snapshot.failure == nil && snapshot.state.isConnected {
+                dismissConnectionError()
+            }
+            if snapshot.isSettled { isDisconnecting = false }
+            if snapshot.isSettled, !isOperationPending, snapshot.state == .idle { discardRemovedSessionConnections() }
+            if snapshot.isSettled { applyDeferredSplitTunnelRulesLiveIfNeeded() }
+        }
         updateMenuBarAnimation()
         connectOnLaunchIfNeeded()
     }
@@ -2055,13 +1786,11 @@ final class AppViewModel: ObservableObject {
         case .preparing:
             return
         case .idle:
-            // Finish restoring old proxy settings before starting a new session.
-            guard deferredProxyRestoreTask == nil else { return }
+            guard !isOperationPending else { return }
             isLaunchConnectionPending = false
-            guard deferredProxyRestoreFailedAt == nil, canConnect else { return }
+            guard allowsLaunchConnection, canConnect else { return }
             connect()
         case .connected, .failed, .awaitingUserApproval, .connecting, .disconnecting:
-            // An existing session or a failed recovery consumes the launch attempt.
             isLaunchConnectionPending = false
         }
     }
@@ -2071,116 +1800,26 @@ final class AppViewModel: ObservableObject {
         return false
     }
 
-    private func reconnectToSelectedConnection(afterUplinkChange: Bool = false) {
+    private func reconnectToSelectedConnection() {
         discardRemovedSessionConnections()
-        guard let selectedConfiguration else {
-            setStoredError("Add and select a portal first")
-            return
-        }
-        startConnection(using: selectedConfiguration, afterUplinkChange: afterUplinkChange)
+        guard !isTerminating, !isUninstallingHelper, let selectedConfiguration else { return }
+        requestConnection(using: selectedConfiguration)
     }
 
-    /// An uplink can have a router address before its resolver answers, and a
-    /// reconnect started on it then fails on the lookup of the proxy server. The
-    /// path has usually stopped changing by that time, so no further notification
-    /// would start another attempt, and the leak guard armed for the reconnect
-    /// would keep the machine off the network until the user stepped in.
-    private func retryReconnectAfterUplinkChange() {
-        awaitsUplinkToReconnect = true
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 5_000_000_000)
-            // A connect or disconnect the user asked for in the meantime cleared
-            // the flag, and this does nothing.
-            self?.reconnectAsSoonAsAnUplinkAppears()
-        }
-    }
-
-    private func startConnection(using configuration: ConnectionConfiguration, afterUplinkChange: Bool = false) {
-        guard !isTerminating, !isAllowingDirectTraffic, !isDisconnecting else { return }
-        // A new connection captures all current settings, including imports.
+    private func requestConnection(using configuration: ConnectionConfiguration) {
         hasDeferredSubscriptionRoutingChanges = false
-
-        // The helper pins routes to the gateway that is current when its script
-        // runs, which is moments from now; the connected state can arrive seconds
-        // later, by which time a roaming machine may already be on another one.
-        sessionUplink = currentUplink()
+        if hasEstablishedConnection, connectionMode == .tun, routingIsEnabled(for: connectionTunnelProfile),
+           !geodataIsReady(for: connectionGeodataSources) {
+            // The URLs can stay the same while a subscription refresh caches new files.
+            geodataRevision += 1
+        }
         let request = makeConnectionRequest(configuration: configuration)
-        let profile = tunnelProfile(for: savedConnections.first { $0.id == request.defaultConnection.id })
-        let sources = connectionMode == .tun && routingIsEnabled(for: profile)
-            ? (profile?.geodataSources ?? GeodataSources()) : GeodataSources()
-        let profileName = profile?.name ?? "Default"
-        let needsGeodataPreparation = connectionMode == .tun && routingIsEnabled(for: profile)
-            && (!updatingGeodataKinds.isEmpty || !geodataIsReady(for: sources))
-        let provider = connectionProvider
-        let operationID = UUID()
-        connectingSelection = (operationID, request.defaultConnection.id)
-        beginConnectionOperation()
-        inFlightConnectionRequest = (operationID, request, sources)
+        connectingSelection = request.defaultConnection.id
+        isOperationPending = true
+        isWaitingForNetwork = false
         dismissConnectionError()
         setStoredError(nil)
-
-        let task = Task.detached { [weak self] in
-            do {
-                try Task.checkCancellation()
-                if needsGeodataPreparation, let self { try await self.prepareConnectionGeodata(sources, profileName: profileName) }
-                try Task.checkCancellation()
-                try await provider.connect(request)
-                // Past its commit point a backend may finish despite cancellation.
-                // If that is the latest choice again, it needs no second connect.
-                await Self.onConnectionRunLoop { [weak self] in
-                    if self?.connectingSelection?.operationID == operationID,
-                       self?.pendingConnectionSelectionID == request.defaultConnection.id {
-                        self?.pendingConnectionSelectionID = nil
-                    }
-                    self?.finishConnectionOperation(operationID, discardPendingRequest: false)
-                    self?.applyDeferredSplitTunnelRulesLiveIfNeeded()
-                }
-            } catch {
-                // A connect cancelled by a disconnect or quit is what the user asked
-                // for, not a failure to report.
-                let providerState = await provider.currentState()
-                let shouldReport = !(error is CancellationError) && !providerState.isTerminalFailure
-                let wasCancelled = Task.isCancelled
-                await Self.onConnectionRunLoop { [weak self] in
-                    if shouldReport { self?.applyConnectionError(error) }
-                    let hasPendingSelection = self?.pendingConnectionSelectionID != nil
-                    self?.finishConnectionOperation(operationID, discardPendingRequest: true)
-                    if afterUplinkChange && !hasPendingSelection && !wasCancelled && self?.isTerminating == false {
-                        switch error as? XrayTunConnectionError {
-                        case .proxyAddressResolutionFailed, .proxyRouteUnavailable, .proxyIPv6RouteUnavailable, .noReachableGroupMembers:
-                            self?.retryReconnectAfterUplinkChange()
-                        default:
-                            break
-                        }
-                    }
-                }
-            }
-        }
-        connectionTask = (operationID, task)
-    }
-
-    private func beginConnectionOperation() {
-        pendingOperationCount += 1
-        isOperationPending = true
-    }
-
-    private func finishConnectionOperation(_ operationID: UUID, discardPendingRequest: Bool = false) {
-        if connectionTask?.operationID == operationID {
-            connectionTask = nil
-        }
-        if connectingSelection?.operationID == operationID {
-            connectingSelection = nil
-        }
-        if discardPendingRequest, inFlightConnectionRequest?.operationID == operationID {
-            inFlightConnectionRequest = nil
-        }
-        pendingOperationCount = max(0, pendingOperationCount - 1)
-        isOperationPending = pendingOperationCount > 0
-        if !isOperationPending, case .idle = connectionState { discardRemovedSessionConnections() }
-        guard !isOperationPending, !isTerminating, let pendingID = pendingConnectionSelectionID else { return }
-        pendingConnectionSelectionID = nil
-        guard pendingID == selectedConnectionID, savedConnectionsByID[pendingID] != nil else { return }
-        reconnectToSelectedConnection()
+        connectionIntent.request(.connected(request))
     }
 
     private func makeConnectionRequest(configuration: ConnectionConfiguration) -> ConnectionRequest {
@@ -2207,6 +1846,9 @@ final class AppViewModel: ObservableObject {
                 rules: rules,
                 defaultAction: routingIsEnabled(for: profile) ? (profile?.defaultAction ?? .proxy) : .proxy
             ),
+            geodataSources: connectionMode == .tun && routingIsEnabled(for: profile) ? (profile?.geodataSources ?? GeodataSources()) : GeodataSources(),
+            geodataProfileName: connectionMode == .tun && routingIsEnabled(for: profile) ? (profile?.name ?? "Default") : nil,
+            geodataRevision: geodataRevision,
             usesLeakGuard: isLeakGuardEnabled
         )
     }
