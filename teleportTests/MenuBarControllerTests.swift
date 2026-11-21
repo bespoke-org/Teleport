@@ -102,16 +102,13 @@ final class MenuBarControllerTests: XCTestCase {
         defer { controller.stop() }
         controller.animator.update(.init(phase: .running, proxyPhase: .enabled, animates: true))
         controller.popover.contentViewController = NSHostingController(rootView: Text("Menu").padding())
-        // AppKit installs the status item in the menu bar on the next run-loop turn.
-        try await Task.sleep(for: .milliseconds(150))
+        let button = try XCTUnwrap(controller.statusItem.button)
+        try await openPopover(controller)
         controller.handleClick(nil)
-        XCTAssertTrue(controller.popover.isShown)
-        controller.handleClick(nil)
-        XCTAssertFalse(controller.popover.isShown)
-        controller.handleClick(nil)
-        XCTAssertTrue(controller.popover.isShown)
+        await awaitUIUpdate("Primary click closes the popover") { !controller.popover.isShown && !button.isHighlighted }
+        try await openPopover(controller)
         controller.showSettings()
-        XCTAssertFalse(controller.popover.isShown)
+        await awaitUIUpdate("Settings closes the popover") { !controller.popover.isShown && !button.isHighlighted }
         XCTAssertEqual(selected.count, 1)
         XCTAssertNil(selected[0], "The primary Settings action preserves the selected page")
         controller.showSettings(.general)
@@ -124,10 +121,6 @@ final class MenuBarControllerTests: XCTestCase {
         defer { controller.stop() }
         controller.animator.update(.init(phase: .running, proxyPhase: .enabled, animates: true))
         controller.popover.contentViewController = NSHostingController(rootView: Text("Menu").padding())
-        // AppKit installs the status item in the menu bar on the next run-loop turn.
-        try await Task.sleep(for: .milliseconds(150))
-        let button = try XCTUnwrap(controller.statusItem.button)
-        let window = try XCTUnwrap(button.window)
         var trackingCount = 0
         let observer = NotificationCenter.default.addObserver(
             forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main
@@ -146,14 +139,8 @@ final class MenuBarControllerTests: XCTestCase {
         }
         defer { NotificationCenter.default.removeObserver(observer) }
         for (type, flags): (NSEvent.EventType, NSEvent.ModifierFlags) in [(.rightMouseUp, []), (.leftMouseUp, .control)] {
-            controller.handleClick(nil)
-            // Status-item scene installation and popover presentation can finish
-            // asynchronously on a fresh test host. Wait for the observed state.
-            let deadline = ContinuousClock.now + .seconds(2)
-            while !controller.popover.isShown && ContinuousClock.now < deadline {
-                try await Task.sleep(for: .milliseconds(10))
-            }
-            XCTAssertTrue(controller.popover.isShown)
+            try await openPopover(controller)
+            let window = try XCTUnwrap(controller.statusItem.button?.window)
             let event = try XCTUnwrap(NSEvent.mouseEvent(with: type, location: .zero, modifierFlags: flags,
                 timestamp: 0, windowNumber: window.windowNumber, context: nil,
                 eventNumber: 0, clickCount: 1, pressure: 1))
@@ -162,6 +149,17 @@ final class MenuBarControllerTests: XCTestCase {
             XCTAssertNil(controller.statusItem.menu)
         }
         XCTAssertEqual(trackingCount, 2)
+    }
+
+    private func openPopover(_ controller: MenuBarController) async throws {
+        let button = try XCTUnwrap(controller.statusItem.button)
+        await awaitUIUpdate("Status button is visible") {
+            button.window?.isVisible == true && !button.visibleRect.isEmpty
+        }
+        controller.handleClick(nil)
+        await awaitUIUpdate("Popover opens and highlights the status button") {
+            controller.popover.isShown && button.isHighlighted
+        }
     }
 
     func testStopAndDeallocationRemoveAnimation() async throws {
