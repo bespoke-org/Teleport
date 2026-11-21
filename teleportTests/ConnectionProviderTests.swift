@@ -184,6 +184,31 @@ final class ConnectionProviderTests: XCTestCase {
     }
 
     @MainActor
+    func testRenewalFailureAndRecoveryReachSettings() async throws {
+        let root = try makeIsolatedRoot("guard-renewal")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let transport = GuardTransport()
+        let service = LeakGuardService(client: PrivilegedHelperClient(transport: transport))
+        let (model, store) = try makeLaunchFixture(root: root, mode: .tun, enabled: false,
+                                                  backend: RecordingConnectionBackend(), leakGuard: service)
+        defer { store.deleteStoredDataForTesting() }
+        await waitUntil("ready") { await MainActor.run { model.canConnect } }
+        try await service.armBootstrap()
+        await waitUntil("confirmed") { await MainActor.run { model.isLeakGuardHoldingUplink } }
+        transport.setEngageFails(true)
+        await service.renew()
+        await waitUntil("unconfirmed with an error") {
+            await MainActor.run { !model.isLeakGuardHoldingUplink && model.protectionStatus.hasPrefix("Firewall protection is unconfirmed.") }
+        }
+        transport.setEngageFails(false)
+        await service.renew()
+        await waitUntil("confirmed again") {
+            await MainActor.run { model.isLeakGuardHoldingUplink && model.protectionStatus.hasPrefix("Firewall protection is held.") }
+        }
+        await service.disarm()
+    }
+
+    @MainActor
     func testUnconfirmedGuardReleaseRemainsActionable() async throws {
         let root = try makeIsolatedRoot("guard-release-failure")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -1512,6 +1537,7 @@ final class ConnectionProviderTests: XCTestCase {
     private final class GuardTransport: TUNHelperTransport, @unchecked Sendable {
         private let lock = NSLock()
         private var recordedCommands: [TUNHelperCommand] = []
+        private var engageFails = false
         private var releaseFails = false
         private var isEngaged = false
         let releaseGate = Gate()
@@ -1519,6 +1545,8 @@ final class ConnectionProviderTests: XCTestCase {
 
         /// Lifecycle assertions concern mutations; status reads are observational.
         var commands: [TUNHelperCommand] { lock.withLock { recordedCommands.filter { $0 != .status } } }
+
+        func setEngageFails(_ fails: Bool) { lock.withLock { engageFails = fails } }
 
         func setReleaseFails(_ fails: Bool) { lock.withLock { releaseFails = fails } }
 
@@ -1533,6 +1561,7 @@ final class ConnectionProviderTests: XCTestCase {
                     payload: StatusResponse(helperVersion: PrivilegedHelperConstants.version, phase: .idle,
                         summary: nil, details: nil, isLeakGuardEngaged: lock.withLock { isEngaged }), failure: nil))
             case .engageLeakGuard:
+                if lock.withLock({ engageFails }) { throw TestError.startFailed }
                 let request: TUNHelperRequestEnvelope<EngageLeakGuardRequest> = try TUNHelperCodec.decodeRequest(requestData)
                 requestID = request.requestID
                 lock.withLock { isEngaged = true }

@@ -944,17 +944,7 @@ final class AppViewModel: ObservableObject {
 
     func refreshProtectionStatus() {
         let leakGuard = leakGuard
-        Task { [weak self] in
-            do {
-                let held = try await leakGuard.status()
-                self?.protectionStatus = held
-                    ? "Firewall protection is held. Disconnect explicitly to restore direct access."
-                    : "Firewall protection is not confirmed. If access remains blocked, use Disconnect and restore direct access."
-            } catch {
-                // Unknown is never displayed as released or protected.
-                self?.protectionStatus = "Protection status unavailable. Connect to update the helper, or use Remove helper in Advanced to recover direct access."
-            }
-        }
+        Task { await leakGuard.refreshStatus() }
     }
 
     func setProxyEndpoint(httpPort: Int? = nil, socksPort: Int? = nil) {
@@ -2002,10 +1992,17 @@ final class AppViewModel: ObservableObject {
     private func observeLeakGuardState() {
         let leakGuard = leakGuard
         leakGuardStateTask = Task.detached { [weak self] in
-            for await held in await leakGuard.holdingUpdates() {
+            for await observation in await leakGuard.holdingUpdates() {
                 guard !Task.isCancelled else { break }
                 await Self.onConnectionRunLoop { [weak self] in
-                    self?.isLeakGuardHoldingUplink = held
+                    self?.isLeakGuardHoldingUplink = observation.held
+                    if let error = observation.error {
+                        self?.protectionStatus = "Firewall protection is unconfirmed. " + error
+                    } else {
+                        self?.protectionStatus = observation.held
+                            ? "Firewall protection is held. Disconnect explicitly to restore direct access."
+                            : "Firewall protection is not confirmed. If access remains blocked, use Disconnect and restore direct access."
+                    }
                 }
             }
         }

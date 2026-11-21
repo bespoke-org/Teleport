@@ -28,8 +28,12 @@ actor LeakGuardService {
     private(set) var lastError: String?
     private var renewalTask: Task<Void, Never>?
     /// Last confirmed helper state, independent of the user's setting or wanted stage.
-    private var isGuardHeld = false
-    private var holdingContinuations: [UUID: AsyncStream<Bool>.Continuation] = [:]
+    struct Observation: Equatable, Sendable {
+        var held: Bool
+        var error: String?
+    }
+    private var observation: Observation?
+    private var holdingContinuations: [UUID: AsyncStream<Observation>.Continuation] = [:]
 
     nonisolated static let subsystem = "leakguard"
 
@@ -67,10 +71,9 @@ actor LeakGuardService {
         try await client.resolveEndpoint(host: host, interface: interface)
     }
 
-    func status() async throws -> Bool {
-        let held = try await client.status().isLeakGuardEngaged
-        updateHolding(held)
-        return held
+    func refreshStatus() async {
+        do { updateHolding(try await client.status().isLeakGuardEngaged) }
+        catch { updateHolding(false, error: error.localizedDescription) }
     }
 
     /// A session is about to own `tunnelInterface`. Throws so the connect that asked
@@ -84,13 +87,13 @@ actor LeakGuardService {
         try await engage()
     }
 
-    var isHoldingUplink: Bool { isGuardHeld || (isEnabled && stage != nil) }
+    var isHoldingUplink: Bool { observation?.held == true || (isEnabled && stage != nil) }
 
-    func holdingUpdates() -> AsyncStream<Bool> {
+    func holdingUpdates() -> AsyncStream<Observation> {
         AsyncStream { continuation in
             let id = UUID()
             holdingContinuations[id] = continuation
-            continuation.yield(isGuardHeld)
+            if let observation { continuation.yield(observation) }
             continuation.onTermination = { [weak self] _ in
                 Task { await self?.removeHoldingContinuation(id) }
             }
@@ -101,10 +104,11 @@ actor LeakGuardService {
         holdingContinuations.removeValue(forKey: id)
     }
 
-    private func updateHolding(_ held: Bool) {
-        guard isGuardHeld != held else { return }
-        isGuardHeld = held
-        for continuation in holdingContinuations.values { continuation.yield(held) }
+    private func updateHolding(_ held: Bool, error: String? = nil) {
+        let next = Observation(held: held, error: error)
+        guard observation != next else { return }
+        observation = next
+        for continuation in holdingContinuations.values { continuation.yield(next) }
     }
 
 
@@ -159,11 +163,14 @@ actor LeakGuardService {
         }
     }
 
-    private func renew() async {
+    func renew() async {
         guard isEnabled, stage != nil else { return }
         do {
             try await engage()
         } catch {
+            guard !Task.isCancelled, stage != nil else { return }
+            lastError = error.localizedDescription
+            updateHolding(false, error: error.localizedDescription)
             log.warn(Self.subsystem, "could not renew the leak guard: \(LogFormat.error(error))")
         }
     }
