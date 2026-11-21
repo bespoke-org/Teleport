@@ -274,7 +274,7 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
             for endpoint in connection.configuration.endpointConfigurations where answers[endpoint.host] == nil {
                 try Task.checkCancellation()
                 answers[endpoint.host] = isNumericIPAddress(endpoint.host) ? [endpoint.host]
-                    : (try? await leakGuard.resolveEndpoint(host: endpoint.host, interface: uplink)) ?? []
+                    : try await leakGuard.resolveEndpoint(host: endpoint.host, interface: uplink)
                 try Task.checkCancellation()
             }
         }
