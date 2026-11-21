@@ -72,13 +72,11 @@ final class MenuBarControllerTests: XCTestCase {
         XCTAssertNil(controller.animator.animationView, "Static transition outlines need no compositor animation")
     }
 
-    func testAnimatedIconFollowsAppearanceAndHighlight() async throws {
+    func testAnimatedIconFollowsAppearanceAndHighlight() throws {
         _ = NSApplication.shared
-        let controller = MenuBarController(autosaveName: nil, onShowSettings: { _ in })
-        defer { controller.stop() }
-        let button = try XCTUnwrap(controller.statusItem.button)
-        controller.animator.update(.init(phase: .running, proxyPhase: .enabled, animates: true))
-        let view = try XCTUnwrap(controller.animator.animationView)
+        let button = NSStatusBarButton()
+        let view = try XCTUnwrap(MenuBarAnimationView(button: button, phase: .running, proxyPhase: .enabled))
+        defer { view.stop() }
         view.appearance = NSAppearance(named: .aqua)
         view.viewDidChangeEffectiveAppearance()
         let light = try XCTUnwrap(view.iconLayer.backgroundColor)
@@ -88,11 +86,12 @@ final class MenuBarControllerTests: XCTestCase {
         XCTAssertNotEqual(light, dark)
         view.appearance = NSAppearance(named: .aqua)
         view.viewDidChangeEffectiveAppearance()
+        // Drive AppKit's pre-draw callback for each button state without a live menu bar.
         button.highlight(true)
-        try await Task.sleep(for: .milliseconds(150))
+        view.viewWillDraw()
         XCTAssertNotEqual(view.iconLayer.backgroundColor, light)
         button.highlight(false)
-        try await Task.sleep(for: .milliseconds(150))
+        view.viewWillDraw()
         XCTAssertEqual(view.iconLayer.backgroundColor, light)
     }
 
