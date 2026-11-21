@@ -55,6 +55,29 @@ final class LeakGuardControllerTests: XCTestCase {
         try guardController.release() // cancels its test timer too
     }
 
+    func testFailedExpiryRetriesWithoutAnotherHeartbeat() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let commands = Commands()
+        let tightened = expectation(description: "Standby installed on retry")
+        var loads = 0
+        let controller = LeakGuardController(helperStateDirectoryPath: directory.path, groupID: { 555 }) { path, args in
+            if args.contains("-f") {
+                loads += 1
+                if loads == 2 { throw HelperError("transient load failure") }
+                if loads == 3 { tightened.fulfill() }
+            }
+            return try commands.run(path, args)
+        }
+        try controller.engage(stage: .session(tunnelInterface: "utun9"), protectedHosts: [], leaseSeconds: 180)
+        controller.expireLease()
+        wait(for: [tightened], timeout: 5)
+        XCTAssertTrue(controller.isEngaged)
+        XCTAssertFalse(commands.anchor.contains("utun9"))
+        try controller.release()
+    }
+
     func testRenewalRepairsChangedAnchorAndDisabledFilter() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

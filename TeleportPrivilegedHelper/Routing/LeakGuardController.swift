@@ -10,6 +10,7 @@ final class LeakGuardController: @unchecked Sendable {
     private let queue = DispatchQueue(label: "dev.x.teleport.helper.leak-guard")
     private let helperStateDirectoryPath: String
     private var timer: DispatchSourceTimer?
+    private var expiryRetryDelay: TimeInterval = 1
     private var generation = UUID()
     private var engaged = false
     private var lastRules: String?
@@ -64,6 +65,7 @@ final class LeakGuardController: @unchecked Sendable {
         try apply(stage: stage, policy: policy)
         timer?.cancel()
         generation = UUID()
+        expiryRetryDelay = 1
         let expectedGeneration = generation
         let next = DispatchSource.makeTimerSource(queue: queue)
         next.schedule(deadline: .now() + min(leaseSeconds, Self.maximumLeaseSeconds))
@@ -80,7 +82,9 @@ final class LeakGuardController: @unchecked Sendable {
             try apply(stage: .standby, policy: .init())
             TeleportLog.shared.warn("helper", "protection heartbeat expired; traffic remains blocked in standby")
         } catch {
-            // Keep the existing filter if tightening failed. Never flush it.
+            // Reschedule the same generation; replacement and release cancel this timer.
+            timer?.schedule(deadline: .now() + expiryRetryDelay)
+            expiryRetryDelay = min(30, expiryRetryDelay * 2)
             TeleportLog.shared.error("helper", "could not tighten protection after heartbeat expiry")
         }
     }
