@@ -55,17 +55,29 @@ nonisolated struct PrivilegedHelperUninstaller: Sendable {
         """
     }
 
-    /// The ordered shell steps. The daemon goes first, so nothing recreates the
-    /// state directory or the log while they are being removed; the anchor flush
-    /// goes last. Every step tolerates its target being absent already, so a
-    /// partial earlier removal or a never-installed helper is not an error.
+    /// Stop the daemon and release PF before removing its recovery files.
     static func uninstallSteps() -> [String] {
         let q = PrivilegedShellRunner.shellQuote
-        var steps = ["launchctl bootout \(q("system/\(PrivilegedHelperConstants.label)")) >/dev/null 2>&1 || true"]
+        let service = q("system/\(PrivilegedHelperConstants.label)")
+        var steps = ["if launchctl print \(service) >/dev/null 2>&1; then launchctl bootout \(service); fi"]
+        steps.append("""
+        PF_ANCHOR=\(q(LeakGuardRuleset.anchorName))
+        STATE=\(q(PrivilegedHelperConstants.helperStateDirectoryPath))
+        /sbin/pfctl -a "$PF_ANCHOR" -F all >/dev/null
+        rm -f "$STATE/leak-guard.pf"
+        if [ -e "$STATE/leak-guard.token" ]; then
+            token=$(cat "$STATE/leak-guard.token")
+            case "$token" in ''|*[!0-9]*) echo "Invalid saved PF reference" >&2; exit 1 ;; esac
+            if ! /sbin/pfctl -X "$token"; then
+                refs=$(/sbin/pfctl -s References)
+                if printf '%s\\n' "$refs" | awk -v t="$token" '{for(i=1;i<=NF;i++) if ("x"$i=="x"t) found=1} END {exit !found}'; then exit 1; fi
+            fi
+            rm -f "$STATE/leak-guard.token"
+        fi
+        """)
         steps += removedPaths.map { "rm -rf \(q($0))" }
         // Staging directories of an install that was killed before its trap ran.
         steps.append("rm -rf /Library/PrivilegedHelperTools/.teleport-install.*")
-        steps.append("/sbin/pfctl -a \(q(LeakGuardRuleset.anchorName)) -F all >/dev/null 2>&1 || true")
         return steps
     }
 

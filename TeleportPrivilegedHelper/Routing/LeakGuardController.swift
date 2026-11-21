@@ -160,13 +160,26 @@ final class LeakGuardController: @unchecked Sendable {
     func release() throws {
         lock.lock(); defer { lock.unlock() }
         _ = try execute("/sbin/pfctl", ["-a", LeakGuardRuleset.anchorName, "-F", "all"])
-        if let token = try? String(contentsOfFile: tokenPath, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
-           !token.isEmpty, token.allSatisfy(\.isNumber) {
-            _ = try? execute("/sbin/pfctl", ["-X", token])
-        }
         timer?.cancel(); timer = nil; generation = UUID()
         engaged = false; lastRules = nil; installedAnchor = nil
-        unlink(tokenPath); unlink(rulesPath)
+        // Once the anchor is empty, a restart must not restore it. Retain any
+        // outstanding PF reference in its own file until release succeeds.
+        try removeIfPresent(rulesPath)
+        let contents: String
+        do { contents = try String(contentsOfFile: tokenPath, encoding: .utf8) }
+        catch let error as NSError where error.domain == NSCocoaErrorDomain && error.code == NSFileReadNoSuchFileError { return }
+        let token = contents.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard UInt64(token) != nil else { throw HelperError("Invalid saved PF reference.") }
+        do { _ = try execute("/sbin/pfctl", ["-X", token]) }
+        catch {
+            let references = try execute("/sbin/pfctl", ["-s", "References"])
+            if references.split(whereSeparator: \.isWhitespace).contains(Substring(token)) { throw error }
+        }
+        try removeIfPresent(tokenPath)
+    }
+
+    private func removeIfPresent(_ path: String) throws {
+        if unlink(path) != 0 && errno != ENOENT { throw POSIXError(.init(rawValue: errno) ?? .EIO) }
     }
 
     private func writeRootOwned(_ contents: String, to path: String) throws {

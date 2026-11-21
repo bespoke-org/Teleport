@@ -15,9 +15,22 @@ PF_ANCHOR='com.apple/dev.x.teleport'
 
 if launchctl print "system/$LABEL" >/dev/null 2>&1; then
     echo "Stopping system/$LABEL"
-    launchctl bootout "system/$LABEL" || echo "Could not stop system/$LABEL; removing its files anyway" >&2
+    launchctl bootout "system/$LABEL"
 else
     echo "No loaded service at system/$LABEL"
+fi
+
+STATE=/var/db/dev.x.teleport
+/sbin/pfctl -a "$PF_ANCHOR" -F all >/dev/null
+rm -f "$STATE/leak-guard.pf"
+if [ -e "$STATE/leak-guard.token" ]; then
+    token=$(cat "$STATE/leak-guard.token")
+    case "$token" in ''|*[!0-9]*) echo "Invalid saved PF reference" >&2; exit 1 ;; esac
+    if ! /sbin/pfctl -X "$token"; then
+        refs=$(/sbin/pfctl -s References)
+        if printf '%s\n' "$refs" | awk -v t="$token" '{for(i=1;i<=NF;i++) if ("x"$i=="x"t) found=1} END {exit !found}'; then exit 1; fi
+    fi
+    rm -f "$STATE/leak-guard.token"
 fi
 
 remove_path() {
@@ -41,9 +54,6 @@ remove_path '/var/log/teleport-privileged-helper.log'
 for staging in /Library/PrivilegedHelperTools/.teleport-install.*; do
     [[ -e "$staging" ]] && remove_path "$staging"
 done
-
-echo "Flushing pf anchor $PF_ANCHOR"
-/sbin/pfctl -a "$PF_ANCHOR" -F all >/dev/null 2>&1 || echo "No pf rules under $PF_ANCHOR"
 
 cat <<'EOF'
 

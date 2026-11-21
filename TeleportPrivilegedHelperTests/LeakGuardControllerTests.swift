@@ -6,11 +6,14 @@ final class LeakGuardControllerTests: XCTestCase {
         var calls: [[String]] = []
         var enabled = false
         var anchor = ""
+        var rejectsToken = false
         var rejectsRelease = false
         var rootRules = "anchor \"com.apple/*\" all\n"
         func run(_ executable: String, _ args: [String]) throws -> String {
             calls.append(args)
             if rejectsRelease && args.suffix(2) == ["-F", "all"] { throw HelperError("injected failure") }
+            if rejectsToken && args == ["-X", "123"] { throw HelperError("injected token failure") }
+            if args == ["-s", "References"] { return rejectsToken ? "123" : "" }
             if args == ["-sr"] { return rootRules }
             if args == ["-E"] { enabled = true; return "Token : 123\n" }
             if args == ["-s", "info"] { return enabled ? "Status: Enabled for 0 days" : "Status: Disabled" }
@@ -49,6 +52,11 @@ final class LeakGuardControllerTests: XCTestCase {
         XCTAssertTrue(restarted.isEngaged)
         XCTAssertTrue(FileManager.default.fileExists(atPath: rulesPath.path))
         commands.rejectsRelease = false
+        commands.rejectsToken = true
+        XCTAssertThrowsError(try restarted.release())
+        XCTAssertFalse(FileManager.default.fileExists(atPath: rulesPath.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appendingPathComponent("leak-guard.token").path))
+        commands.rejectsToken = false
         try restarted.release()
         XCTAssertFalse(restarted.isEngaged)
         XCTAssertFalse(FileManager.default.fileExists(atPath: rulesPath.path))

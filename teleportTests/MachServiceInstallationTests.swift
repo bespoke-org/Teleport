@@ -83,13 +83,14 @@ final class MachServiceInstallationTests: XCTestCase {
         }
 
         let steps = PrivilegedHelperUninstaller.uninstallSteps()
-        XCTAssert(steps.first == "launchctl bootout \(q("system/\(PrivilegedHelperConstants.label)")) >/dev/null 2>&1 || true", "The daemon must be booted out first, tolerating its absence")
-        XCTAssert(steps.last == "/sbin/pfctl -a \(q(LeakGuardRuleset.anchorName)) -F all >/dev/null 2>&1 || true", "The leak guard anchor must be flushed last, tolerating its absence")
-        let removalSteps = Array(steps.dropFirst().dropLast())
+        XCTAssertTrue(steps[0].contains("then launchctl bootout"))
+        XCTAssertTrue(steps[1].contains("pfctl -X"))
+        XCTAssertTrue(steps[1].contains("-F all"))
+        let removalSteps = steps.dropFirst(2)
         for step in removalSteps {
             XCTAssert(step.hasPrefix("rm -rf '/") || step.hasPrefix("rm -rf /Library/PrivilegedHelperTools/.teleport-install."), "Unexpected uninstall step: \(step)")
         }
-        XCTAssert(PrivilegedHelperUninstaller.uninstallScript().hasPrefix("set -eu\nlaunchctl bootout "), "The uninstall script must stop on the first unexpected failure")
+        XCTAssert(PrivilegedHelperUninstaller.uninstallScript().hasPrefix("set -eu\nif launchctl print "), "The uninstall script must stop on the first unexpected failure")
 
         let scriptPath = repositoryRoot.appendingPathComponent("scripts/uninstall.sh").path
         let script = try String(contentsOfFile: scriptPath, encoding: .utf8)
