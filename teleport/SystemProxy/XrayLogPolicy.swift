@@ -6,6 +6,7 @@ nonisolated struct XrayLogPolicy: Decodable, Sendable {
     let maxLogSize: Int?
     let retentionDays: Int?
 
+    static let maximumArchives = 7
     static let defaultsKey = "xrayLogPolicy"
     static let standard = try! XrayLogPolicy(maxLogSize: 5 * 1024 * 1024, retentionDays: 7)
 
@@ -68,6 +69,7 @@ nonisolated final class XrayLogSink {
         try fm.createDirectory(at: directory, withIntermediateDirectories: true)
         // Free expired archives before normalization needs temporary disk space.
         try pruneExpiredFiles(today: day, includeCurrent: true)
+        try removeExcessArchives(from: archivesOldestFirst(), keeping: XrayLogPolicy.maximumArchives)
         retainedOnDay = day
         // Normalize legacy oversized generations with bounded streaming IO, not Data(contentsOf:).
         for url in try ownedFiles() { try normalize(url) }
@@ -149,25 +151,59 @@ nonisolated final class XrayLogSink {
         }
     }
 
+    private struct Archive {
+        let url: URL
+        let generation: Int
+        let created: Date
+    }
+
+    private func archivesOldestFirst() throws -> [Archive] {
+        try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil).compactMap { url -> Archive? in
+            guard let generation = archiveGeneration(url.lastPathComponent) else { return nil }
+            let attrs = try fm.attributesOfItem(atPath: url.path)
+            guard attrs[.type] as? FileAttributeType == .typeRegular else { throw CocoaError(.fileReadUnsupportedScheme) }
+            // Legacy xray.log.1 predates numbered UUID archives. Older builds used the
+            // day's epoch for every rotation, so creation time breaks same-day ties.
+            return Archive(url: url, generation: generation, created: attrs[.creationDate] as? Date ?? .distantPast)
+        }.sorted {
+            ($0.generation, $0.created, $0.url.lastPathComponent) < ($1.generation, $1.created, $1.url.lastPathComponent)
+        }
+    }
+
+    private func removeExcessArchives(from archives: [Archive], keeping count: Int) throws {
+        for archive in archives.dropLast(count) {
+            try fm.removeItem(at: archive.url)
+        }
+    }
+
     private func rotate() throws {
         close()
-        // UUID prevents overwriting prior runs or several size rotations within a second.
-        let archive = directory.appendingPathComponent("xray.log.\(Int(day.timeIntervalSince1970)).\(UUID().uuidString)")
+        let existing = try archivesOldestFirst()
+        // Multiple rotations can happen within a single append, even at the same instant.
+        let latest = existing.last?.generation ?? 0
+        guard latest < Int.max else { throw CocoaError(.fileWriteInvalidFileName) }
+        let generation = max(Int(day.timeIntervalSince1970), latest + 1)
+        let archive = directory.appendingPathComponent("xray.log.\(generation).\(UUID().uuidString)")
         try fm.moveItem(at: currentURL, to: archive)
         try fm.setAttributes([.modificationDate: day], ofItemAtPath: archive.path)
+        try removeExcessArchives(from: existing, keeping: XrayLogPolicy.maximumArchives - 1)
         day = calendar.startOfDay(for: clock())
         try open()
     }
 
     private func ownedFiles() throws -> [URL] {
         try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil).filter { url in
-            let name = url.lastPathComponent
-            if name == "xray.log" || name == "xray.log.1" { return true }
-            let parts = name.split(separator: ".", omittingEmptySubsequences: false)
-            guard parts.count == 4, parts[0] == "xray", parts[1] == "log",
-                  let timestamp = Int(parts[2]), let id = UUID(uuidString: String(parts[3])) else { return false }
-            return String(timestamp) == parts[2] && id.uuidString == parts[3]
+            url.lastPathComponent == "xray.log" || archiveGeneration(url.lastPathComponent) != nil
         }
+    }
+
+    private func archiveGeneration(_ name: String) -> Int? {
+        if name == "xray.log.1" { return 1 }
+        let parts = name.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4, parts[0] == "xray", parts[1] == "log",
+              let generation = Int(parts[2]), String(generation) == parts[2],
+              let id = UUID(uuidString: String(parts[3])), id.uuidString == parts[3] else { return nil }
+        return generation
     }
 
     private func normalize(_ url: URL) throws {

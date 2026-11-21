@@ -49,7 +49,7 @@ final class XrayOutputCaptureTests: XCTestCase {
         XCTAssertTrue(output.hasSuffix("recent-failure"))
         XCTAssertTrue(output.contains("output omitted"))
         XCTAssertEqual(session.storedByteCount, 256 * 1024)
-        XCTAssertGreaterThan(try files().count, 20)
+        XCTAssertEqual(try files().count, XrayLogPolicy.maximumArchives + 1)
         for url in try files() {
             XCTAssertLessThanOrEqual(try bytes(url), 64 * 1024)
             let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
@@ -118,7 +118,7 @@ final class XrayOutputCaptureTests: XCTestCase {
 
     func testOversizedAppendNeverExceedsFileSizeAndPreservesAllNewBytes() throws {
         let sink = try XrayLogSink(directory: directory, policy: XrayLogPolicy(maxLogSize: 17, retentionDays: nil))
-        let data = Data(String(repeating: "🙂abc", count: 1000).utf8)
+        let data = Data(String(repeating: "🙂abc", count: 16).utf8)
         try sink.append(data)
         sink.close()
         XCTAssertEqual(try files().reduce(0) { try $0 + bytes($1) }, data.count)
@@ -143,7 +143,7 @@ final class XrayOutputCaptureTests: XCTestCase {
     }
 
     func testOverlappingRuntimeSinksDoNotKeepWritingRenamedGenerations() throws {
-        let policy = try XrayLogPolicy(maxLogSize: 16, retentionDays: nil)
+        let policy = try XrayLogPolicy(maxLogSize: 128, retentionDays: nil)
         let first = try XrayLogSink(directory: directory, policy: policy)
         let second = try XrayLogSink(directory: directory, policy: policy)
         for _ in 0..<30 {
@@ -153,7 +153,34 @@ final class XrayOutputCaptureTests: XCTestCase {
         first.close()
         second.close()
         XCTAssertEqual(try files().reduce(0) { try $0 + bytes($1) }, 780)
-        for url in try files() { XCTAssertLessThanOrEqual(try bytes(url), 16) }
+        for url in try files() { XCTAssertLessThanOrEqual(try bytes(url), 128) }
+    }
+
+    func testCountLimitKeepsLatestBytesAcrossSameInstantRotationsAndRestart() throws {
+        let now = Date(timeIntervalSince1970: 1_700_006_400)
+        let policy = try XrayLogPolicy(maxLogSize: 1, retentionDays: nil)
+        let first = try XrayLogSink(directory: directory, policy: policy, clock: { now })
+        try first.append(Data(0...19))
+        let next = try XrayLogSink(directory: directory, policy: policy, clock: { now })
+        try next.append(Data([20]))
+        try first.append(Data([21]))
+        XCTAssertEqual(try files().count, 8)
+        XCTAssertEqual(try files().compactMap { try Data(contentsOf: $0).first }.sorted(), Array(14...21))
+        XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("xray.log")), Data([21]))
+    }
+
+    func testStartupPrunesLegacyOverflowBeforeAnyWrites() throws {
+        let now = Date(timeIntervalSince1970: 1_700_006_400)
+        for number in 1...10 {
+            let name = number == 1 ? "xray.log.1" : "xray.log.\(number).\(UUID().uuidString)"
+            try Data([UInt8(number)]).write(to: directory.appendingPathComponent(name))
+        }
+        let lookalike = directory.appendingPathComponent("xray.log.01." + UUID().uuidString)
+        try Data([99]).write(to: lookalike)
+        let sink = try XrayLogSink(directory: directory, policy: .standard, clock: { now })
+        sink.close()
+        XCTAssertEqual(try files().count, 9) // Seven archives, the active log and the lookalike.
+        XCTAssertEqual(try files().compactMap { try Data(contentsOf: $0).first }.sorted(), Array(4...10) + [99])
     }
 
     func testBothNullRotateDailyWithoutAgeDeletionOrSizeTrigger() throws {
