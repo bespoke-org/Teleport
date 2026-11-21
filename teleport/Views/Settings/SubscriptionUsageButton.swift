@@ -17,7 +17,7 @@ struct SubscriptionUsageButton: View {
                 if let fraction = usage.fractionUsed {
                     Circle()
                         .trim(from: 0, to: fraction)
-                        .stroke(.yellow, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                        .stroke(.secondary, style: StrokeStyle(lineWidth: 3, lineCap: .round))
                         .rotationEffect(.degrees(-90))
                 } else {
                     Image(systemName: usage.totalBytes == 0 ? "infinity" : "questionmark")

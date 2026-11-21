@@ -57,7 +57,7 @@ final class AppViewModelGeodataTests: XCTestCase {
         XCTAssertEqual(fixture.provider.connectCount, 0)
         XCTAssertEqual(model.geodataSettings.geositeURLString, "https://new.example/geosite.dat")
         await fixture.service.gate.succeed(.geoip)
-        await waitUntil { model.updatingGeodataKinds.isEmpty && fixture.provider.connectCount == 1 }
+        await waitUntil { model.updatingGeodataKinds.isEmpty && fixture.provider.connectCount == 1 && !model.isOperationPending }
         XCTAssertEqual(model.geodataSettings.geoipURLString, "https://new.example/geoip.dat")
         XCTAssertNil(model.geodataSettings.geositeLastError)
         XCTAssertNil(model.geodataSettings.geoipLastError)
@@ -71,7 +71,7 @@ final class AppViewModelGeodataTests: XCTestCase {
         await waitUntil { model.updatingGeodataKinds == [.geosite] }
         XCTAssertEqual(fixture.provider.connectCount, 1)
         await fixture.service.gate.succeed(.geosite, occurrence: 1)
-        await waitUntil { model.updatingGeodataKinds.isEmpty && fixture.provider.connectCount == 2 }
+        await waitUntil { model.updatingGeodataKinds.isEmpty && fixture.provider.connectCount == 2 && !model.isOperationPending }
     }
 
     func testPartialFailurePreservesFailedSourceAndPreventsConnectingWithIncompleteProfile() async throws {

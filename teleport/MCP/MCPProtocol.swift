@@ -124,7 +124,7 @@ nonisolated enum MCPTools {
                     "properties": ["id": string, "value": string, "action": action, "isEnabled": boolean,
                                    "connectionID": ["type": ["string", "null"]]], "required": ["id", "value", "action", "isEnabled"]]]
             ], required: ["profileID", "name", "defaultAction", "rules"], writes: true),
-            tool("manage_routing_profile", "Select an editor target (subscription or standalone connection), create/assign a personal profile, rename/delete it, customize a provider profile, inherit provider routing, or enable/disable the selected personal profile. Cannot delete the last personal profile.", [
+            tool("manage_routing_profile", "Select an assignment target (subscription or standalone connection) and open its profile. Create/customize opens an unassigned personal profile. Select assigns a personal profile to the target without changing the editor; inherit assigns provider routing. Set_enabled toggles routing globally. Rename/delete personal profiles; cannot delete the last one.", [
                 "operation": ["type": "string", "enum": ["create", "rename", "delete", "select", "set_enabled", "select_target", "customize", "inherit"]],
                 "profileID": string, "name": string, "enabled": boolean, "targetID": string,
                 "targetKind": ["type": "string", "enum": ["subscription", "connection"]]
