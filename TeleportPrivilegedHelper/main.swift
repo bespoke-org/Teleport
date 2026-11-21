@@ -4,8 +4,7 @@ import Foundation
 let controller = XrayTunController()
 do { try controller.restoreLeakGuard() }
 catch {
-    fputs("Teleport could not restore persistent protection; refusing to serve requests.\n", stderr)
-    exit(1)
+    fputs("Teleport could not restore persistent protection; status and explicit release remain available.\n", stderr)
 }
 let dispatcher = HelperCommandDispatcher(executor: controller)
 let delegate = HelperXPCListenerDelegate(dispatcher: dispatcher)

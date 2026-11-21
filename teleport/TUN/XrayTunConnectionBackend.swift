@@ -121,14 +121,7 @@ final class XrayTunConnectionBackend: ConnectionBackend, @unchecked Sendable {
                 guard request.localDNSDomains.isEmpty || !localResolvers.isEmpty else {
                     throw XrayTunConnectionError.localDNSUnavailable
                 }
-                let endpoints = outbounds.flatMap { outbound in
-                    outbound.configuration.endpointConfigurations.compactMap { config -> LeakGuardEndpoint? in
-                        guard let address = outbound.memberAddresses[config.host] else { return nil }
-                        return LeakGuardEndpoint(address: address,
-                            transport: config.protocolType == .wireguard || config.protocolType == .hysteria ? "udp" : "tcp",
-                            ports: config.hysteria?.quic?.udpHop?.ports ?? String(config.port))
-                    }
-                }
+                let endpoints = outbounds.flatMap(\.leakGuardEndpoints)
                 let localDNSEndpoints = localResolvers.flatMap { address in
                     ["tcp", "udp"].map { LeakGuardEndpoint(address: address, transport: $0, ports: "53") }
                 }
@@ -353,5 +346,23 @@ extension XrayTunConnectionError {
             ipv6 > 0 ? "IPv6 route failures: \(ipv6)." : nil,
             route > 0 ? "Physical route failures: \(route)." : nil
         ].compactMap { $0 }.joined(separator: " ")
+    }
+}
+
+extension RoutedProxyOutbound {
+    var leakGuardEndpoints: [LeakGuardEndpoint] {
+        configuration.endpointConfigurations.flatMap { config -> [LeakGuardEndpoint] in
+            guard let address = memberAddresses[config.host] else { return [] }
+            let transports: [String]
+            switch config.protocolType {
+            case .shadowsocks: transports = ["tcp", "udp"]
+            case .wireguard, .hysteria: transports = ["udp"]
+            case .vless, .trojan: transports = ["tcp"]
+            }
+            return transports.map {
+                LeakGuardEndpoint(address: address, transport: $0,
+                                  ports: config.hysteria?.quic?.udpHop?.ports ?? String(config.port))
+            }
+        }
     }
 }

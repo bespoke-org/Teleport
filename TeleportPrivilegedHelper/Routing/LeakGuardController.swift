@@ -13,6 +13,7 @@ final class LeakGuardController: @unchecked Sendable {
     private var generation = UUID()
     private var engaged = false
     private var lastRules: String?
+    private var installedAnchor: String?
     private let groupID: () throws -> UInt32
     private let execute: (String, [String]) throws -> String
 
@@ -30,7 +31,22 @@ final class LeakGuardController: @unchecked Sendable {
         self.execute = execute
     }
 
-    var isEngaged: Bool { lock.lock(); defer { lock.unlock() }; return engaged }
+    var isEngaged: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return engaged && (try? livePolicyMatches()) == true
+    }
+
+    /// Retry a failed startup restore before allowing network work. Status and
+    /// explicit release remain available even when the saved policy cannot load.
+    func requireProtectionIfPersisted() throws {
+        lock.lock(); defer { lock.unlock() }
+        if engaged {
+            guard try livePolicyMatches() else { throw HelperError("Firewall protection could not be verified.") }
+        } else {
+            try restoreGuard()
+        }
+    }
+
     private var rulesPath: String { helperStateDirectoryPath + "/leak-guard.pf" }
     private var tokenPath: String { helperStateDirectoryPath + "/leak-guard.token" }
 
@@ -71,21 +87,11 @@ final class LeakGuardController: @unchecked Sendable {
 
     private func apply(stage: LeakGuardRuleset.Stage, policy: LeakGuardPolicy) throws {
         let rules = LeakGuardRuleset.rules(stage: stage, policy: policy, runtimeGroupID: try groupID())
-        guard !engaged || rules != lastRules else { return }
-        if !engaged {
-            let rootRules = try execute("/sbin/pfctl", ["-sr"])
-            // Loading an unreferenced anchor succeeds but filters no packets.
-            // Other root filter rules could override this nested anchor, so only
-            // the stock macOS filter structure is supported.
-            let filterLines = rootRules.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
-                .filter { !$0.isEmpty && !$0.hasPrefix("#") && !$0.hasPrefix("scrub-anchor ")
-                    && $0 != "No ALTQ support in kernel" && $0 != "ALTQ related functions disabled" }
-            guard filterLines == ["anchor \"com.apple/*\" all"] else {
-                throw HelperError("Protection requires the standard macOS packet-filter anchor. Custom PF rules are not supported.")
-            }
-        }
+        try validateRootRules()
+        let intact = try engaged && installedFilterMatches()
+        guard !intact || rules != lastRules else { return }
         try writeRootOwned(rules, to: rulesPath)
-        if !engaged {
+        if !intact {
             let previousToken = try? String(contentsOfFile: tokenPath, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
             let output = try execute("/sbin/pfctl", ["-E"])
             guard let line = output.split(separator: "\n").first(where: { $0.contains("Token") }),
@@ -99,13 +105,52 @@ final class LeakGuardController: @unchecked Sendable {
             }
         }
         _ = try execute("/sbin/pfctl", ["-a", LeakGuardRuleset.anchorName, "-f", rulesPath])
-        if !engaged {
+        if !intact {
             // PF checks existing states before filter rules. Enabling protection
             // must retire pre-existing direct connections, including IPv6/UDP.
             _ = try execute("/sbin/pfctl", ["-F", "states"])
         }
+        let loaded = try anchorRules()
+        guard !loaded.isEmpty, try filterEnabled() else {
+            throw HelperError("Teleport could not confirm its packet filter.")
+        }
+        installedAnchor = loaded
         engaged = true
         lastRules = rules
+    }
+
+    private func validateRootRules() throws {
+        let rootRules = try execute("/sbin/pfctl", ["-sr"])
+        // Loading an unreferenced anchor succeeds but filters no packets.
+        // Other root filter rules could override this nested anchor, so only
+        // the stock macOS filter structure is supported.
+        let filterLines = rootRules.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("#") && !$0.hasPrefix("scrub-anchor ")
+                && $0 != "No ALTQ support in kernel" && $0 != "ALTQ related functions disabled" }
+        guard filterLines == ["anchor \"com.apple/*\" all"] else {
+            throw HelperError("Protection requires the standard macOS packet-filter anchor. Custom PF rules are not supported.")
+        }
+    }
+
+    private func filterEnabled() throws -> Bool {
+        let info = try execute("/sbin/pfctl", ["-s", "info"])
+        return info.split(separator: "\n").contains { $0.split(whereSeparator: \.isWhitespace).prefix(2) == ["Status:", "Enabled"] }
+    }
+
+    private func anchorRules() throws -> String {
+        let output = try execute("/sbin/pfctl", ["-a", LeakGuardRuleset.anchorName, "-sr"])
+        return output.split(separator: "\n").filter {
+            !$0.hasPrefix("No ALTQ support") && !$0.hasPrefix("ALTQ related functions")
+        }.joined(separator: "\n")
+    }
+
+    private func livePolicyMatches() throws -> Bool {
+        try validateRootRules()
+        return try installedFilterMatches()
+    }
+
+    private func installedFilterMatches() throws -> Bool {
+        try filterEnabled() && anchorRules() == installedAnchor
     }
 
     func release() throws {
@@ -116,7 +161,7 @@ final class LeakGuardController: @unchecked Sendable {
             _ = try? execute("/sbin/pfctl", ["-X", token])
         }
         timer?.cancel(); timer = nil; generation = UUID()
-        engaged = false; lastRules = nil
+        engaged = false; lastRules = nil; installedAnchor = nil
         unlink(tokenPath); unlink(rulesPath)
     }
 

@@ -35,7 +35,9 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
     }
 
     func resolveEndpoint(request: ResolveEndpointRequest) throws -> ResolveEndpointResponse {
-        try EndpointResolver.resolve(request)
+        _ = try preparedHelperStateDirectoryPath()
+        try leakGuard.requireProtectionIfPersisted()
+        return try EndpointResolver.resolve(request)
     }
 
     func status(request: StatusRequest) throws -> StatusResponse {
@@ -71,6 +73,7 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
         }
 
         let helperStateDirectoryPath = try preparedHelperStateDirectoryPath()
+        try leakGuard.requireProtectionIfPersisted()
         // The previous session's watch must not fire on the Xray this start is
         // about to replace.
         supervisor.cancel()
@@ -148,6 +151,7 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
     }
 
     func releaseLeakGuard(request: ReleaseLeakGuardRequest) throws -> LeakGuardResponse {
+        _ = try preparedHelperStateDirectoryPath()
         try leakGuard.release()
         return LeakGuardResponse(isEngaged: false)
     }

@@ -195,6 +195,14 @@ final class ShadowsocksTests: XCTestCase {
         XCTAssertEqual(composite.composite?.members.first?.configuration.shadowsocks, shadowsocks.shadowsocks)
         XCTAssertEqual(try parser.parse(composite.rawLink), composite)
         XCTAssertTrue(composite.endpointConfigurations.contains { $0.host == shadowsocks.host })
+        for configuration in [shadowsocks, composite] {
+            let outbound = RoutedProxyOutbound(connectionID: secondID, configuration: configuration,
+                                               memberAddresses: [shadowsocks.host: "192.0.2.2"])
+            XCTAssertEqual(outbound.leakGuardEndpoints, [
+                .init(address: "192.0.2.2", transport: "tcp", ports: String(shadowsocks.port)),
+                .init(address: "192.0.2.2", transport: "udp", ports: String(shadowsocks.port))
+            ])
+        }
     }
 
     func testGeneratedConfigsAndLoopbackTCPUDP() throws {

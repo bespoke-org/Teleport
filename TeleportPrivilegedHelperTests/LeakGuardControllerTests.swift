@@ -4,13 +4,20 @@ import XCTest
 final class LeakGuardControllerTests: XCTestCase {
     private final class Commands {
         var calls: [[String]] = []
+        var enabled = false
+        var anchor = ""
         var rejectsRelease = false
         var rootRules = "anchor \"com.apple/*\" all\n"
         func run(_ executable: String, _ args: [String]) throws -> String {
             calls.append(args)
             if rejectsRelease && args.suffix(2) == ["-F", "all"] { throw HelperError("injected failure") }
             if args == ["-sr"] { return rootRules }
-            return args == ["-E"] ? "Token : 123\n" : ""
+            if args == ["-E"] { enabled = true; return "Token : 123\n" }
+            if args == ["-s", "info"] { return enabled ? "Status: Enabled for 0 days" : "Status: Disabled" }
+            if args == ["-a", LeakGuardRuleset.anchorName, "-sr"] { return anchor }
+            if args.contains("-f"), let path = args.last { anchor = try String(contentsOfFile: path, encoding: .utf8) }
+            if args.suffix(2) == ["-F", "all"] { anchor = "" }
+            return ""
         }
     }
 
@@ -23,9 +30,8 @@ final class LeakGuardControllerTests: XCTestCase {
         let policy = LeakGuardPolicy(endpoints: [.init(address: "203.0.113.7", transport: "tcp", ports: "443")], allowsDirect: true)
         try guardController.engage(stage: .session(tunnelInterface: "utun99"), protectedHosts: [], leaseSeconds: 180, policy: policy)
         XCTAssertTrue(guardController.isEngaged)
-        let initialCount = commands.calls.count
         try guardController.engage(stage: .session(tunnelInterface: "utun99"), protectedHosts: [], leaseSeconds: 180, policy: policy)
-        XCTAssertEqual(commands.calls.count, initialCount, "heartbeat must not flush connections")
+        XCTAssertEqual(commands.calls.filter { $0.contains("-f") }.count, 1, "healthy renewal must not reload the anchor")
         XCTAssertEqual(commands.calls.filter { $0 == ["-F", "states"] }.count, 1)
         guardController.expireLease()
         let rulesPath = directory.appendingPathComponent("leak-guard.pf")
@@ -47,6 +53,41 @@ final class LeakGuardControllerTests: XCTestCase {
         XCTAssertFalse(restarted.isEngaged)
         XCTAssertFalse(FileManager.default.fileExists(atPath: rulesPath.path))
         try guardController.release() // cancels its test timer too
+    }
+
+    func testRenewalRepairsChangedAnchorAndDisabledFilter() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let commands = Commands()
+        let controller = LeakGuardController(helperStateDirectoryPath: directory.path, groupID: { 555 }, execute: commands.run)
+        func renew() throws { try controller.engage(stage: .standby, protectedHosts: [], leaseSeconds: 180) }
+        try renew()
+        commands.anchor = "different rules"
+        XCTAssertFalse(controller.isEngaged)
+        try renew()
+        XCTAssertTrue(controller.isEngaged)
+        commands.enabled = false
+        XCTAssertFalse(controller.isEngaged)
+        try renew()
+        XCTAssertTrue(controller.isEngaged)
+        XCTAssertEqual(commands.calls.filter { $0 == ["-F", "states"] }.count, 3)
+        try controller.release()
+    }
+
+    func testFailedStartupRestoreAllowsReleaseAndBlocksNewWork() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let commands = Commands()
+        let controller = LeakGuardController(helperStateDirectoryPath: directory.path, groupID: { 555 }, execute: commands.run)
+        try "saved policy".write(to: directory.appendingPathComponent("leak-guard.pf"), atomically: true, encoding: .utf8)
+        commands.rootRules = "custom rules"
+        XCTAssertThrowsError(try controller.restoreGuard())
+        XCTAssertFalse(controller.isEngaged)
+        XCTAssertThrowsError(try controller.requireProtectionIfPersisted())
+        try controller.release()
+        XCTAssertNoThrow(try controller.requireProtectionIfPersisted())
     }
 
     func testMissingRuntimeGroupFailsBeforeExecutingFirewallCommands() throws {
