@@ -75,31 +75,44 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
     }
 
     func start(request: StartSessionRequest, sessionID: UUID) throws -> StartSessionResponse {
-        let stateDirectoryPath = try validatedStateDirectoryPath(request.stateDirectoryPath)
-        let assetDirectoryPath = try validatedAssetDirectoryPath(request.assetDirectoryPath)
-        let protectedHosts = try validatedProtectedHosts(request.protectedHosts, required: true)
-        let tunnelInterfaceName = try validatedTunnelInterfaceName(request.tunnelInterfaceName)
-        let outboundInterface = try validatedOutboundInterface(request.outboundInterface)
-
-        guard FileManager.default.isExecutableFile(atPath: installedXrayPath) else {
-            throw HelperError("Installed Xray runtime is missing. Reinstall Teleport's privileged helper.")
-        }
-
-        let config = request.configData
-        guard !config.isEmpty else { throw HelperError("Missing configData") }
-        guard config.count <= maxConfigBytes else { throw HelperError("Xray tunnel config is too large") }
         let configPath = helperStateDirectoryPath + "/xray-tun-config.json"
+        let staged = URL(fileURLWithPath: configPath + ".pending")
+        // The dispatcher serializes starts; process exits never touch the staging file.
+        let stateDirectoryPath: String, assetDirectoryPath: String, outboundInterface: String
+        let protectedHosts: [String], tunnelInterfaceName: String
+        do {
+            stateDirectoryPath = try validatedStateDirectoryPath(request.stateDirectoryPath)
+            assetDirectoryPath = try validatedAssetDirectoryPath(request.assetDirectoryPath)
+            protectedHosts = try validatedProtectedHosts(request.protectedHosts, required: true)
+            tunnelInterfaceName = try validatedTunnelInterfaceName(request.tunnelInterfaceName)
+            outboundInterface = try validatedOutboundInterface(request.outboundInterface)
+
+            guard FileManager.default.isExecutableFile(atPath: installedXrayPath) else {
+                throw HelperError("Installed Xray runtime is missing. Reinstall Teleport's privileged helper.")
+            }
+
+            let config = request.configData
+            guard !config.isEmpty else { throw HelperError("Missing configData") }
+            guard config.count <= maxConfigBytes else { throw HelperError("Xray tunnel config is too large") }
+            _ = try Self.preparedHelperStateDirectoryPath()
+            try Self.stageConfig(config, at: staged)
+        } catch {
+            throw TUNHelperProtocolFailure(code: .commandFailed,
+                summary: (error as? HelperError)?.clientSummary ?? HelperError.systemFailure(error)?.clientSummary
+                    ?? "Could not stage the tunnel configuration",
+                details: nil, retryDisposition: .never, startRejectedBeforeMutation: true)
+        }
+        defer { try? FileManager.default.removeItem(at: staged) }
         let cleanup = makeCleanup(stateDirectoryPath: stateDirectoryPath, protectedHosts: protectedHosts,
                                   tunnelInterfaceName: tunnelInterfaceName, outboundInterface: outboundInterface)
         try sessionExecutor.start(sessionID: sessionID, cleanup: cleanup, prepare: {
-            let helperStateDirectoryPath = try Self.preparedHelperStateDirectoryPath()
             supervisor.cancel()
             SystemStateDump.setMarker(request.dumpsSystemState)
             TeleportLog.shared.info(Self.subsystem, "start session \(LogFormat.id(sessionID)): tun \(tunnelInterfaceName), uplink \(outboundInterface), \(protectedHosts.count) protected hosts")
             SystemStateDump.capture("helper: before tunnel start")
             try managedProcess.terminateManagedXray(helperStateDirectoryPath: helperStateDirectoryPath)
             try managedProcess.terminateLegacyManagedXray(stateDirectoryPath: stateDirectoryPath)
-            try writeHelperConfig(config, to: configPath)
+            guard rename(staged.path, configPath) == 0 else { throw POSIXError(.init(rawValue: errno) ?? .EIO) }
         }) { token in
             try shellRunner.run(scriptBuilder.makeStartScript(
                 helperStateDirectoryPath: helperStateDirectoryPath,
@@ -329,13 +342,14 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
         }
     }
 
-    private func writeHelperConfig(_ value: Data, to path: String) throws {
-        // Publish config as restart evidence only after its permissions are set.
-        let temporary = URL(fileURLWithPath: path + ".pending")
-        defer { try? FileManager.default.removeItem(at: temporary) }
-        try value.write(to: temporary, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporary.path)
-        guard rename(temporary.path, path) == 0 else { throw POSIXError(.init(rawValue: errno) ?? .EIO) }
+    static func stageConfig(_ value: Data, at staged: URL) throws {
+        try value.write(to: staged, options: .atomic)
+        do {
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: staged.path)
+        } catch {
+            try? FileManager.default.removeItem(at: staged)
+            throw error
+        }
     }
 
     private func expectedStateDirectoryPath() throws -> String {

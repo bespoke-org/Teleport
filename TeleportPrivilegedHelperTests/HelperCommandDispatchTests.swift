@@ -66,13 +66,15 @@ private final class RecordingExecutor: HelperCommandExecuting, @unchecked Sendab
     private var startCount = 0
     private let blockStart: Bool
     private let blockStop: Bool
+    private let rejectBeforeMutation: Bool
     private let failedStartNumber: Int?
     let startEntered = DispatchSemaphore(value: 0)
     let releaseStart = DispatchSemaphore(value: 0)
     let stopEntered = DispatchSemaphore(value: 0)
     let releaseStop = DispatchSemaphore(value: 0)
 
-    init(blockStart: Bool = false, blockStop: Bool = false, failedStartNumber: Int? = nil) {
+    init(blockStart: Bool = false, blockStop: Bool = false, failedStartNumber: Int? = nil, rejectBeforeMutation: Bool = false) {
+        self.rejectBeforeMutation = rejectBeforeMutation
         self.blockStart = blockStart
         self.blockStop = blockStop
         self.failedStartNumber = failedStartNumber
@@ -102,6 +104,10 @@ private final class RecordingExecutor: HelperCommandExecuting, @unchecked Sendab
         if blockStart {
             startEntered.signal()
             XCTAssert(releaseStart.wait(timeout: .now() + 5) == .success)
+        }
+        if shouldFail && rejectBeforeMutation {
+            throw TUNHelperProtocolFailure(code: .commandFailed, summary: "Could not stage config",
+                details: nil, retryDisposition: .never, startRejectedBeforeMutation: true)
         }
         if shouldFail { throw DispatchTestError.failedStart }
         return StartSessionResponse(phase: .running, summary: nil, details: nil)
@@ -489,6 +495,19 @@ final class HelperCommandDispatchTests: XCTestCase {
         )
         XCTAssert(status.sessionID == activeSessionID)
         XCTAssert(status.payload?.phase == .running)
+    }
+
+    func testRejectedReplacementPreservesPreviousRunningSession() async throws {
+        let dispatcher = HelperCommandDispatcher(executor: RecordingExecutor(failedStartNumber: 2, rejectBeforeMutation: true))
+        let active = UUID(), replacement = UUID()
+        for id in [active, replacement] {
+            _ = await dispatcher.dispatch(command: .startSession,
+                requestData: try makeStartData(requestID: UUID(), sessionID: id, protectedHosts: ["example.com"]))
+        }
+        let status: TUNHelperResponseEnvelope<StatusResponse> = try TUNHelperCodec.decodeResponse(
+            await dispatcher.dispatch(command: .status, requestData: makeStatusData(requestID: UUID())))
+        XCTAssertEqual(status.sessionID, active)
+        XCTAssertEqual(status.payload?.phase, .running)
     }
 
     func testFailedStartAdvancesStopCorrelation() async throws {

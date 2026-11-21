@@ -278,6 +278,14 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
         cause: Error
     ) async {
         guard readSessionState()?.sessionID == sessionID else { return }
+        if case PrivilegedHelperClientError.indeterminate = cause {
+            // A lost rejection reply can leave a previous, uncorrelated tunnel running.
+            guard let observed = try? await helperClient.status(), observed.sessionID == sessionID else { return }
+        }
+        if case let PrivilegedHelperClientError.protocolFailure(failure) = cause, failure.startRejectedBeforeMutation == true {
+            removeSessionState()
+            return
+        }
         if case PrivilegedHelperClientError.unavailable = cause {
             removeSessionState()
             return

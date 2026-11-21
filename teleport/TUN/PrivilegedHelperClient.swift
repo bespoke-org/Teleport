@@ -335,6 +335,7 @@ nonisolated struct PrivilegedHelperClient: Sendable {
     }
 
     private func mapProtocolFailure(_ failure: TUNHelperProtocolFailure) -> PrivilegedHelperClientError {
+        if failure.startRejectedBeforeMutation == true { return .protocolFailure(failure) }
         switch failure.code {
         case .incompatibleService:
             return .incompatibleService(failure.summary, failure.details)

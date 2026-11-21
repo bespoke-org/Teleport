@@ -955,6 +955,11 @@ final class PrivilegedHelperClientTests: XCTestCase {
     }
 
     func testFailedRuntimeStartRollsBackMatchingSession() async throws {
+        try await checkStartRollback(rejectedBeforeMutation: false)
+        try await checkStartRollback(rejectedBeforeMutation: true)
+    }
+
+    private func checkStartRollback(rejectedBeforeMutation: Bool) async throws {
         let paths = try temporaryRuntimePaths(named: "failed-start-rollback")
         defer { removeTemporaryRuntimePaths(paths) }
         let probe = RecoveryProbe()
@@ -973,7 +978,7 @@ final class PrivilegedHelperClientTests: XCTestCase {
                         code: .commandFailed,
                         summary: "start failed",
                         details: "specific protocol failure details",
-                        retryDisposition: .never
+                        retryDisposition: .never, startRejectedBeforeMutation: rejectedBeforeMutation
                     )
                 ))
             case .stopSession:
@@ -1010,12 +1015,15 @@ final class PrivilegedHelperClientTests: XCTestCase {
             XCTFail("Expected start failure")
         } catch let XrayTunRuntimeError.startFailed(_, details) {
             XCTAssert(details.contains("specific protocol failure details"))
-            XCTAssert(details.contains("specific control failure"))
-            XCTAssert(details.contains("specific xray failure"))
-            XCTAssert(details.contains("specific helper failure"))
+            if !rejectedBeforeMutation {
+                XCTAssert(details.contains("specific control failure"))
+                XCTAssert(details.contains("specific xray failure"))
+                XCTAssert(details.contains("specific helper failure"))
+            }
         }
 
-        XCTAssert(transport.calls.map(\.0) == [.startSession, .stopSession, .readDiagnostics, .readDiagnostics, .readDiagnostics])
+        XCTAssertEqual(transport.calls.map(\.0), rejectedBeforeMutation ? [.startSession] :
+                       [.startSession, .stopSession, .readDiagnostics, .readDiagnostics, .readDiagnostics])
         XCTAssert(!FileManager.default.fileExists(atPath: paths.sessionStateFileURL.path))
     }
 

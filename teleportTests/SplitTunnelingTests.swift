@@ -943,10 +943,12 @@ final class SplitTunnelingTests: XCTestCase {
         let stop = XrayTunScriptBuilder(installedXrayPath: "/unused")
             .makeStopScript(helperStateDirectoryPath: directory.path, protectedHosts: ["192.0.2.1"], outboundInterface: "en0")
             .replacingOccurrences(of: "/usr/sbin/scutil", with: "fixture_scutil")
+        let trace = directory.appendingPathComponent("calls")
         let fixtures = """
         route() {
+            echo "$*" >> "$TRACE"
             if [ "$1" = "-n" ]; then return 0; fi
-            if [ "$FAULT" = route ]; then
+            if [ "$FAULT" = route ] && [ "$2" = -host ]; then
                 echo 'route: writing to routing socket: entry in use' >&2
             else
                 echo 'route: writing to routing socket: not in table' >&2
@@ -954,18 +956,26 @@ final class SplitTunnelingTests: XCTestCase {
         }
         fixture_scutil() {
             read -r op key
+            echo "$op $key" >> "$TRACE"
             if [ "$op" = show ]; then
                 if [ "$FAULT" = dns ]; then echo '<dictionary>'; else echo '  No such key'; fi
             fi
         }
         """
+        // A directory at the diagnostic path makes logging unavailable for all attempts.
+        try FileManager.default.createDirectory(at: directory.appendingPathComponent("xray-tun-control.log"), withIntermediateDirectories: false)
         for fault in ["route", "dns", "none"] {
+            try Data().write(to: trace)
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/bin/sh")
             process.arguments = ["-c", fixtures + "\n" + stop]
-            process.environment = ["PATH": "/usr/bin:/bin", "FAULT": fault]
+            process.environment = ["PATH": "/usr/bin:/bin", "FAULT": fault, "TRACE": trace.path]
             try process.run()
             process.waitUntilExit()
+            let calls = try String(contentsOf: trace, encoding: .utf8).components(separatedBy: "\n")
+            XCTAssertTrue(calls.contains("remove State:/Network/Service/dev.x.teleport/DNS"), fault)
+            XCTAssertTrue(calls.contains("delete -net 0.0.0.0/1 -ifscope en0"), fault)
+            XCTAssertTrue(calls.contains("delete -inet6 -net 8000::/1"), fault)
             XCTAssertEqual(process.terminationStatus == 0, fault == "none", fault)
             XCTAssertEqual(FileManager.default.fileExists(atPath: config.path), fault != "none", fault)
         }

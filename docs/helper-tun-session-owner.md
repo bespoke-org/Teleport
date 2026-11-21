@@ -2,7 +2,7 @@
 
 The helper's `main.swift` constructs one `XrayTunController`. Its value copies
 share one reference-type `HelperTUNSessionExecutor`, supervisor and leak guard.
-There is no second app intent runtime and no wire/persistent format change.
+The helper can flag a rejected start in an optional failure-response field.
 
 ## App → helper → result contract
 
@@ -57,13 +57,14 @@ the same PID. Cancelling a source does not revoke a callback already delivered.
 
 The only teardown recipe cancels the watch, prepares the root directory,
 terminates the managed and legacy process, then executes the stop script.
+The helper writes the candidate config with mode 0600 before replacing the previous run. A staging rejection preserves its session correlation and tells the app to skip rollback.
 The executor arms route rollback immediately before invoking the start script.
 A preparation failure returns without running route cleanup. After a fresh
 helper launch, a follow-up stop checks for persisted tunnel state or a validated
 legacy process before adopting a cleanup recipe. An exit is validated again on the serial queue against token and PID.
 After success the context is dropped; duplicate stop/exit does not run it again.
 After failure the original recipe/token/interfaces stay retained; another stop
-retries it. A new start must finish that recipe before writing a new config. A
+retries it. A new start must finish that recipe before publishing a staged config. A
 failed attempt to replace A with B can still leave cleanup context A, while the
 dispatcher correlates the failed request to B: stop(B) deliberately retries the
 retained A context instead of trusting B's cleanup arguments.
@@ -83,7 +84,7 @@ can retry using the helper's correlated session ID. Reconnect also checks for
 other VPN interfaces before retrying.
 
 A stop treats absent routes as already removed, reports route deletion errors
-and checks that the Teleport DNS resolver key is gone. The helper retains its
+and checks that the Teleport DNS resolver key is gone. Independent removals continue after a failure, and control-log writes are best effort. The helper retains its
 cleanup context and persistent config on failure. Destination-only deletes
 remain a limitation until the helper journals the exact routes it installed.
 

@@ -313,6 +313,18 @@ final class HelperTUNSessionExecutorTests: XCTestCase {
     }
 
     #if canImport(Darwin)
+    func testStagingFailurePreservesPublishedConfig() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let active = root.appendingPathComponent("xray-tun-config.json")
+        try Data("old".utf8).write(to: active)
+        let staged = active.appendingPathExtension("pending")
+        try FileManager.default.createDirectory(at: staged, withIntermediateDirectories: false)
+        XCTAssertThrowsError(try XrayTunController.stageConfig(Data("new".utf8), at: staged))
+        XCTAssertEqual(try Data(contentsOf: active), Data("old".utf8))
+    }
+
     func testFacadeAndDispatcherReadSnapshotWhileEffectsAreBlocked() async throws {
         let owner = HelperTUNSessionExecutor()
         let effects = SessionTestEffects()

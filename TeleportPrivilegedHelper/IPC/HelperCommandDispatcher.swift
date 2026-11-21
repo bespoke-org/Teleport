@@ -13,6 +13,7 @@ actor HelperCommandDispatcher {
     /// Same-daemon correlation only. PID/process evidence remains owned by the executor,
     /// and a helper restart intentionally loses this observation.
     private var observedSessionID: UUID?
+    private var rejectedStartID: UUID?
     private var queuedSessionID: UUID?
     private var queuedPhase: TUNHelperSessionPhase?
     private var observedFailureSummary: String?
@@ -107,8 +108,8 @@ actor HelperCommandDispatcher {
                 let request: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(requestData)
                 let projectedSessionID = queuedSessionID ?? observedSessionID
                 let projectedPhase = queuedPhase ?? (observedFailureSummary == nil ? nil : .failed)
-                let projectedFailureSummary = observedFailureSummary
-                let projectedFailureDetails = observedFailureDetails
+                let projectedFailureSummary = queuedPhase == nil ? observedFailureSummary : nil
+                let projectedFailureDetails = queuedPhase == nil ? observedFailureDetails : nil
                 return try await execute(
                     command: command,
                     requestID: request.requestID,
@@ -222,6 +223,11 @@ actor HelperCommandDispatcher {
         }
     }
 
+    private func stopConflictsWithCompletedStart(_ id: UUID) -> Bool {
+        if let observedSessionID { return observedSessionID != id }
+        return rejectedStartID == id
+    }
+
     private func execute<Response>(
         command: TUNHelperCommand,
         requestID: UUID,
@@ -256,8 +262,6 @@ actor HelperCommandDispatcher {
             reservedCorrelationGeneration = correlationGeneration
             queuedSessionID = successfulSessionID
             queuedPhase = command == .startSession ? .starting : .stopping
-            observedFailureSummary = nil
-            observedFailureDetails = nil
         }
         let effectiveResponseSessionID = usesObservedSessionID
             ? (queuedSessionID ?? observedSessionID)
@@ -265,9 +269,13 @@ actor HelperCommandDispatcher {
         onRequestAdmitted(command)
 
         let precedingExecution = waitsForPrecedingExecution ? executionTail : nil
-        let execution = Task.detached { () -> (data: Data, succeeded: Bool, failureSummary: String?, failureDetails: String?) in
+        let execution = Task.detached { () -> (data: Data, succeeded: Bool, failureSummary: String?, failureDetails: String?, rejectedBeforeMutation: Bool) in
             await precedingExecution?.value
             do {
+                if command == .stopSession, let id = successfulSessionID,
+                   await self.stopConflictsWithCompletedStart(id) {
+                    throw Self.failure(code: .requestConflict, summary: "The requested session does not own the tunnel")
+                }
                 let payload = try operation()
                 let response = TUNHelperResponseEnvelope(
                     revision: TUNHelperProtocol.revision,
@@ -276,7 +284,7 @@ actor HelperCommandDispatcher {
                     payload: payload,
                     failure: nil
                 )
-                return (try TUNHelperCodec.encodeResponse(response), true, nil, nil)
+                return (try TUNHelperCodec.encodeResponse(response), true, nil, nil, false)
             } catch let protocolFailure as TUNHelperProtocolFailure {
                 return (
                     Self.encodeFailure(
@@ -287,7 +295,7 @@ actor HelperCommandDispatcher {
                     ),
                     false,
                     protocolFailure.summary,
-                    protocolFailure.details
+                    protocolFailure.details, protocolFailure.startRejectedBeforeMutation == true || protocolFailure.code == .requestConflict
                 )
             } catch let presentableError as any TUNHelperClientPresentableError {
                 let summary = presentableError.clientSummary
@@ -300,7 +308,7 @@ actor HelperCommandDispatcher {
                     ),
                     false,
                     summary,
-                    presentableError.clientDetails
+                    presentableError.clientDetails, false
                 )
             } catch {
                 TeleportLog.shared.error("helper", "\(command.rawValue) failed: \(LogFormat.error(error))")
@@ -314,38 +322,37 @@ actor HelperCommandDispatcher {
                     ),
                     false,
                     summary,
-                    nil
+                    nil, false
                 )
             }
         }
-        if waitsForPrecedingExecution {
-            executionTail = Task {
-                _ = await execution.value
+        let completion = Task {
+            let result = await execution.value
+            if let successfulSessionID {
+                if result.rejectedBeforeMutation {
+                    if command == .startSession { rejectedStartID = successfulSessionID }
+                } else {
+                    rejectedStartID = nil
+                    observedSessionID = result.succeeded && command == .stopSession ? nil : successfulSessionID
+                    observedFailureSummary = result.failureSummary
+                    observedFailureDetails = result.failureDetails
+                }
             }
+            if reservedCorrelationGeneration == correlationGeneration {
+                queuedSessionID = nil
+                queuedPhase = nil
+            }
+            return result.data
         }
-
-        let result = await execution.value
-        if let successfulSessionID {
-            // A failed mutation may already have changed root-side process or route
-            // state. Correlate it with the admitted session so a matching stop can
-            // still clean up instead of being rejected against an older session.
-            // A successful stop, however, completes and clears that correlation.
-            observedSessionID = result.succeeded && command == .stopSession
-                ? nil
-                : successfulSessionID
-            observedFailureSummary = result.failureSummary
-            observedFailureDetails = result.failureDetails
-        }
-        if reservedCorrelationGeneration == correlationGeneration {
-            queuedSessionID = nil
-            queuedPhase = nil
-        }
+        // A queued stop must see the committed outcome of the start ahead of it.
+        if waitsForPrecedingExecution { executionTail = Task { _ = await completion.value } }
+        let data = await completion.value
         ledger.complete(
             requestID: requestID,
             fingerprint: fingerprint,
-            responseData: result.data
+            responseData: data
         )
-        return result.data
+        return data
     }
 
     private func failureResponse(
