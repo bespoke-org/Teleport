@@ -65,11 +65,15 @@ final class ConnectionHealthTests: XCTestCase {
         let dualStack = try parser.parse(wireGuardConfigurationFile(allowedIPs: "fd00::/8, 10.72.0.0/16"))
         XCTAssert(ConnectionHealthProbeService.handshakeTriggerTarget(for: dualStack.wireguard!) == "10.72.0.0")
 
+        func evidence(_ text: String) -> WireGuardHandshakeEvidence {
+            var result = WireGuardHandshakeEvidence()
+            result.consume(Data(text.utf8))
+            return result
+        }
+
         // Silence from the peer and never asking are different failures.
-        XCTAssert(ConnectionHealthProbeService.containsWireGuardHandshakeAttempt(
-            "2026/09/07 00:00:00 [Debug] peer(abcd…wxyz) - Sending handshake initiation"
-        ))
-        XCTAssert(!ConnectionHealthProbeService.containsWireGuardHandshakeAttempt("2026/09/07 00:00:00 [Warning] core: Xray started"))
+        XCTAssert(evidence("2026/09/07 00:00:00 [Debug] peer(abcd…wxyz) - Sending handshake initiation").attempted)
+        XCTAssert(!evidence("2026/09/07 00:00:00 [Warning] core: Xray started").attempted)
 
         // A default route written as two halves still carries everything, so such a
         // peer must be probed with a real request rather than by its handshake.
@@ -80,13 +84,23 @@ final class ConnectionHealthTests: XCTestCase {
 
         // The marker matches the wording the bundled Xray actually logs, and does
         // not mistake our own outgoing handshake for the peer's answer.
-        XCTAssert(ConnectionHealthProbeService.containsWireGuardHandshakeResponse(
-            "2026/09/07 00:00:00 [Debug] peer(abcd…wxyz) - Received handshake response"
-        ))
-        XCTAssert(!ConnectionHealthProbeService.containsWireGuardHandshakeResponse(
-            "2026/09/07 00:00:00 [Debug] peer(abcd…wxyz) - Sending handshake initiation"
-        ))
-        XCTAssert(!ConnectionHealthProbeService.containsWireGuardHandshakeResponse(""))
+        XCTAssert(evidence("2026/09/07 00:00:00 [Debug] peer(abcd…wxyz) - Received handshake response").responded)
+        XCTAssert(!evidence("2026/09/07 00:00:00 [Debug] peer(abcd…wxyz) - Sending handshake initiation").responded)
+        XCTAssert(!evidence("").responded)
+    }
+
+    func testHandshakeEvidenceAcrossReads() {
+        var evidence = WireGuardHandshakeEvidence()
+        evidence.consume(Data("Sending HANDSHAKE init".utf8))
+        evidence.consume(Data("iation\nReceived unrelated data\nhand".utf8))
+        evidence.consume(Data("shake".utf8))
+        XCTAssertTrue(evidence.attempted)
+        XCTAssertFalse(evidence.responded)
+
+        evidence.consume(Data("\nReceiv".utf8))
+        evidence.consume(Data("ing hand".utf8))
+        evidence.consume(Data("shake response".utf8))
+        XCTAssertTrue(evidence.responded)
     }
 
     private func wireGuardConfigurationFile(allowedIPs: String) -> String {

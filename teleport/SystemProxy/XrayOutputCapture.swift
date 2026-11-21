@@ -1,6 +1,38 @@
 import Darwin
 import Foundation
 
+/// Preserve the probe verdict independently of the bounded diagnostic excerpt.
+nonisolated struct WireGuardHandshakeEvidence {
+    private(set) var attempted = false
+    private(set) var responded = false
+    private var lineHasHandshake = false
+    private var lineHasReceive = false
+    private var overlap = Data()
+    private static let initiation = "handshake initiation"
+
+    mutating func consume(_ bytes: Data) {
+        guard !responded else { return }
+        for (index, part) in bytes.split(separator: 10, omittingEmptySubsequences: false).enumerated() {
+            if index > 0 {
+                overlap.removeAll()
+                lineHasHandshake = false
+                lineHasReceive = false
+            }
+            overlap.append(contentsOf: part)
+            let text = String(decoding: overlap, as: UTF8.self).lowercased()
+            attempted = attempted || text.contains(Self.initiation)
+            lineHasHandshake = lineHasHandshake || text.contains("handshake")
+            lineHasReceive = lineHasReceive || text.contains("received") || text.contains("receiving")
+            if lineHasHandshake && lineHasReceive {
+                responded = true
+                return
+            }
+            // Retain only enough bytes to recognize a word split between reads.
+            overlap = Data(overlap.suffix(Self.initiation.utf8.count - 1))
+        }
+    }
+}
+
 /// One process owns one capture. All reads, diagnostics and disk operations run inline on one
 /// dedicated IO queue. DispatchSource coalesces readiness: there is no per-chunk async backlog.
 /// close() is called off this queue, after the child exits (or fails to spawn).
@@ -18,12 +50,15 @@ nonisolated final class XrayOutputCapture: @unchecked Sendable {
     private var omitted = false
     private var diskFailed = false
     private var state: State = .open
+    private var handshake: WireGuardHandshakeEvidence?
+    private let exitLock = NSLock()
     private var expectedExit = false
     private enum State { case open, draining, closed }
 
     init(reader: FileHandle, directory: URL, policy: XrayLogPolicy,
-         clock: @escaping () -> Date = Date.init,
+         trackWireGuardHandshake: Bool = false, clock: @escaping () -> Date = Date.init,
          write: @escaping (FileHandle, Data) throws -> Void = { try $0.write(contentsOf: $1) }) throws {
+        handshake = trackWireGuardHandshake ? WireGuardHandshakeEvidence() : nil
         self.reader = reader
         let descriptor = reader.fileDescriptor
         let flags = fcntl(descriptor, F_GETFL)
@@ -50,8 +85,9 @@ nonisolated final class XrayOutputCapture: @unchecked Sendable {
         source.resume()
     }
 
-    func expectExit() { queue.sync { expectedExit = true } }
-    var expectsExit: Bool { queue.sync { expectedExit } }
+    func expectExit() { exitLock.withLock { expectedExit = true } }
+    var expectsExit: Bool { exitLock.withLock { expectedExit } }
+    var handshakeEvidence: WireGuardHandshakeEvidence? { queue.sync { handshake } }
     var storedByteCount: Int { queue.sync { prefix.count + tail.count + (omitted ? Self.marker.count : 0) } }
     var hasDiskFailure: Bool { queue.sync { diskFailed } }
 
@@ -105,6 +141,7 @@ nonisolated final class XrayOutputCapture: @unchecked Sendable {
     }
 
     private func consume(_ data: Data) {
+        handshake?.consume(data)
         let headCount = min(Self.prefixLimit - prefix.count, data.count)
         prefix.append(data.prefix(headCount))
         let rest = data.dropFirst(headCount)
