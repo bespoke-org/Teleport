@@ -72,13 +72,13 @@ final class SettingsToolbarLayoutTests: XCTestCase {
 
     func testModeSwitchKeepsAppearanceAndLayoutStableWhileProviderStarts() async throws {
         let provider = PendingProvider()
-        let fixture = try Fixture(systemProxyProvider: provider)
+        let fixture = try Fixture(initialSection: .general, systemProxyProvider: provider)
         defer { fixture.cleanUp() }
-        fixture.navigation.value.select(.general)
         await awaitUIUpdate("General settings are ready") { fixture.model.canChangeSelection }
         let controls = descendants(fixture.window.contentView!).compactMap { $0 as? NSSegmentedControl }
         let mode = try XCTUnwrap(controls.first { $0.label(forSegment: 0) == "System Proxy" })
         let order = try XCTUnwrap(controls.first { $0.segmentCount == 3 })
+        fixture.window.contentView?.layoutSubtreeIfNeeded()
         let originalFrame = order.convert(order.bounds, to: nil)
         let originalAlpha = mode.alphaValue
 
@@ -441,7 +441,7 @@ final class SettingsToolbarLayoutTests: XCTestCase {
     @MainActor
     private final class Navigation: ObservableObject {
         @Published var value = SettingsNavigation()
-        init() { value.select(.portals) }
+        init(_ section: SettingsSection) { value.select(section) }
     }
 
     private struct Content: View {
@@ -453,13 +453,14 @@ final class SettingsToolbarLayoutTests: XCTestCase {
     @MainActor
     private final class Fixture {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("teleport-toolbar-\(UUID())")
-        let navigation = Navigation()
+        let navigation: Navigation
         let model: AppViewModel
         let store: ConfigurationStore
         let window: NSWindow
 
-        init(withPortals: Bool = false, systemProxyProvider: (any ConnectionProvider)? = nil) throws {
+        init(initialSection: SettingsSection = .portals, withPortals: Bool = false, systemProxyProvider: (any ConnectionProvider)? = nil) throws {
             _ = NSApplication.shared
+            navigation = Navigation(initialSection)
             let files = IsolatedFileManager(root: root)
             let log = TeleportLog(directoryURL: root, fileName: "test.log")
             store = ConfigurationStore(fileManager: files, keychainService: "dev.x.teleport.toolbar-tests",
