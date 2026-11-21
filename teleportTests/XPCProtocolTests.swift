@@ -22,6 +22,25 @@ final class XPCProtocolTests: XCTestCase {
         }
     }
 
+    func testDualTransportHostsAndResolversFitFirewallRequest() throws {
+        let hosts = (1...64).map { "192.0.2." + String($0) }
+        let resolvers = (1...64).map { "198.51.100." + String($0) }
+        let endpoints = (hosts + resolvers).flatMap { address in
+            ["tcp", "udp"].map { LeakGuardEndpoint(address: address, transport: $0, ports: hosts.contains(address) ? "443" : "53") }
+        }
+        var request = EngageLeakGuardRequest(tunnelInterfaceName: "utun9", protectedHosts: hosts, leaseSeconds: 60,
+                                             policy: .init(endpoints: endpoints + endpoints))
+        func encode() throws -> Data {
+            try TUNHelperCodec.encodeRequest(TUNHelperRequestEnvelope(revision: TUNHelperProtocol.revision,
+                requestID: UUID(), sessionID: nil, payload: request))
+        }
+        XCTAssertEqual(request.policy.endpoints.count, 256)
+        let decoded: TUNHelperRequestEnvelope<EngageLeakGuardRequest> = try TUNHelperCodec.decodeRequest(encode())
+        XCTAssertEqual(decoded.payload, request)
+        request.policy.endpoints.append(.init(address: "203.0.113.1", transport: "tcp", ports: "443"))
+        XCTAssertThrowsError(try encode())
+    }
+
     func testEndpointBootstrapIsAConstrainedRequest() throws {
         for host in ["proxy.example", "vpn-2.example"] {
             _ = try TUNHelperCodec.encodeRequest(TUNHelperRequestEnvelope(

@@ -23,6 +23,8 @@ nonisolated enum TUNHelperProtocol {
     /// the session itself. Bounded like every other payload field so a client
     /// cannot make the helper install an unbounded number of routes.
     static let maximumProtectedHosts = 64
+    // Budget separately for TCP and UDP at 64 proxy hosts and 64 DNS resolvers.
+    static let maximumFirewallEndpoints = 2 * (maximumProtectedHosts + 64)
     /// The client renews the leak-guard lease well inside this; the helper clamps
     /// anything longer so a client cannot ask for a guard it never has to renew.
     static let maximumLeakGuardLeaseSeconds: Double = 180

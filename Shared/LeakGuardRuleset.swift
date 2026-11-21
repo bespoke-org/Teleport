@@ -1,6 +1,6 @@
 import Foundation
 
-nonisolated struct LeakGuardEndpoint: Codable, Equatable, Sendable {
+nonisolated struct LeakGuardEndpoint: Codable, Hashable, Sendable {
     var address: String
     var transport: String
     /// Numeric ports or inclusive ranges, already checked at the helper boundary.
@@ -11,6 +11,13 @@ nonisolated struct LeakGuardPolicy: Codable, Equatable, Sendable {
     var endpoints: [LeakGuardEndpoint] = []
     var allowsDirect = false
     var allowsLAN = false
+
+    init(endpoints: [LeakGuardEndpoint] = [], allowsDirect: Bool = false, allowsLAN: Bool = false) {
+        var seen: Set<LeakGuardEndpoint> = []
+        self.endpoints = endpoints.filter { seen.insert($0).inserted }
+        self.allowsDirect = allowsDirect
+        self.allowsLAN = allowsLAN
+    }
 }
 
 /// Stateless passes avoid leaving an exception alive in PF's state table after

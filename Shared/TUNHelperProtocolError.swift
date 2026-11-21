@@ -152,7 +152,7 @@ extension EngageLeakGuardRequest: TUNHelperPayloadValidating {
         for protectedHost in protectedHosts {
             try validateNonEmpty(protectedHost, field: "protectedHosts")
         }
-        guard policy.endpoints.count <= TUNHelperProtocol.maximumProtectedHosts else {
+        guard policy.endpoints.count <= TUNHelperProtocol.maximumFirewallEndpoints else {
             throw protocolFailure(.payloadTooLarge, "Too many protected endpoints")
         }
         for endpoint in policy.endpoints {
