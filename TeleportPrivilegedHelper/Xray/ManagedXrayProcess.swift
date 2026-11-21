@@ -26,12 +26,15 @@ struct ManagedXrayProcess: Sendable {
         try terminateInstalledXray(pid: pid)
     }
 
-    func terminateLegacyManagedXray(stateDirectoryPath: String) throws {
+    func validatedLegacyPID(stateDirectoryPath: String) -> pid_t? {
         let pidFilePath = stateDirectoryPath + "/xray-tun.pid"
         guard let pid = managedXrayPID(pidFilePath: pidFilePath, expectedOwner: consoleUserIDs().uid),
-              isInstalledXrayProcess(pid: pid) else {
-            return
-        }
+              isInstalledXrayProcess(pid: pid) else { return nil }
+        return pid
+    }
+
+    func terminateLegacyManagedXray(stateDirectoryPath: String) throws {
+        guard let pid = validatedLegacyPID(stateDirectoryPath: stateDirectoryPath) else { return }
         try terminateInstalledXray(pid: pid)
     }
 

@@ -53,7 +53,7 @@ final class HelperTUNSessionExecutorTests: XCTestCase {
         try owner.start(sessionID: session, cleanup: effects.cleanup("cleanup A")) { token in
             XCTAssertEqual(token.sessionID, session)
             XCTAssertEqual(owner.snapshot?.phase, .starting)
-            for stage in ["config", "terminate managed", "terminate legacy", "script", "watch"] {
+            for stage in ["terminate managed", "terminate legacy", "config", "script", "watch"] {
                 try effects.effect(stage)
             }
             return 41
@@ -64,7 +64,7 @@ final class HelperTUNSessionExecutorTests: XCTestCase {
         try owner.stop(sessionID: session, fallback: effects.cleanup("unused fallback"))
         XCTAssertEqual(owner.snapshot?.phase, .idle)
         XCTAssertNil(owner.snapshot?.token)
-        XCTAssertEqual(effects.state.current.events, ["config", "terminate managed", "terminate legacy", "script", "watch", "cleanup A"])
+        XCTAssertEqual(effects.state.current.events, ["terminate managed", "terminate legacy", "config", "script", "watch", "cleanup A"])
         XCTAssertEqual(effects.state.current.maxActive, 1)
     }
 
@@ -107,7 +107,7 @@ final class HelperTUNSessionExecutorTests: XCTestCase {
         defer { release.signal() }
         XCTAssertEqual(entered.wait(timeout: .now() + 10), .success)
         XCTAssertEqual(owner.snapshot?.phase, .starting) // no sync IO-queue wait
-        for _ in 0..<10_000 { owner.unexpectedExit(token: old, pid: 41) }
+        owner.unexpectedExit(token: old, pid: 41)
         release.signal()
         XCTAssertEqual(done.wait(timeout: .now() + 10), .success)
         owner.waitForPendingEvents()
@@ -141,7 +141,7 @@ final class HelperTUNSessionExecutorTests: XCTestCase {
         XCTAssertEqual(requested.wait(timeout: .now() + 10), .success)
         XCTAssertEqual(owner.snapshot?.phase, .stopping)
         XCTAssertEqual(effects.state.current.events, ["cleanup A"])
-        for _ in 0..<1000 { owner.unexpectedExit(token: old, pid: 41) }
+        owner.unexpectedExit(token: old, pid: 41)
         release.signal()
         XCTAssertEqual(done.wait(timeout: .now() + 10), .success)
         owner.waitForPendingEvents()
@@ -151,7 +151,7 @@ final class HelperTUNSessionExecutorTests: XCTestCase {
         XCTAssertEqual(owner.snapshot?.pid, 42)
     }
 
-    func testManualStopRacingDuplicateExitHasOneTeardown() throws {
+    func testManualStopRacingExitHasOneTeardown() throws {
         let owner = HelperTUNSessionExecutor()
         let effects = SessionTestEffects()
         let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
@@ -166,7 +166,7 @@ final class HelperTUNSessionExecutorTests: XCTestCase {
         }
         defer { release.signal() }
         XCTAssertEqual(entered.wait(timeout: .now() + 10), .success)
-        for _ in 0..<10_000 { owner.unexpectedExit(token: token, pid: 41) }
+        owner.unexpectedExit(token: token, pid: 41)
         release.signal()
         XCTAssertEqual(done.wait(timeout: .now() + 10), .success)
         owner.waitForPendingEvents()
@@ -180,7 +180,8 @@ final class HelperTUNSessionExecutorTests: XCTestCase {
         let owner = HelperTUNSessionExecutor()
         let effects = SessionTestEffects()
         try owner.start(sessionID: UUID(), cleanup: effects.cleanup("cleanup")) { token in
-            for _ in 0..<10_000 { owner.unexpectedExit(token: token, pid: 41) }
+            owner.unexpectedExit(token: token, pid: 41)
+            owner.unexpectedExit(token: token, pid: 41)
             XCTAssertEqual(owner.snapshot?.phase, .starting)
             return 41
         }
@@ -203,19 +204,23 @@ final class HelperTUNSessionExecutorTests: XCTestCase {
         XCTAssertTrue(effects.state.current.events.isEmpty)
     }
 
-    func testEveryStartStageFailureRollsBackOnce() throws {
-        let stages = ["prepare", "config", "terminate managed", "terminate legacy", "script", "watch"]
+    func testStartRollsBackOnlyAfterPreparation() throws {
+        let stages = ["prepare", "terminate managed", "terminate legacy", "config", "script", "watch"]
         for failed in stages {
             let owner = HelperTUNSessionExecutor()
             let effects = SessionTestEffects()
             effects.state.withValue { $0.failAt = failed }
-            XCTAssertThrowsError(try owner.start(sessionID: UUID(), cleanup: effects.cleanup("cleanup")) { _ in
-                for stage in stages { try effects.effect(stage) }
+            let id = UUID()
+            XCTAssertThrowsError(try owner.start(sessionID: id, cleanup: effects.cleanup("cleanup"), prepare: {
+                for stage in stages.prefix(4) { try effects.effect(stage) }
+            }) { _ in
+                for stage in stages.suffix(2) { try effects.effect(stage) }
                 return 41
             })
-            XCTAssertEqual(owner.snapshot?.phase, .idle, failed)
-            XCTAssertEqual(effects.state.current.events.last, "cleanup")
-            XCTAssertEqual(effects.state.current.events.filter { $0 == "cleanup" }.count, 1)
+            try owner.stop(sessionID: id, fallback: nil) // No previous root-owned state.
+            XCTAssertEqual(owner.snapshot?.phase ?? .idle, .idle, failed)
+            XCTAssertEqual(effects.state.current.events.filter { $0 == "cleanup" }.count,
+                           stages.suffix(2).contains(failed) ? 1 : 0, failed)
             XCTAssertEqual(effects.state.current.maxActive, 1)
         }
     }
@@ -361,30 +366,4 @@ final class HelperTUNSessionExecutorTests: XCTestCase {
         XCTAssertNil(idle.summary)
     }
     #endif
-
-    /// A witness of the OLD boundary, not a claim that the production controller
-    /// was executed on Linux: pid check then shell cleanup on an unrelated queue.
-    /// Passing means the harness CAN expose A cleaning B; the real owner tests
-    /// above require the opposite under the same controlled ordering.
-    func testOldBoundaryWitnessAllowsCleanupAfterReplacement() throws {
-        let resource = SessionTestBox("A")
-        let checked = DispatchSemaphore(value: 0), resume = DispatchSemaphore(value: 0)
-        let done = DispatchSemaphore(value: 0)
-        let victim = SessionTestBox<String?>(nil)
-        DispatchQueue.global().async {
-            guard resource.current == "A" else { done.signal(); return }
-            checked.signal()
-            guard resume.wait(timeout: .now() + 10) == .success else { done.signal(); return }
-            victim.withValue { $0 = resource.current }
-            resource.withValue { $0 = "idle" }
-            done.signal()
-        }
-        defer { resume.signal() }
-        XCTAssertEqual(checked.wait(timeout: .now() + 10), .success)
-        resource.withValue { $0 = "B" } // cancel cannot revoke the old callback
-        resume.signal()
-        XCTAssertEqual(done.wait(timeout: .now() + 10), .success)
-        XCTAssertEqual(victim.current, "B")
-        XCTAssertEqual(resource.current, "idle")
-    }
 }

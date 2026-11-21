@@ -85,17 +85,22 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
             throw HelperError("Installed Xray runtime is missing. Reinstall Teleport's privileged helper.")
         }
 
+        let config = request.configData
+        guard !config.isEmpty else { throw HelperError("Missing configData") }
+        guard config.count <= maxConfigBytes else { throw HelperError("Xray tunnel config is too large") }
+        let configPath = helperStateDirectoryPath + "/xray-tun-config.json"
         let cleanup = makeCleanup(stateDirectoryPath: stateDirectoryPath, protectedHosts: protectedHosts,
                                   tunnelInterfaceName: tunnelInterfaceName, outboundInterface: outboundInterface)
-        try sessionExecutor.start(sessionID: sessionID, cleanup: cleanup) { token in
+        try sessionExecutor.start(sessionID: sessionID, cleanup: cleanup, prepare: {
             let helperStateDirectoryPath = try Self.preparedHelperStateDirectoryPath()
             supervisor.cancel()
             SystemStateDump.setMarker(request.dumpsSystemState)
             TeleportLog.shared.info(Self.subsystem, "start session \(LogFormat.id(sessionID)): tun \(tunnelInterfaceName), uplink \(outboundInterface), \(protectedHosts.count) protected hosts")
             SystemStateDump.capture("helper: before tunnel start")
-            let configPath = try writeHelperConfig(request.configData, helperStateDirectoryPath: helperStateDirectoryPath)
             try managedProcess.terminateManagedXray(helperStateDirectoryPath: helperStateDirectoryPath)
             try managedProcess.terminateLegacyManagedXray(stateDirectoryPath: stateDirectoryPath)
+            try writeHelperConfig(config, to: configPath)
+        }) { token in
             try shellRunner.run(scriptBuilder.makeStartScript(
                 helperStateDirectoryPath: helperStateDirectoryPath,
                 configPath: configPath,
@@ -120,9 +125,8 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
         let stateDirectoryPath = try validatedStateDirectoryPath(request.stateDirectoryPath)
         let protectedHosts = try validatedProtectedHosts(request.protectedHosts, required: false)
         let outboundInterface = try validatedOutboundInterface(request.outboundInterface)
-        try sessionExecutor.stop(sessionID: sessionID, fallback: makeCleanup(
-            stateDirectoryPath: stateDirectoryPath, protectedHosts: protectedHosts,
-            tunnelInterfaceName: nil, outboundInterface: outboundInterface
+        try sessionExecutor.stop(sessionID: sessionID, fallback: try restartCleanup(
+            stateDirectoryPath: stateDirectoryPath, protectedHosts: protectedHosts, outboundInterface: outboundInterface
         ))
         return StopSessionResponse(
             phase: .idle,
@@ -162,6 +166,20 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
         if value.withCString({ inet_pton(AF_INET, $0, &ipv4Address) }) == 1 { return true }
         var ipv6Address = in6_addr()
         return value.withCString { inet_pton(AF_INET6, $0, &ipv6Address) } == 1
+    }
+
+    // A client may send stop after a rejected start. Only run the restart
+    // fallback when this helper has evidence of a previous tunnel.
+    private func restartCleanup(stateDirectoryPath: String, protectedHosts: [String],
+                                outboundInterface: String) throws -> HelperTUNSessionExecutor.Cleanup? {
+        let path = try Self.preparedHelperStateDirectoryPath()
+        let records = ["xray-tun-config.json", "xray-tun.pid", "xray-tun-protected-host",
+                       "xray-tun-protected-gateways", "xray-tun-protected-dns"]
+        guard records.contains(where: { FileManager.default.fileExists(atPath: path + "/" + $0) })
+                || managedProcess.validatedLegacyPID(stateDirectoryPath: stateDirectoryPath) != nil else { return nil }
+        let interfaces = XrayTunRuntimeInterfaces.load(helperStateDirectoryPath: path)
+        return makeCleanup(stateDirectoryPath: stateDirectoryPath, protectedHosts: protectedHosts,
+                           tunnelInterfaceName: interfaces?.tunnel, outboundInterface: interfaces?.outbound ?? outboundInterface)
     }
 
     /// A single cleanup recipe, retained until it succeeds. Capture only the
@@ -311,19 +329,13 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
         }
     }
 
-    private func writeHelperConfig(_ value: Data?, helperStateDirectoryPath: String) throws -> String {
-        guard let value, !value.isEmpty else { throw HelperError("Missing configData") }
-        guard value.count <= maxConfigBytes else { throw HelperError("Xray tunnel config is too large") }
-        let configPath = helperStateDirectoryPath + "/xray-tun-config.json"
-        removeSymlinkIfPresent(configPath)
-        try value.write(to: URL(fileURLWithPath: configPath), options: .atomic)
-        guard chown(configPath, 0, 0) == 0 else {
-            throw POSIXError(.init(rawValue: errno) ?? .EIO)
-        }
-        guard chmod(configPath, 0o600) == 0 else {
-            throw POSIXError(.init(rawValue: errno) ?? .EIO)
-        }
-        return configPath
+    private func writeHelperConfig(_ value: Data, to path: String) throws {
+        // Publish config as restart evidence only after its permissions are set.
+        let temporary = URL(fileURLWithPath: path + ".pending")
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        try value.write(to: temporary, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: temporary.path)
+        guard rename(temporary.path, path) == 0 else { throw POSIXError(.init(rawValue: errno) ?? .EIO) }
     }
 
     private func expectedStateDirectoryPath() throws -> String {
@@ -479,12 +491,5 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
             return "\(path) • \(sizeText) • showing \(returnedText) • modified \(modifiedText)"
         }
         return "\(path) • \(sizeText) • modified \(modifiedText)"
-    }
-
-    private func removeSymlinkIfPresent(_ path: String) {
-        var statInfo = stat()
-        if lstat(path, &statInfo) == 0, (statInfo.st_mode & S_IFMT) == S_IFLNK {
-            unlink(path)
-        }
     }
 }

@@ -384,6 +384,9 @@ nonisolated struct PrivilegedHelperStatus: Sendable, Equatable {
     let details: String?
     var tunnelInterfaceName: String? = nil
     var outboundInterface: String? = nil
+    // The helper includes its retained cleanup interfaces on this failure.
+    // A failed command without cleanup context has no outbound interface.
+    var hasRetryableCleanup: Bool { phase == .failed && sessionID != nil && outboundInterface != nil }
     var success: Bool { true }
 }
 

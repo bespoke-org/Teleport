@@ -67,7 +67,7 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
             throw PrivilegedHelperClientError.incompatibleService("Update Teleport's privileged helper before connecting.", nil)
         }
         if let existingVPNInterface = existingVPNInterfaces.first(where: {
-            status.phase != .running || status.tunnelInterfaceName != $0
+            (status.phase != .running && !status.hasRetryableCleanup) || status.tunnelInterfaceName != $0
         }) {
             throw XrayTunConnectionError.existingVPNDetected(existingVPNInterface)
         }
@@ -76,8 +76,8 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
             removeSessionState()
             return hadCachedSession
         }
-        guard status.phase == .running || status.phase == .idle,
-              status.tunnelInterfaceName != nil,
+        guard status.phase == .running || status.phase == .idle || status.hasRetryableCleanup,
+              status.tunnelInterfaceName != nil || status.hasRetryableCleanup,
               let outboundInterface = status.outboundInterface else {
             throw PrivilegedHelperClientError.indeterminateStatus(
                 "Teleport could not identify its previous tunnel. Try connecting again after the helper finishes its current operation."
@@ -177,7 +177,7 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
                     removeSessionState()
                     return
                 }
-                guard status.phase == .running else {
+                guard status.phase == .running || status.hasRetryableCleanup else {
                     throw PrivilegedHelperClientError.indeterminateStatus(
                         "The privileged helper session state is indeterminate while stopping"
                     )
@@ -232,7 +232,7 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
             removeSessionState()
             return
         }
-        guard response.phase == .running else {
+        guard response.phase == .running || response.hasRetryableCleanup else {
             return
         }
         guard let observedSessionID = response.sessionID else {
@@ -248,7 +248,7 @@ final class PrivilegedXrayRuntimeManager: @unchecked Sendable {
             )
         }
         let protectedHosts = sessionState?.protectedHosts ?? readProtectedHosts() ?? fallbackProtectedHosts
-        let outboundInterface = sessionState?.outboundInterface
+        let outboundInterface = response.outboundInterface ?? sessionState?.outboundInterface
         try await helperClient.stop(
             paths: paths,
             protectedHosts: protectedHosts,

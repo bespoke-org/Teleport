@@ -119,12 +119,18 @@ actor HelperCommandDispatcher {
                     waitsForPrecedingExecution: false
                 ) { [executor] in
                     if let projectedPhase {
-                        return StatusResponse(
+                        var status = StatusResponse(
                             helperVersion: PrivilegedHelperConstants.version,
                             phase: projectedPhase,
                             summary: projectedFailureSummary,
                             details: projectedFailureDetails
                         )
+                        if projectedPhase == .failed, let retained = try? executor.status(request: request.payload),
+                           retained.phase == .failed {
+                            status.tunnelInterfaceName = retained.tunnelInterfaceName
+                            status.outboundInterface = retained.outboundInterface
+                        }
+                        return status
                     }
                     return try executor.status(request: request.payload)
                 }

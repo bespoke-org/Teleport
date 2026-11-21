@@ -2,7 +2,7 @@ import Foundation
 
 /// Process-local owner of ALL TUN session mutations. The dispatcher still owns
 /// wire admission/ledger/correlation; a supervisor cancellation is not revocation.
-/// `@unchecked Sendable`: effects/context use queue, snapshots/mailbox use lock.
+/// `@unchecked Sendable`: effects/context use queue, snapshots use lock.
 final class HelperTUNSessionExecutor: @unchecked Sendable {
     struct RunToken: Equatable, Sendable {
         let sessionID: UUID
@@ -30,13 +30,10 @@ final class HelperTUNSessionExecutor: @unchecked Sendable {
         let cleanup: Cleanup
         var pid: Int32?
     }
-    private struct Exit: Sendable { let token: RunToken; let pid: Int32 }
     private let queue = DispatchQueue(label: "dev.x.teleport.helper.tun-session")
     private let lock = NSLock()
     // Nil only before the first operation: allow the existing restart fallback.
     private var published: Snapshot?
-    private var pendingExit: Exit?
-    private var drainScheduled = false
     private var run: Run? // queue only
 
     var snapshot: Snapshot? {
@@ -47,13 +44,23 @@ final class HelperTUNSessionExecutor: @unchecked Sendable {
 
     /// The operation installs a watch whose callback only enqueues an exit.
     /// The cleanup closure must capture effects/resources, NOT this executor.
-    func start(sessionID: UUID, cleanup: Cleanup,
+    func start(sessionID: UUID, cleanup: Cleanup, prepare: () throws -> Void = {},
                operation: (RunToken) throws -> Int32?) throws {
         try queue.sync {
             if run != nil { try teardown() }
             let token = RunToken(sessionID: sessionID, generation: UUID())
+            let priorSnapshot = snapshot
             run = Run(token: token, cleanup: cleanup)
             publish(.starting)
+            do {
+                try prepare()
+            } catch {
+                // The route script has not run. The client's follow-up stop must
+                // also leave the network alone.
+                run = nil
+                lock.withLock { published = priorSnapshot }
+                throw error
+            }
             do {
                 let pid = try operation(token)
                 run?.pid = pid
@@ -69,41 +76,23 @@ final class HelperTUNSessionExecutor: @unchecked Sendable {
 
     /// No current run after restart: adopt only the existing cleanup inputs, not
     /// a fabricated durable generation. Repeated successful stop is a no-op.
-    func stop(sessionID: UUID, fallback: Cleanup) throws {
+    func stop(sessionID: UUID, fallback: @autoclosure () throws -> Cleanup?) throws {
         try queue.sync {
-            if run == nil, snapshot == nil {
-                run = Run(token: RunToken(sessionID: sessionID, generation: UUID()), cleanup: fallback)
+            if run == nil, snapshot == nil, let cleanup = try fallback() {
+                run = Run(token: RunToken(sessionID: sessionID, generation: UUID()), cleanup: cleanup)
             }
             if run != nil { try teardown() }
         }
     }
 
-    /// Bounded ingress: one mailbox and at most one queued drain, even while a
-    /// synchronous effect blocks. Reject stale generations before AND after hop.
+    /// The supervisor delivers at most one callback per watch. Recheck ownership
+    /// after entering the queue because a replacement may have completed meanwhile.
     func unexpectedExit(token: RunToken, pid: Int32) {
-        lock.lock()
-        guard let published, published.token == token,
-              published.phase == .starting || published.phase == .running else {
-            lock.unlock()
-            return
+        queue.async { [weak self] in
+            guard let self, let run, run.token == token, run.pid == pid,
+                  snapshot?.phase == .running else { return }
+            try? teardown()
         }
-        pendingExit = Exit(token: token, pid: pid)
-        let schedule = !drainScheduled
-        drainScheduled = true
-        lock.unlock()
-        if schedule { queue.async { [weak self] in self?.drainExit() } }
-    }
-
-    private func drainExit() {
-        lock.lock()
-        let exit = pendingExit
-        pendingExit = nil
-        drainScheduled = false
-        lock.unlock()
-        guard let exit, let run, run.token == exit.token,
-              run.pid == exit.pid, snapshot?.phase == .running else { return }
-        // Failure is retained and reported by status; never silently claim idle.
-        try? teardown()
     }
 
     private func teardown() throws {
