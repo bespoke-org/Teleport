@@ -143,6 +143,7 @@ nonisolated struct StatusResponse: Codable, Sendable, Equatable {
     var tunnelInterfaceName: String? = nil
     var outboundInterface: String? = nil
     var isLeakGuardEngaged: Bool = false
+    var leakGuardCleanupPending: Bool? = nil
 }
 
 nonisolated struct StartSessionResponse: Codable, Sendable, Equatable {

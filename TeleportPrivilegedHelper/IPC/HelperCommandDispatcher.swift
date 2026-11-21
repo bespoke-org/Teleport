@@ -126,12 +126,14 @@ actor HelperCommandDispatcher {
                     waitsForPrecedingExecution: false
                 ) { [executor] in
                     if let projectedPhase {
+                        let protection = executor.protectionStatus
                         return StatusResponse(
                             helperVersion: PrivilegedHelperConstants.version,
                             phase: projectedPhase,
                             summary: projectedFailureSummary,
                             details: projectedFailureDetails,
-                            isLeakGuardEngaged: executor.isLeakGuardEngaged
+                            isLeakGuardEngaged: protection.held,
+                            leakGuardCleanupPending: protection.cleanupPending
                         )
                     }
                     return try executor.status(request: request.payload)

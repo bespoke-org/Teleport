@@ -10,7 +10,7 @@ private struct PresentableFailingExecutor: HelperCommandExecuting, Sendable {
     let summary: String
     var details: String? = nil
 
-    let isLeakGuardEngaged = false
+    let protectionStatus = (held: false, cleanupPending: false)
     func status(request: StatusRequest) throws -> StatusResponse { throw PresentableFailure(clientSummary: summary, clientDetails: details) }
     func start(request: StartSessionRequest, sessionID: UUID) throws -> StartSessionResponse { throw PresentableFailure(clientSummary: summary, clientDetails: details) }
     func stop(request: StopSessionRequest, sessionID: UUID) throws -> StopSessionResponse { throw PresentableFailure(clientSummary: summary, clientDetails: details) }
@@ -27,7 +27,7 @@ private struct SecretFailure: LocalizedError, Sendable {
 private struct SecretFailingExecutor: HelperCommandExecuting, Sendable {
     let secret: String
 
-    let isLeakGuardEngaged = false
+    let protectionStatus = (held: false, cleanupPending: false)
     func status(request: StatusRequest) throws -> StatusResponse {
         throw SecretFailure(secret: secret)
     }
@@ -59,7 +59,7 @@ private enum DispatchTestError: Error {
 
 private final class RecordingExecutor: HelperCommandExecuting, @unchecked Sendable {
     private let lock = NSLock()
-    let isLeakGuardEngaged = true
+    let protectionStatus = (held: true, cleanupPending: false)
     private var recordedCommands: [TUNHelperCommand] = []
     private var statusPhase: TUNHelperSessionPhase = .idle
     private var startCount = 0

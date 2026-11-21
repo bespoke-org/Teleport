@@ -40,7 +40,7 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
         return try EndpointResolver.resolve(request)
     }
 
-    var isLeakGuardEngaged: Bool { leakGuard.isEngaged }
+    var protectionStatus: (held: Bool, cleanupPending: Bool) { leakGuard.protectionStatus }
 
     func status(request: StatusRequest) throws -> StatusResponse {
         // The exit watch is the authority on a process this helper started: its
@@ -52,6 +52,7 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
         // Keep reporting persisted ownership when the process has already exited:
         // an interrupted helper may have left its DNS and physical routes behind.
         let interfaces = XrayTunRuntimeInterfaces.load(helperStateDirectoryPath: helperStateDirectoryPath)
+        let protection = protectionStatus
         return StatusResponse(
             helperVersion: helperVersion,
             phase: isRunning ? .running : .idle,
@@ -59,7 +60,8 @@ struct XrayTunController: HelperCommandExecuting, Sendable {
             details: nil,
             tunnelInterfaceName: interfaces?.tunnel,
             outboundInterface: interfaces?.outbound,
-            isLeakGuardEngaged: isLeakGuardEngaged
+            isLeakGuardEngaged: protection.held,
+            leakGuardCleanupPending: protection.cleanupPending
         )
     }
 

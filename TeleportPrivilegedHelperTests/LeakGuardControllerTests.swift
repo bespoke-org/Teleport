@@ -56,6 +56,12 @@ final class LeakGuardControllerTests: XCTestCase {
         XCTAssertThrowsError(try restarted.release())
         XCTAssertFalse(FileManager.default.fileExists(atPath: rulesPath.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appendingPathComponent("leak-guard.token").path))
+        let relaunched = LeakGuardController(helperStateDirectoryPath: directory.path, groupID: { 555 }, execute: commands.run)
+        XCTAssertTrue(relaunched.protectionStatus.cleanupPending)
+        XCTAssertFalse(relaunched.protectionStatus.held)
+        let acquisitions = commands.calls.filter { $0 == ["-E"] }.count
+        try restarted.engage(stage: .standby, protectedHosts: [], leaseSeconds: 180)
+        XCTAssertEqual(commands.calls.filter { $0 == ["-E"] }.count, acquisitions)
         commands.rejectsToken = false
         try restarted.release()
         XCTAssertFalse(restarted.isEngaged)
@@ -142,6 +148,9 @@ final class LeakGuardControllerTests: XCTestCase {
 
     func testEndpointDNSRejectsUnexpectedAnswers() throws {
         let response = Data(#"{"Status":0,"Answer":[{"type":5,"data":"alias.example"},{"type":1,"data":"203.0.113.7"},{"type":1,"data":"hostname.example"},{"type":28,"data":"2001:db8::1"}]}"#.utf8)
+        XCTAssertThrowsError(try EndpointResolver.resolveFamilies { _ in nil })
+        XCTAssertEqual(try EndpointResolver.resolveFamilies { _ in Data(#"{"Status":3}"#.utf8) }.addresses, [])
+        XCTAssertEqual(try EndpointResolver.resolveFamilies { $0 == "AAAA" ? response : nil }.addresses, ["2001:db8::1"])
         XCTAssertEqual(try EndpointResolver.parse(response, recordType: 1), ["203.0.113.7"])
         XCTAssertEqual(try EndpointResolver.parse(response, recordType: 28), ["2001:db8::1"])
         XCTAssertEqual(try EndpointResolver.parse(Data(#"{"Status":3}"#.utf8), recordType: 1), [])

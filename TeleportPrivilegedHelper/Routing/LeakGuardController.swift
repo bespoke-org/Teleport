@@ -32,9 +32,13 @@ final class LeakGuardController: @unchecked Sendable {
         self.execute = execute
     }
 
-    var isEngaged: Bool {
+    var isEngaged: Bool { protectionStatus.held }
+
+    var protectionStatus: (held: Bool, cleanupPending: Bool) {
         lock.lock(); defer { lock.unlock() }
-        return engaged && (try? livePolicyMatches()) == true
+        let held = engaged && (try? livePolicyMatches()) == true
+        let cleanupPending = !held && (FileManager.default.fileExists(atPath: tokenPath) || FileManager.default.fileExists(atPath: rulesPath))
+        return (held, cleanupPending)
     }
 
     /// Retry a failed startup restore before allowing network work. Status and
@@ -96,17 +100,7 @@ final class LeakGuardController: @unchecked Sendable {
         guard !intact || rules != lastRules else { return }
         try writeRootOwned(rules, to: rulesPath)
         if !intact {
-            let previousToken = try? String(contentsOfFile: tokenPath, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
-            let output = try execute("/sbin/pfctl", ["-E"])
-            guard let line = output.split(separator: "\n").first(where: { $0.contains("Token") }),
-                  let token = line.split(separator: ":").last?.trimmingCharacters(in: .whitespaces),
-                  !token.isEmpty, token.allSatisfy(\.isNumber) else {
-                throw HelperError("Teleport could not enable its packet filter.")
-            }
-            try writeRootOwned(token + "\n", to: tokenPath)
-            if let previousToken, !previousToken.isEmpty, previousToken.allSatisfy(\.isNumber) {
-                _ = try? execute("/sbin/pfctl", ["-X", previousToken])
-            }
+            try ensureFilterReference()
         }
         _ = try execute("/sbin/pfctl", ["-a", LeakGuardRuleset.anchorName, "-f", rulesPath])
         if !intact {
@@ -121,6 +115,38 @@ final class LeakGuardController: @unchecked Sendable {
         installedAnchor = loaded
         engaged = true
         lastRules = rules
+    }
+
+    private func savedToken() throws -> String? {
+        let contents: String
+        do { contents = try String(contentsOfFile: tokenPath, encoding: .utf8) }
+        catch let error as NSError where error.domain == NSCocoaErrorDomain && error.code == NSFileReadNoSuchFileError { return nil }
+        let token = contents.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty, token.allSatisfy({ $0.isASCII && $0.isNumber }), UInt64(token) != nil else {
+            throw HelperError("Invalid saved PF reference.")
+        }
+        return token
+    }
+
+    private func ensureFilterReference() throws {
+        if let token = try savedToken() {
+            let references = try execute("/sbin/pfctl", ["-s", "References"])
+            if references.split(whereSeparator: \.isWhitespace).contains(Substring(token)) {
+                if try filterEnabled() { return }
+                _ = try execute("/sbin/pfctl", ["-X", token])
+            }
+        }
+        let output = try execute("/sbin/pfctl", ["-E"])
+        guard let line = output.split(separator: "\n").first(where: { $0.contains("Token") }),
+              let token = line.split(separator: ":").last?.trimmingCharacters(in: .whitespaces),
+              !token.isEmpty, token.allSatisfy(\.isNumber) else {
+            throw HelperError("Teleport could not enable its packet filter.")
+        }
+        do { try writeRootOwned(token + "\n", to: tokenPath) }
+        catch {
+            _ = try execute("/sbin/pfctl", ["-X", token])
+            throw error
+        }
     }
 
     private func validateRootRules() throws {
@@ -165,11 +191,7 @@ final class LeakGuardController: @unchecked Sendable {
         // Once the anchor is empty, a restart must not restore it. Retain any
         // outstanding PF reference in its own file until release succeeds.
         try removeIfPresent(rulesPath)
-        let contents: String
-        do { contents = try String(contentsOfFile: tokenPath, encoding: .utf8) }
-        catch let error as NSError where error.domain == NSCocoaErrorDomain && error.code == NSFileReadNoSuchFileError { return }
-        let token = contents.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard UInt64(token) != nil else { throw HelperError("Invalid saved PF reference.") }
+        guard let token = try savedToken() else { return }
         do { _ = try execute("/sbin/pfctl", ["-X", token]) }
         catch {
             let references = try execute("/sbin/pfctl", ["-s", "References"])

@@ -26,9 +26,13 @@ actor LeakGuardService {
     private var policy = LeakGuardPolicy()
     private var isEnabled: Bool
     private(set) var lastError: String?
+    private var generation = UUID()
+    private var cleanupPending = false
+    private var releaseError: String?
     private var renewalTask: Task<Void, Never>?
     /// Last confirmed helper state, independent of the user's setting or wanted stage.
     struct Observation: Equatable, Sendable {
+        var releasePending: Bool
         var held: Bool
         var error: String?
     }
@@ -53,6 +57,7 @@ actor LeakGuardService {
 
     /// Required before resolving endpoints or changing routes. Failure aborts start.
     func armBootstrap() async throws {
+        generation = UUID()
         stage = .standby
         policy = .init()
         guard isEnabled else { return }
@@ -61,6 +66,7 @@ actor LeakGuardService {
 
     func armStandby() async {
         do { try await armBootstrap() }
+        catch is CancellationError { return }
         catch {
             lastError = error.localizedDescription
             log.error(Self.subsystem, "could not arm protection: \(LogFormat.error(error))")
@@ -72,14 +78,27 @@ actor LeakGuardService {
     }
 
     func refreshStatus() async {
-        do { updateHolding(try await client.status().isLeakGuardEngaged) }
-        catch { updateHolding(false, error: error.localizedDescription) }
+        let expected = generation
+        let previous = observation
+        do {
+            let status = try await client.status()
+            guard expected == generation, observation == previous else { return }
+            if let pending = status.cleanupPending {
+                cleanupPending = pending || (releaseError != nil && status.isLeakGuardEngaged)
+                if !cleanupPending { releaseError = nil }
+            }
+            updateHolding(status.isLeakGuardEngaged)
+        } catch {
+            guard expected == generation, observation == previous else { return }
+            updateHolding(false, error: error.localizedDescription)
+        }
     }
 
     /// A session is about to own `tunnelInterface`. Throws so the connect that asked
     /// for it fails: a guard that silently did not engage is worse than none, because
     /// the user believes the window is closed.
     func armForSession(tunnelInterface: String, protectedHosts: [String], policy: LeakGuardPolicy = .init()) async throws {
+        generation = UUID()
         self.policy = policy
         self.protectedHosts = protectedHosts
         stage = .session(tunnelInterface: tunnelInterface)
@@ -87,7 +106,7 @@ actor LeakGuardService {
         try await engage()
     }
 
-    var isHoldingUplink: Bool { observation?.held == true || (isEnabled && stage != nil) }
+    var isHoldingUplink: Bool { cleanupPending || observation?.held == true || (isEnabled && stage != nil) }
 
     func holdingUpdates() -> AsyncStream<Observation> {
         AsyncStream { continuation in
@@ -105,7 +124,7 @@ actor LeakGuardService {
     }
 
     private func updateHolding(_ held: Bool, error: String? = nil) {
-        let next = Observation(held: held, error: error)
+        let next = Observation(releasePending: cleanupPending, held: held, error: releaseError ?? error)
         guard observation != next else { return }
         observation = next
         for continuation in holdingContinuations.values { continuation.yield(next) }
@@ -115,19 +134,31 @@ actor LeakGuardService {
     /// The guard is no longer wanted at all: no stage is left to come back to.
     func disarm() async {
         // A previous process may have left persistent protection behind.
+        let protectionWasRequested = isHoldingUplink
+        generation = UUID()
         stage = nil
-        await releaseHeldGuard()
+        await releaseHeldGuard(protectionWasRequested: protectionWasRequested)
     }
 
-    private func releaseHeldGuard() async {
+    private func releaseHeldGuard(protectionWasRequested: Bool) async {
         renewalTask?.cancel()
         renewalTask = nil
+        let expected = generation
         do {
             try await client.releaseLeakGuard()
+            guard expected == generation else { return }
+            releaseError = nil
+            cleanupPending = false
             updateHolding(false)
             lastError = nil
         } catch {
+            guard expected == generation else { return }
             lastError = error.localizedDescription
+            if protectionWasRequested {
+                releaseError = error.localizedDescription
+                cleanupPending = true
+                updateHolding(false, error: releaseError)
+            }
             // Keep failure visible: persistent protection is never timed out open.
             log.warn(Self.subsystem, "could not release the leak guard: \(LogFormat.error(error))")
         }
@@ -142,11 +173,20 @@ actor LeakGuardService {
         case let .session(tunnelInterface):
             tunnelInterfaceName = tunnelInterface
         }
-        try await client.engageLeakGuard(
-            tunnelInterfaceName: tunnelInterfaceName,
-            protectedHosts: protectedHosts,
-            leaseSeconds: Self.leaseSeconds, policy: policy
-        )
+        let expected = generation
+        do {
+            try await client.engageLeakGuard(
+                tunnelInterfaceName: tunnelInterfaceName,
+                protectedHosts: protectedHosts,
+                leaseSeconds: Self.leaseSeconds, policy: policy
+            )
+        } catch {
+            guard expected == generation else { throw CancellationError() }
+            throw error
+        }
+        guard expected == generation else { throw CancellationError() }
+        releaseError = nil
+        cleanupPending = false
         updateHolding(true)
         lastError = nil
         startRenewing()
@@ -165,10 +205,11 @@ actor LeakGuardService {
 
     func renew() async {
         guard isEnabled, stage != nil else { return }
+        let expected = generation
         do {
             try await engage()
         } catch {
-            guard !Task.isCancelled, stage != nil else { return }
+            guard expected == generation, !Task.isCancelled, stage != nil else { return }
             lastError = error.localizedDescription
             updateHolding(false, error: error.localizedDescription)
             log.warn(Self.subsystem, "could not renew the leak guard: \(LogFormat.error(error))")

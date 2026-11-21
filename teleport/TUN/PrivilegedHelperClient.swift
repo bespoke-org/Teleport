@@ -51,7 +51,8 @@ nonisolated struct PrivilegedHelperClient: Sendable {
                 details: payload.details,
                 tunnelInterfaceName: payload.tunnelInterfaceName,
                 outboundInterface: payload.outboundInterface,
-                isLeakGuardEngaged: payload.isLeakGuardEngaged
+                isLeakGuardEngaged: payload.isLeakGuardEngaged,
+                cleanupPending: payload.leakGuardCleanupPending
             )
         } catch {
             throw mapClientError(error)
@@ -396,6 +397,7 @@ nonisolated struct PrivilegedHelperStatus: Sendable, Equatable {
     var tunnelInterfaceName: String? = nil
     var outboundInterface: String? = nil
     var isLeakGuardEngaged: Bool = false
+    var cleanupPending: Bool? = nil
     var success: Bool { true }
 }
 

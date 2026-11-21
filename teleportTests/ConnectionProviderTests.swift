@@ -209,6 +209,46 @@ final class ConnectionProviderTests: XCTestCase {
     }
 
     @MainActor
+    func testFreshModelOffersReleaseForSavedCleanupWithoutClaimingProtection() async throws {
+        let root = try makeIsolatedRoot("guard-pending-on-launch")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let transport = GuardTransport()
+        transport.setCleanupPending(true)
+        let service = LeakGuardService(client: PrivilegedHelperClient(transport: transport))
+        let (model, store) = try makeLaunchFixture(root: root, mode: .tun, enabled: false,
+                                                  backend: RecordingConnectionBackend(), leakGuard: service)
+        defer { store.deleteStoredDataForTesting() }
+        await waitUntil("persisted cleanup discovered") { await MainActor.run { model.canAllowDirectTraffic } }
+        XCTAssertFalse(model.isLeakGuardHoldingUplink)
+        model.allowDirectTraffic()
+        await waitUntil("cleanup completed") { await MainActor.run { !model.canAllowDirectTraffic && !model.isOperationPending } }
+        XCTAssertTrue(transport.released.isSet)
+    }
+
+    func testFailedReleaseWithoutAPriorGuardDoesNotSuppressProbes() async {
+        let transport = GuardTransport()
+        transport.setReleaseFails(true)
+        let service = LeakGuardService(client: PrivilegedHelperClient(transport: transport))
+        await service.disarm()
+        let held = await service.isHoldingUplink
+        XCTAssertFalse(held)
+    }
+
+    func testLateRenewalReplyAfterReleaseDoesNotRepublishHeld() async throws {
+        let transport = GuardTransport()
+        let service = LeakGuardService(client: PrivilegedHelperClient(transport: transport))
+        try await service.armBootstrap()
+        await transport.engageReplyGate.enableBlocking()
+        let renewal = Task { await service.renew() }
+        await transport.engageReplyGate.waitUntilEntered()
+        await service.disarm()
+        await transport.engageReplyGate.open()
+        await renewal.value
+        let held = await service.isHoldingUplink
+        XCTAssertFalse(held)
+    }
+
+    @MainActor
     func testUnconfirmedGuardReleaseRemainsActionable() async throws {
         let root = try makeIsolatedRoot("guard-release-failure")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -223,13 +263,18 @@ final class ConnectionProviderTests: XCTestCase {
         transport.setReleaseFails(true)
         model.allowDirectTraffic()
         await waitUntil("failed release returns") { await MainActor.run { !model.isOperationPending } }
+        await waitUntil("partial release reaches Settings") {
+            await MainActor.run { !model.isLeakGuardHoldingUplink && model.protectionStatus.hasPrefix("Firewall protection is unconfirmed.") }
+        }
         XCTAssertTrue(model.canAllowDirectTraffic, "An unconfirmed release must keep its recovery action")
         XCTAssertTrue(model.canConnect, "A release failure must not prevent retrying the portal")
+        XCTAssertNotNil(model.lastError)
         transport.setReleaseFails(false)
         model.allowDirectTraffic()
         await waitUntil("release retry succeeds") {
             await MainActor.run { !model.isLeakGuardHoldingUplink && !model.isOperationPending }
         }
+        XCTAssertNil(model.lastError)
         XCTAssertEqual(transport.commands, [.engageLeakGuard, .releaseLeakGuard, .releaseLeakGuard])
     }
 
@@ -1538,8 +1583,11 @@ final class ConnectionProviderTests: XCTestCase {
         private let lock = NSLock()
         private var recordedCommands: [TUNHelperCommand] = []
         private var engageFails = false
+        private var cleanupPending = false
+        func setCleanupPending(_ pending: Bool) { lock.withLock { cleanupPending = pending } }
         private var releaseFails = false
         private var isEngaged = false
+        let engageReplyGate = Gate()
         let releaseGate = Gate()
         let released = Flag()
 
@@ -1559,17 +1607,19 @@ final class ConnectionProviderTests: XCTestCase {
                 return try TUNHelperCodec.encodeResponse(TUNHelperResponseEnvelope(
                     revision: TUNHelperProtocol.revision, requestID: request.requestID, sessionID: nil,
                     payload: StatusResponse(helperVersion: PrivilegedHelperConstants.version, phase: .idle,
-                        summary: nil, details: nil, isLeakGuardEngaged: lock.withLock { isEngaged }), failure: nil))
+                        summary: nil, details: nil, isLeakGuardEngaged: lock.withLock { isEngaged }, leakGuardCleanupPending: lock.withLock { cleanupPending }), failure: nil))
             case .engageLeakGuard:
                 if lock.withLock({ engageFails }) { throw TestError.startFailed }
                 let request: TUNHelperRequestEnvelope<EngageLeakGuardRequest> = try TUNHelperCodec.decodeRequest(requestData)
                 requestID = request.requestID
                 lock.withLock { isEngaged = true }
+                await engageReplyGate.enter()
             case .releaseLeakGuard:
                 let request: TUNHelperRequestEnvelope<ReleaseLeakGuardRequest> = try TUNHelperCodec.decodeRequest(requestData)
                 requestID = request.requestID
                 await releaseGate.enter()
-                if lock.withLock({ releaseFails }) { throw TestError.stopFailed }
+                if lock.withLock({ releaseFails }) { setCleanupPending(true); throw TestError.stopFailed }
+                setCleanupPending(false)
                 lock.withLock { isEngaged = false }
                 released.set()
             default:

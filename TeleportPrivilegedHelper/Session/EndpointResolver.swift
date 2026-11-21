@@ -4,8 +4,7 @@ import Foundation
 /// the helper's private group; neither system DNS nor a user's proxy/curlrc is used.
 struct EndpointResolver {
     static func resolve(_ request: ResolveEndpointRequest) throws -> ResolveEndpointResponse {
-        var addresses: [String] = []
-        for type in ["A", "AAAA"] {
+        try resolveFamilies { type in
             var components = URLComponents(string: "https://\(LeakGuardRuleset.bootstrapAddress)/dns-query")!
             components.queryItems = [.init(name: "name", value: request.host), .init(name: "type", value: type)]
             let process = Process()
@@ -20,15 +19,33 @@ struct EndpointResolver {
             try process.run()
             let bytes = output.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
-            guard process.terminationStatus == 0, bytes.count <= 65536 else { continue }
-            addresses += try parse(bytes, recordType: type == "A" ? 1 : 28)
+            guard process.terminationStatus == 0, bytes.count <= 65536 else { return nil }
+            return bytes
+        }
+    }
+
+    static func resolveFamilies(query: (String) throws -> Data?) throws -> ResolveEndpointResponse {
+        var addresses: [String] = []
+        var failed = false
+        for type in ["A", "AAAA"] {
+            guard let bytes = try query(type),
+                  let records = try? parse(bytes, recordType: type == "A" ? 1 : 28) else {
+                failed = true
+                continue
+            }
+            addresses += records
+        }
+        if addresses.isEmpty && failed {
+            throw HelperError("The protected DNS bootstrap request failed. Check the physical network and retry.")
         }
         return ResolveEndpointResponse(addresses: Array(Set(addresses)).sorted().prefix(16).map { $0 })
     }
 
     static func parse(_ data: Data, recordType: Int) throws -> [String] {
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              object["Status"] as? Int == 0 else { return [] }
+              let status = object["Status"] as? Int else { throw HelperError("Invalid DNS bootstrap response.") }
+        if status == 3 { return [] }
+        guard status == 0 else { throw HelperError("The bootstrap resolver could not complete the query.") }
         return ((object["Answer"] as? [[String: Any]]) ?? []).compactMap {
             guard $0["type"] as? Int == recordType, let address = $0["data"] as? String,
                   isNumericIPAddress(address), address.contains(":") == (recordType == 28) else { return nil }

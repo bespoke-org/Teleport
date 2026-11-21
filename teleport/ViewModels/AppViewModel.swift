@@ -52,6 +52,7 @@ final class AppViewModel: ObservableObject {
     @Published private(set) var lastErrorDetails: String?
     /// Connection diagnostics survive unrelated import, edit, and persistence actions.
     @Published private(set) var connectionError: ConnectionFailure?
+    @Published private var leakGuardReleasePending = false
     @Published private(set) var isLeakGuardHoldingUplink = false
     @Published private(set) var proxyEndpoint: ProxyEndpoint
     @Published private(set) var connectionMode: ConnectionMode
@@ -318,6 +319,7 @@ final class AppViewModel: ObservableObject {
         prepareSplitTunnelGeodataMatcher()
         observeConnectionState()
         observeLeakGuardState()
+        if connectionMode == .systemProxy && PrivilegedHelperUninstaller.isInstalled() { refreshProtectionStatus() }
         observeNetworkPath()
         observeSystemWake()
         syncLeakGuardSetting()
@@ -401,7 +403,7 @@ final class AppViewModel: ObservableObject {
     }
 
     var canAllowDirectTraffic: Bool {
-        !isTerminating && !isOperationPending && connectionState == .idle && isLeakGuardHoldingUplink
+        !isTerminating && !isOperationPending && connectionState == .idle && (isLeakGuardHoldingUplink || leakGuardReleasePending)
     }
 
     var canChangeSelection: Bool {
@@ -1657,8 +1659,12 @@ final class AppViewModel: ObservableObject {
         let operationID = UUID()
         let leakGuard = leakGuard
         Task.detached { [weak self] in
+            let previousFailure = await leakGuard.lastError
             await leakGuard.disarm()
+            let failure = await leakGuard.lastError
             await Self.onConnectionRunLoop { [weak self] in
+                if let failure { self?.setStoredError(failure) }
+                else if let previousFailure, self?.lastError == previousFailure { self?.setStoredError(nil) }
                 self?.isAllowingDirectTraffic = false
                 self?.finishConnectionOperation(operationID)
             }
@@ -1995,9 +2001,12 @@ final class AppViewModel: ObservableObject {
             for await observation in await leakGuard.holdingUpdates() {
                 guard !Task.isCancelled else { break }
                 await Self.onConnectionRunLoop { [weak self] in
+                    self?.leakGuardReleasePending = observation.releasePending
                     self?.isLeakGuardHoldingUplink = observation.held
                     if let error = observation.error {
                         self?.protectionStatus = "Firewall protection is unconfirmed. " + error
+                    } else if observation.releasePending {
+                        self?.protectionStatus = "Firewall cleanup is pending. Choose Disconnect and restore direct access to retry."
                     } else {
                         self?.protectionStatus = observation.held
                             ? "Firewall protection is held. Disconnect explicitly to restore direct access."
