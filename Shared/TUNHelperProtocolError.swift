@@ -34,6 +34,7 @@ nonisolated struct TUNHelperProtocolFailure: Codable, Sendable, Equatable, Error
     let summary: String
     let details: String?
     let retryDisposition: TUNHelperRetryDisposition
+    var startRejectedBeforeMutation: Bool? = nil
 }
 
 private nonisolated enum TUNHelperSessionRequirement {

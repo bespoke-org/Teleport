@@ -463,12 +463,46 @@ final class PrivilegedHelperClientTests: XCTestCase {
         }
     }
 
+    func testRetainedCleanupCanBeRetriedThroughEachRecoveryEntryPoint() async throws {
+        let paths = try temporaryRuntimePaths(named: "retry-cleanup")
+        defer { removeTemporaryRuntimePaths(paths) }
+        let id = UUID()
+        let transport = ScriptedTransport { command, data, _, index in
+            switch command {
+            case .status:
+                let request: TUNHelperRequestEnvelope<StatusRequest> = try TUNHelperCodec.decodeRequest(data)
+                return try response(requestID: request.requestID, sessionID: id,
+                    payload: StatusResponse(helperVersion: PrivilegedHelperClient.expectedVersion, phase: .failed,
+                        summary: nil, details: nil, tunnelInterfaceName: "utun10", outboundInterface: "en0"))
+            case .stopSession:
+                let request: TUNHelperRequestEnvelope<StopSessionRequest> = try TUNHelperCodec.decodeRequest(data)
+                XCTAssertEqual(request.sessionID, id)
+                if index == 1 { throw PrivilegedHelperClientError.commandFailed("route still in use", nil) }
+                return try response(requestID: request.requestID, sessionID: id,
+                    payload: StopSessionResponse(phase: .idle, summary: nil, details: nil))
+            default: throw UnexpectedCommand(command: command)
+            }
+        }
+        let manager = PrivilegedXrayRuntimeManager(helperClient: PrivilegedHelperClient(transport: transport),
+                                                   paths: paths, runtimeURLProvider: { nil })
+        do {
+            try await manager.recoverPreviousSession(existingVPNInterfaces: ["utun10"])
+            XCTFail("Expected the first cleanup to fail")
+        } catch PrivilegedHelperClientError.commandFailed { }
+        let recovered = try await manager.recoverPreviousSession(existingVPNInterfaces: ["utun10"])
+        XCTAssertTrue(recovered)
+        try await manager.stop()
+        try await manager.cleanupIfHelperAvailable()
+        XCTAssertEqual(transport.calls.map(\.0), Array(repeating: [TUNHelperCommand.status, .stopSession], count: 4).flatMap { $0 })
+    }
+
     func testConnectRecoveryPreservesOtherVPNsAndUncertainSessions() async throws {
         let scenarios: [(TUNHelperSessionPhase, String?, [String], String)] = [
             (.running, "utun10", ["utun5"], PrivilegedHelperClient.expectedVersion),
             (.running, "utun10", ["utun10", "utun5"], PrivilegedHelperClient.expectedVersion),
             (.running, nil, ["utun10"], PrivilegedHelperClient.expectedVersion),
             (.running, nil, [], PrivilegedHelperClient.expectedVersion),
+            (.failed, "utun10", ["utun5"], PrivilegedHelperClient.expectedVersion),
             (.starting, "utun10", [], PrivilegedHelperClient.expectedVersion),
             (.stopping, "utun10", [], PrivilegedHelperClient.expectedVersion),
             (.unknown, "utun10", [], PrivilegedHelperClient.expectedVersion),
@@ -921,6 +955,11 @@ final class PrivilegedHelperClientTests: XCTestCase {
     }
 
     func testFailedRuntimeStartRollsBackMatchingSession() async throws {
+        try await checkStartRollback(rejectedBeforeMutation: false)
+        try await checkStartRollback(rejectedBeforeMutation: true)
+    }
+
+    private func checkStartRollback(rejectedBeforeMutation: Bool) async throws {
         let paths = try temporaryRuntimePaths(named: "failed-start-rollback")
         defer { removeTemporaryRuntimePaths(paths) }
         let probe = RecoveryProbe()
@@ -939,7 +978,7 @@ final class PrivilegedHelperClientTests: XCTestCase {
                         code: .commandFailed,
                         summary: "start failed",
                         details: "specific protocol failure details",
-                        retryDisposition: .never
+                        retryDisposition: .never, startRejectedBeforeMutation: rejectedBeforeMutation
                     )
                 ))
             case .stopSession:
@@ -976,12 +1015,15 @@ final class PrivilegedHelperClientTests: XCTestCase {
             XCTFail("Expected start failure")
         } catch let XrayTunRuntimeError.startFailed(_, details) {
             XCTAssert(details.contains("specific protocol failure details"))
-            XCTAssert(details.contains("specific control failure"))
-            XCTAssert(details.contains("specific xray failure"))
-            XCTAssert(details.contains("specific helper failure"))
+            if !rejectedBeforeMutation {
+                XCTAssert(details.contains("specific control failure"))
+                XCTAssert(details.contains("specific xray failure"))
+                XCTAssert(details.contains("specific helper failure"))
+            }
         }
 
-        XCTAssert(transport.calls.map(\.0) == [.startSession, .stopSession, .readDiagnostics, .readDiagnostics, .readDiagnostics])
+        XCTAssertEqual(transport.calls.map(\.0), rejectedBeforeMutation ? [.startSession] :
+                       [.startSession, .stopSession, .readDiagnostics, .readDiagnostics, .readDiagnostics])
         XCTAssert(!FileManager.default.fileExists(atPath: paths.sessionStateFileURL.path))
     }
 

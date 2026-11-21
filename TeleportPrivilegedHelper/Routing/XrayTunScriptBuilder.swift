@@ -67,6 +67,7 @@ struct XrayTunScriptBuilder: Sendable {
         }
         trap cleanup_on_failure EXIT
 
+        try_delete_route() { route delete "$@" >/dev/null 2>&1; }
         \(deleteHostRouteFunction())
         \(protectedHostFunctions())
         \(dnsRouteFunctions())
@@ -319,37 +320,49 @@ struct XrayTunScriptBuilder: Sendable {
         let configFile = helperStateDirectoryPath + "/xray-tun-config.json"
         let controlLogFile = helperStateDirectoryPath + "/xray-tun-control.log"
 
-        var commands: [String] = []
+        var commands = ["set -e", "cleanup_failed=0"]
         commands.append("OUTBOUND_INTERFACE=\(q(outboundInterface ?? ""))")
         commands.append("PROTECTED_HOST_FILE=\(q(protectedHostFile))")
         commands.append("PROTECTED_GATEWAY_FILE=\(q(protectedGatewayFile))")
         commands.append("PROTECTED_DNS_FILE=\(q(protectedDNSFile))")
         commands.append("CONTROL_LOG_FILE=\(q(controlLogFile))")
-        commands.append(deleteHostRouteFunction())
+        // Darwin route can print a routing-socket failure yet exit successfully.
+        // Capture stderr separately from its ordinary "delete net ..." output.
+        commands.append("""
+        try_delete_route() {
+            rc=0
+            message=$(LC_ALL=C route delete "$@" 2>&1 >/dev/null) || rc=$?
+            case "$message" in
+                *": not in table"|*"route: bad interface name") return 1 ;;
+                "") [ "$rc" -eq 0 ] && return 0 ;;
+            esac
+            printf 'Could not delete route %s: %s\\n' "$*" "$message" >&2
+            cleanup_failed=1
+            return 1
+        }
+        """)
+        commands.append(deleteHostRouteFunction(requireRemoval: true))
         commands.append(protectedHostFunctions())
-        commands.append(dnsRouteFunctions())
+        commands.append(dnsRouteFunctions(verifyRemoval: true))
         commands.append(directRouteFunctions())
-        commands.append("for helper_file in \(q(pidFile)) \(q(protectedHostFile)) \(q(protectedGatewayFile)) \(q(protectedDNSFile)) \(q(controlLogFile)); do [ ! -L \"$helper_file\" ] || rm -f \"$helper_file\"; done")
-        commands.append("touch \(q(controlLogFile)); chmod 600 \(q(controlLogFile))")
-        commands.append("printf '%s helper stop requested\\n' \"$(date '+%Y-%m-%d %H:%M:%S')\" >> \(q(controlLogFile))")
+        commands.append("for helper_file in \(q(pidFile)) \(q(protectedHostFile)) \(q(protectedGatewayFile)) \(q(protectedDNSFile)); do [ ! -L \"$helper_file\" ] || rm -f \"$helper_file\" || cleanup_failed=1; done")
+        commands.append("if [ ! -L \(q(controlLogFile)) ] && { [ ! -e \(q(controlLogFile)) ] || [ -f \(q(controlLogFile)) ]; }; then touch \(q(controlLogFile)) && chmod 600 \(q(controlLogFile)) && printf '%s helper stop requested\\n' \"$(date '+%Y-%m-%d %H:%M:%S')\" >> \(q(controlLogFile)) || :; fi")
         // The client's list and the helper's own file are both used: a stop that
         // follows a helper restart has only the file, and one that follows a
         // partial start may have hosts the file never received.
         // A host already in the file is deleted by `cleanup_host_routes` below;
         // deleting it here too doubled the route commands of every stop.
         for protectedHost in (protectedHosts ?? []) where !protectedHost.isEmpty {
-            commands.append("grep -qxF \(q(protectedHost)) \(q(protectedHostFile)) 2>/dev/null || delete_host_route \(q(protectedHost))")
+            commands.append("[ ! -L \(q(protectedHostFile)) ] && grep -qxF \(q(protectedHost)) \(q(protectedHostFile)) 2>/dev/null || delete_host_route \(q(protectedHost))")
         }
-        commands.append("cleanup_host_routes")
-        commands.append("cleanup_dns_routes")
+        commands.append("cleanup_host_routes || cleanup_failed=1")
+        commands.append("cleanup_dns_routes || cleanup_failed=1")
         commands.append("cleanup_direct_routes")
-        // TODO: These destination-only deletes are not tied to a
-        // Teleport session, and `|| true` hides cleanup failures from the client.
-        // Delete only journaled routes and report any route that could not be removed.
-        commands.append("route delete -net 0.0.0.0/1 >/dev/null 2>&1 || true")
-        commands.append("route delete -net 128.0.0.0/1 >/dev/null 2>&1 || true")
-        commands.append("route delete -inet6 -net ::/1 >/dev/null 2>&1 || true")
-        commands.append("route delete -inet6 -net 8000::/1 >/dev/null 2>&1 || true")
+        // Legacy state records destinations. An already absent route is expected on retry.
+        for route in ["-net 0.0.0.0/1", "-net 128.0.0.0/1", "-inet6 -net ::/1", "-inet6 -net 8000::/1"] {
+            commands.append("try_delete_route \(route) || :")
+        }
+        commands.append("[ \"$cleanup_failed\" -eq 0 ] || exit 1")
         commands.append("rm -f \(q(pidFile))")
         commands.append("rm -f \(q(protectedHostFile))")
         commands.append("rm -f \(q(protectedGatewayFile))")
@@ -358,8 +371,17 @@ struct XrayTunScriptBuilder: Sendable {
         return commands.joined(separator: "; ")
     }
 
-    private func deleteHostRouteFunction() -> String {
-        """
+    private func deleteHostRouteFunction(requireRemoval: Bool = false) -> String {
+        let atLimit = requireRemoval ? "echo 'Host route cleanup needs a retry' >&2; cleanup_failed=1; break" : "break"
+        return """
+        delete_host_entries() {
+            i=0
+            while try_delete_route "$@"; do
+                i=$((i + 1))
+                if [ "$i" -ge 10 ]; then \(atLimit); fi
+            done
+            return 0
+        }
         delete_host_route() {
             host="$1"
             route_family=""
@@ -367,32 +389,37 @@ struct XrayTunScriptBuilder: Sendable {
             current_interface=$(route -n get $route_family "$host" 2>/dev/null | awk '/interface:/{print $2; exit}' || true)
             for scoped_interface in "${OUTBOUND_INTERFACE:-}" "$current_interface" en0 en1 en2 bridge100; do
                 [ -n "$scoped_interface" ] || continue
-                i=0
-                while route delete $route_family -host -ifscope "$scoped_interface" "$host" >/dev/null 2>&1; do
-                    i=$((i + 1))
-                    [ "$i" -ge 10 ] && break
-                done
+                delete_host_entries $route_family -host -ifscope "$scoped_interface" "$host"
             done
-            i=0
-            while route delete $route_family -host "$host" >/dev/null 2>&1; do
-                i=$((i + 1))
-                [ "$i" -ge 10 ] && break
-            done
+            delete_host_entries $route_family -host "$host"
         }
         """
     }
 
-    private func dnsRouteFunctions() -> String {
+    private func dnsRouteFunctions(verifyRemoval: Bool = false) -> String {
+        let removeResolver = verifyRemoval ? """
+            printf 'remove %s\\n' "$TUNNEL_RESOLVER_KEY" | /usr/sbin/scutil >/dev/null || :
+            if resolver=$(printf 'show %s\\n' "$TUNNEL_RESOLVER_KEY" | /usr/sbin/scutil); then
+                case "$resolver" in
+                *"No such key") ;;
+                *) cleanup_failed=1; echo "Could not remove the Teleport DNS resolver" >&2 ;;
+                esac
+            else
+                cleanup_failed=1
+            fi
+        """ : """
+            printf 'remove %s\\n' "$TUNNEL_RESOLVER_KEY" | /usr/sbin/scutil >/dev/null 2>&1 || true
         """
+        return """
         cleanup_dns_routes() {
-            if [ -f "$PROTECTED_DNS_FILE" ]; then
+            if [ ! -L "$PROTECTED_DNS_FILE" ] && [ -f "$PROTECTED_DNS_FILE" ]; then
                 while IFS= read -r dns_server; do
                     [ -n "$dns_server" ] || continue
                     delete_host_route "$dns_server"
-                done < "$PROTECTED_DNS_FILE"
+                done < "$PROTECTED_DNS_FILE"\(verifyRemoval ? " || cleanup_failed=1" : "")
             fi
-            rm -f "$PROTECTED_DNS_FILE"
-            printf 'remove %s\\n' "$TUNNEL_RESOLVER_KEY" | /usr/sbin/scutil >/dev/null 2>&1 || true
+            \(removeResolver)
+            \(verifyRemoval ? ":" : "rm -f \"$PROTECTED_DNS_FILE\"")
         }
 
         # DNS follows the TUN default routes. Keep this no-op for shared start/stop
@@ -417,10 +444,10 @@ struct XrayTunScriptBuilder: Sendable {
         """
         cleanup_direct_routes() {
             [ -n "${OUTBOUND_INTERFACE:-}" ] || return 0
-            route delete -net 0.0.0.0/1 -ifscope "$OUTBOUND_INTERFACE" >/dev/null 2>&1 || true
-            route delete -net 128.0.0.0/1 -ifscope "$OUTBOUND_INTERFACE" >/dev/null 2>&1 || true
-            route delete -inet6 -net ::/1 -ifscope "$OUTBOUND_INTERFACE" >/dev/null 2>&1 || true
-            route delete -inet6 -net 8000::/1 -ifscope "$OUTBOUND_INTERFACE" >/dev/null 2>&1 || true
+            try_delete_route -net 0.0.0.0/1 -ifscope "$OUTBOUND_INTERFACE" || :
+            try_delete_route -net 128.0.0.0/1 -ifscope "$OUTBOUND_INTERFACE" || :
+            try_delete_route -inet6 -net ::/1 -ifscope "$OUTBOUND_INTERFACE" || :
+            try_delete_route -inet6 -net 8000::/1 -ifscope "$OUTBOUND_INTERFACE" || :
         }
 
         protect_direct_routes() {
@@ -456,7 +483,7 @@ struct XrayTunScriptBuilder: Sendable {
         }
 
         cleanup_host_routes() {
-            [ -f "$PROTECTED_HOST_FILE" ] || return 0
+            [ ! -L "$PROTECTED_HOST_FILE" ] && [ -f "$PROTECTED_HOST_FILE" ] || return 0
             while IFS= read -r protected_host; do
                 [ -n "$protected_host" ] || continue
                 delete_host_route "$protected_host"

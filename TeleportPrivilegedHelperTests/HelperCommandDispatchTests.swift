@@ -10,7 +10,11 @@ private struct PresentableFailingExecutor: HelperCommandExecuting, Sendable {
     let summary: String
     var details: String? = nil
 
-    func status(request: StatusRequest) throws -> StatusResponse { throw PresentableFailure(clientSummary: summary, clientDetails: details) }
+    var retainedCleanup: StatusResponse?
+    func status(request: StatusRequest) throws -> StatusResponse {
+        if let retainedCleanup { return retainedCleanup }
+        throw PresentableFailure(clientSummary: summary, clientDetails: details)
+    }
     func start(request: StartSessionRequest, sessionID: UUID) throws -> StartSessionResponse { throw PresentableFailure(clientSummary: summary, clientDetails: details) }
     func stop(request: StopSessionRequest, sessionID: UUID) throws -> StopSessionResponse { throw PresentableFailure(clientSummary: summary, clientDetails: details) }
     func readDiagnostics(request: ReadDiagnosticsRequest) throws -> DiagnosticsResponse { throw PresentableFailure(clientSummary: summary, clientDetails: details) }
@@ -62,13 +66,15 @@ private final class RecordingExecutor: HelperCommandExecuting, @unchecked Sendab
     private var startCount = 0
     private let blockStart: Bool
     private let blockStop: Bool
+    private let rejectBeforeMutation: Bool
     private let failedStartNumber: Int?
     let startEntered = DispatchSemaphore(value: 0)
     let releaseStart = DispatchSemaphore(value: 0)
     let stopEntered = DispatchSemaphore(value: 0)
     let releaseStop = DispatchSemaphore(value: 0)
 
-    init(blockStart: Bool = false, blockStop: Bool = false, failedStartNumber: Int? = nil) {
+    init(blockStart: Bool = false, blockStop: Bool = false, failedStartNumber: Int? = nil, rejectBeforeMutation: Bool = false) {
+        self.rejectBeforeMutation = rejectBeforeMutation
         self.blockStart = blockStart
         self.blockStop = blockStop
         self.failedStartNumber = failedStartNumber
@@ -98,6 +104,10 @@ private final class RecordingExecutor: HelperCommandExecuting, @unchecked Sendab
         if blockStart {
             startEntered.signal()
             XCTAssert(releaseStart.wait(timeout: .now() + 5) == .success)
+        }
+        if shouldFail && rejectBeforeMutation {
+            throw TUNHelperProtocolFailure(code: .commandFailed, summary: "Could not stage config",
+                details: nil, retryDisposition: .never, startRejectedBeforeMutation: true)
         }
         if shouldFail { throw DispatchTestError.failedStart }
         return StartSessionResponse(phase: .running, summary: nil, details: nil)
@@ -153,6 +163,22 @@ final class HelperCommandDispatchTests: XCTestCase {
         XCTAssertEqual(status.payload?.phase, .failed)
         XCTAssertEqual(status.payload?.summary, summary)
         XCTAssertEqual(status.payload?.details, details)
+    }
+
+    func testFailedStopStatusPreservesRetryIdentityAndInterfaces() async throws {
+        let id = UUID()
+        let retained = StatusResponse(helperVersion: helperVersion, phase: .failed, summary: nil, details: nil,
+                                      tunnelInterfaceName: "utun8", outboundInterface: "en0")
+        let dispatcher = HelperCommandDispatcher(executor: PresentableFailingExecutor(summary: "Could not remove routes",
+                                                                                      retainedCleanup: retained))
+        _ = await dispatcher.dispatch(command: .stopSession, requestData: try makeStopData(requestID: UUID(), sessionID: id))
+        let status: TUNHelperResponseEnvelope<StatusResponse> = try TUNHelperCodec.decodeResponse(
+            await dispatcher.dispatch(command: .status, requestData: makeStatusData(requestID: UUID())))
+        XCTAssertEqual(status.sessionID, id)
+        XCTAssertEqual(status.payload?.summary, "Could not remove routes")
+        XCTAssertEqual(status.payload?.phase, .failed)
+        XCTAssertEqual(status.payload?.tunnelInterfaceName, "utun8")
+        XCTAssertEqual(status.payload?.outboundInterface, "en0")
     }
 
     func testNativeSystemFailuresExplainTheFixWithoutExposingRawOutput() {
@@ -471,6 +497,19 @@ final class HelperCommandDispatchTests: XCTestCase {
         XCTAssert(status.payload?.phase == .running)
     }
 
+    func testRejectedReplacementPreservesPreviousRunningSession() async throws {
+        let dispatcher = HelperCommandDispatcher(executor: RecordingExecutor(failedStartNumber: 2, rejectBeforeMutation: true))
+        let active = UUID(), replacement = UUID()
+        for id in [active, replacement] {
+            _ = await dispatcher.dispatch(command: .startSession,
+                requestData: try makeStartData(requestID: UUID(), sessionID: id, protectedHosts: ["example.com"]))
+        }
+        let status: TUNHelperResponseEnvelope<StatusResponse> = try TUNHelperCodec.decodeResponse(
+            await dispatcher.dispatch(command: .status, requestData: makeStatusData(requestID: UUID())))
+        XCTAssertEqual(status.sessionID, active)
+        XCTAssertEqual(status.payload?.phase, .running)
+    }
+
     func testFailedStartAdvancesStopCorrelation() async throws {
         let executor = RecordingExecutor(failedStartNumber: 2)
         let dispatcher = HelperCommandDispatcher(executor: executor)
@@ -504,7 +543,7 @@ final class HelperCommandDispatchTests: XCTestCase {
         )
         let stopResponse: TUNHelperResponseEnvelope<StopSessionResponse> = try TUNHelperCodec.decodeResponse(stop)
         XCTAssert(stopResponse.payload?.phase == .idle)
-        XCTAssert(executor.commands == [.startSession, .stopSession, .startSession, .stopSession])
+        XCTAssert(executor.commands == [.startSession, .stopSession, .startSession, .status, .stopSession])
     }
 
     func testPresentableCommandFailurePreservesSafeSummary() async throws {
