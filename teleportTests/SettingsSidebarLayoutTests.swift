@@ -86,8 +86,9 @@ final class SettingsSidebarLayoutTests: XCTestCase {
         XCTAssertEqual(model.navigation.section, .tunnel, "Down enters results and advances to the second match")
 
         window.sendEvent(escape)
-        try await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(search.stringValue, "")
+        await awaitUIUpdate("Escape clears the search and returns focus to its field editor") {
+            search.stringValue.isEmpty && search.currentEditor() is NSTextView
+        }
         let clearedEditor = try XCTUnwrap(search.currentEditor() as? NSTextView)
         clearedEditor.insertText("socks5", replacementRange: NSRange(location: NSNotFound, length: 0))
         try await Task.sleep(for: .milliseconds(100))
