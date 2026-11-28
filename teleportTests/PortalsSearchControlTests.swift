@@ -8,27 +8,26 @@ final class PortalsSearchControlTests: XCTestCase {
         let state = SearchState()
         let window = makeWindow(state)
         defer { window.close() }
-        try await settle()
+        let field = try await searchField(in: window)
 
         for _ in 0..<3 {
             state.focusRequest += 1
-            try await settle()
-            let field = try XCTUnwrap(searchField(in: window.contentView!.superview!))
+            await awaitUIUpdate("Search receives focus") { field.currentEditor() != nil }
             let editor = try XCTUnwrap(field.currentEditor())
             XCTAssertTrue(window.firstResponder === editor)
             editor.selectAll(nil)
             editor.insertText("Paris")
-            try await settle()
+            await awaitUIUpdate("Typing updates the query") { state.query == "Paris" }
             XCTAssertEqual(state.query, "Paris")
 
             window.makeFirstResponder(nil)
-            try await settle()
+            await awaitUIUpdate("Editing ends") { field.currentEditor() == nil }
             XCTAssertNil(field.currentEditor())
             XCTAssertEqual(state.query, "Paris", "Ending native search preserves a nonempty query")
             XCTAssertNotNil(searchField(in: window.contentView!.superview!))
             // An ordinary binding update must not steal focus back.
             state.query = "London"
-            try await settle()
+            await awaitUIUpdate("Search displays the updated binding") { field.stringValue == "London" }
             XCTAssertNil(field.currentEditor())
         }
     }
@@ -38,25 +37,24 @@ final class PortalsSearchControlTests: XCTestCase {
         state.query = "Saved query"
         let window = makeWindow(state)
         defer { window.close() }
-        try await settle()
+        let field = try await searchField(in: window)
         state.focusRequest += 1
-        try await settle()
-        let field = try XCTUnwrap(searchField(in: window.contentView!.superview!))
+        await awaitUIUpdate("Saved search receives focus") { field.currentEditor() != nil }
         XCTAssertEqual(field.stringValue, "Saved query")
         let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
         editor.doCommand(by: #selector(NSResponder.cancelOperation(_:)))
-        try await settle()
+        await awaitUIUpdate("Escape clears the query and ends editing") { state.query.isEmpty && field.currentEditor() == nil }
         XCTAssertEqual(state.query, "")
         XCTAssertNil(searchField(in: window.contentView!.superview!)?.currentEditor())
 
         state.focusRequest += 1
-        try await settle()
+        await awaitUIUpdate("Search reopens") { field.currentEditor() != nil }
         XCTAssertNotNil(searchField(in: window.contentView!.superview!)?.currentEditor())
         window.makeFirstResponder(nil)
-        try await settle()
+        await awaitUIUpdate("Editing ends") { field.currentEditor() == nil }
         XCTAssertNil(searchField(in: window.contentView!.superview!)?.currentEditor())
         state.focusRequest += 1
-        try await settle()
+        await awaitUIUpdate("Search regains focus") { field.currentEditor() != nil }
         XCTAssertNotNil(searchField(in: window.contentView!.superview!)?.currentEditor())
     }
 
@@ -68,16 +66,16 @@ final class PortalsSearchControlTests: XCTestCase {
         // Below Settings' supported minimum, AppKit may move the entire
         // toolbar item into overflow instead of compressing the field.
         window.setContentSize(NSSize(width: SettingsSidebarLayout.minimumContentSize.width, height: 400))
-        try await settle()
-        let field = try XCTUnwrap(searchField(in: window.contentView!.superview!))
+        let field = try await searchField(in: window)
+        window.contentView?.superview?.layoutSubtreeIfNeeded()
         let restingFrame = field.convert(field.bounds, to: nil)
         state.focusRequest += 1
-        try await settle()
+        await awaitUIUpdate("Search receives focus") { field.currentEditor() != nil }
         XCTAssertNotNil(field.currentEditor())
         XCTAssertEqual(field.convert(field.bounds, to: nil), restingFrame,
                        "Focus must not expand a slightly compressed native search field")
         window.makeFirstResponder(nil)
-        try await settle()
+        await awaitUIUpdate("Editing ends") { field.currentEditor() == nil }
         XCTAssertEqual(field.convert(field.bounds, to: nil), restingFrame)
     }
 
@@ -95,7 +93,11 @@ final class PortalsSearchControlTests: XCTestCase {
         return view.subviews.compactMap { searchField(in: $0) }.first
     }
 
-    private func settle() async throws { try await Task.sleep(for: .milliseconds(400)) }
+    private func searchField(in window: NSWindow) async throws -> NSSearchField {
+        let toolbarContainer = try XCTUnwrap(window.contentView?.superview)
+        await awaitUIUpdate("Toolbar search field is present") { self.searchField(in: toolbarContainer) != nil }
+        return try XCTUnwrap(searchField(in: toolbarContainer))
+    }
 }
 
 @MainActor

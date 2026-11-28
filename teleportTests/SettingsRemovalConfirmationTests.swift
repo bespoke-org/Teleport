@@ -35,22 +35,22 @@ final class SettingsRemovalConfirmationTests: XCTestCase {
         for (index, title) in ["Remove portal?", "Remove subscription?", "Uninstall Teleport's privileged helper?"].enumerated() {
             state.title = title
             state.isPresented = true
-            try await settle()
+            await awaitUIUpdate("Removal sheet appears") { window.attachedSheet != nil }
             var sheet = try XCTUnwrap(window.attachedSheet)
             XCTAssertFalse(sheet.preventsApplicationTerminationWhenModal)
             let cancel = try XCTUnwrap(button("Cancel", in: sheet.contentView!))
             cancel.performClick(nil)
-            try await settle()
+            await awaitUIUpdate("Cancel dismisses the sheet") { window.attachedSheet == nil && !state.isPresented }
             XCTAssertFalse(state.isPresented)
             XCTAssertEqual(state.removedTitles.count, index)
 
             state.isPresented = true
-            try await settle()
+            await awaitUIUpdate("Removal sheet reopens") { window.attachedSheet != nil }
             sheet = try XCTUnwrap(window.attachedSheet)
             XCTAssertFalse(sheet.preventsApplicationTerminationWhenModal)
             let remove = try XCTUnwrap(button(state.actionTitle, in: sheet.contentView!))
             remove.performClick(nil)
-            try await settle()
+            await awaitUIUpdate("Confirmation dismisses the sheet") { window.attachedSheet == nil && !state.isPresented }
             XCTAssertFalse(state.isPresented)
             XCTAssertEqual(state.removedTitles.last, title)
         }
@@ -65,10 +65,10 @@ final class SettingsRemovalConfirmationTests: XCTestCase {
         window.makeKeyAndOrderFront(nil)
         defer { window.close() }
         state.isPresented = true
-        try await settle()
+        await awaitUIUpdate("Removal sheet appears") { window.attachedSheet != nil }
         XCTAssertNotNil(window.attachedSheet)
         state.isPresented = false
-        try await settle()
+        await awaitUIUpdate("Removal sheet closes") { window.attachedSheet == nil }
         XCTAssertNil(window.attachedSheet)
         XCTAssertTrue(state.removedTitles.isEmpty)
     }
@@ -86,13 +86,13 @@ final class SettingsRemovalConfirmationTests: XCTestCase {
         window.makeKeyAndOrderFront(nil)
         defer { window.close() }
         state.isPresented = true
-        try await settle()
+        await awaitUIUpdate("Uninstall sheet appears") { window.attachedSheet != nil }
         let sheet = try XCTUnwrap(window.attachedSheet)
         XCTAssertFalse(sheet.preventsApplicationTerminationWhenModal)
         XCTAssertNotNil(button("Uninstall", in: sheet.contentView!))
 
         app.terminate(nil)
-        try await settle()
+        await awaitUIUpdate("Quit reaches the application delegate") { probe.requests > 0 }
         XCTAssertEqual(probe.requests, 1)
         XCTAssertTrue(state.removedTitles.isEmpty)
     }
@@ -101,8 +101,6 @@ final class SettingsRemovalConfirmationTests: XCTestCase {
         if let button = view as? NSButton, button.title == title { return button }
         return view.subviews.compactMap { button(title, in: $0) }.first
     }
-
-    private func settle() async throws { try await Task.sleep(for: .milliseconds(400)) }
 }
 
 @MainActor
