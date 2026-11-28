@@ -29,7 +29,7 @@ final class SettingsToolbarLayoutTests: XCTestCase {
             let cleanHeight = try XCTUnwrap(cleanWindow.contentView).fittingSize.height
             cleanWindow.close()
 
-            provider.continuation.yield(.failed(failure))
+            provider.state.update(.failed(failure))
             await awaitUIUpdate("Connection failure is stored") { fixture.model.lastError == failure.summary }
             let window = makeWindow()
             defer { window.close() }
@@ -60,7 +60,7 @@ final class SettingsToolbarLayoutTests: XCTestCase {
                     && root.fittingSize.height > draftHeight
             }
             let validationHeight = root.fittingSize.height
-            provider.continuation.yield(.failed(ConnectionFailure(summary: String(repeating: "Background failure. ", count: 30), details: nil)))
+            provider.state.update(.failed(ConnectionFailure(summary: String(repeating: "Background failure. ", count: 30), details: nil)))
             await awaitUIUpdate("A new connection failure arrives") { fixture.model.lastError?.hasPrefix("Background failure.") == true }
             XCTAssertEqual(root.fittingSize.height, validationHeight,
                            "Background failures must not replace form validation")
@@ -102,7 +102,7 @@ final class SettingsToolbarLayoutTests: XCTestCase {
         XCTAssertEqual(mode.selectedSegment, 0, "Rejected input must restore the displayed selection")
         XCTAssertNil(fixture.model.lastError)
 
-        provider.continuation.yield(.preparing)
+        provider.state.update(.preparing)
         await awaitUIUpdate("The provider is checking for an existing session") {
             fixture.model.connectionState == .preparing
         }
@@ -110,20 +110,20 @@ final class SettingsToolbarLayoutTests: XCTestCase {
         XCTAssertTrue(mode.isEnabled, "Resolving a provider must not look like starting a connection")
         XCTAssertEqual(mode.alphaValue, originalAlpha, "The provider's initial preparing state must not dim the picker")
 
-        provider.continuation.yield(.idle)
+        provider.state.update(.idle)
         await awaitUIUpdate("The new provider is ready") { fixture.model.canChangeSelection }
         XCTAssertEqual(order.convert(order.bounds, to: nil), originalFrame)
         XCTAssertTrue(mode.isAccessibilityEnabled())
-        provider.continuation.yield(.preparing)
+        provider.state.update(.preparing)
         await awaitUIUpdate("Preparing a real connection disables and dims the picker") {
             fixture.model.connectionState == .preparing && !mode.isEnabled && mode.alphaValue < originalAlpha
         }
-        provider.continuation.yield(.connecting)
+        provider.state.update(.connecting)
         await awaitUIUpdate("An active connection disables and dims the picker") {
             fixture.model.connectionState == .connecting && !mode.isEnabled && mode.alphaValue < originalAlpha
         }
         XCTAssertTrue(fixture.model.hasActiveConnectionSession)
-        provider.continuation.yield(.idle)
+        provider.state.update(.idle)
         await awaitUIUpdate("Disconnecting restores the picker") { mode.isEnabled && mode.alphaValue == originalAlpha }
         fixture.model.selectConnectionMode(.tun)
         await awaitUIUpdate("TUN is ready again") { fixture.model.canChangeSelection && mode.isEnabled }
@@ -511,15 +511,9 @@ final class SettingsToolbarLayoutTests: XCTestCase {
     }
 
     private final class PendingProvider: ConnectionProvider, Sendable {
-        let stream: AsyncStream<ConnectionState>
-        let continuation: AsyncStream<ConnectionState>.Continuation
-
-        init() {
-            (stream, continuation) = AsyncStream.makeStream(of: ConnectionState.self)
-        }
-
-        func currentState() async -> ConnectionState { .idle }
-        func stateUpdates() -> AsyncStream<ConnectionState> { stream }
+        let state = ConnectionStateStore(initialState: .preparing)
+        func currentState() async -> ConnectionState { state.current() }
+        func stateUpdates() -> AsyncStream<ConnectionState> { state.stream() }
         func connect(_ request: ConnectionRequest) async throws { throw CancellationError() }
         func disconnect() async throws {}
     }

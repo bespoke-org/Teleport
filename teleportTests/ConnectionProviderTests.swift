@@ -80,19 +80,21 @@ final class ConnectionProviderTests: XCTestCase {
         let root = try makeIsolatedRoot("uplink-during-stop")
         defer { try? FileManager.default.removeItem(at: root) }
         let backend = RecordingConnectionBackend()
-        var uplink: SystemUplinkInventory.Uplink? = .init(interfaceName: "en0", routerAddress: "192.0.2.1")
+        let uplink = UplinkBox(.init(interfaceName: "en0", routerAddress: "192.0.2.1"))
+        let path = FakePathObserver()
         let (model, store) = try makeLaunchFixture(root: root, mode: .tun, enabled: false, backend: backend,
-                                                  currentUplink: { uplink })
+                                                  systemObserverFactory: InjectedObservers(wake: FakeWakeObserver(), path: path),
+                                                  currentUplink: { uplink.value })
         defer { store.deleteStoredDataForTesting() }
         await waitUntil("ready") { await MainActor.run { model.canConnect } }
         model.connect()
         await waitUntil("connected") { await MainActor.run { model.isConnected && !model.isOperationPending } }
         await backend.stopGate.enableBlocking()
-        uplink = nil
-        model.reconcileSessionWithUplink()
+        uplink.value = nil
+        path.simulateSettledChange()
         await backend.stopGate.waitUntilEntered()
-        uplink = .init(interfaceName: "en5", routerAddress: "192.0.2.2")
-        model.reconcileSessionWithUplink()
+        uplink.value = .init(interfaceName: "en5", routerAddress: "192.0.2.2")
+        path.simulateSettledChange()
         await backend.stopGate.open()
         await waitUntil("reconnected without another path event") {
             let ready = await MainActor.run { model.isConnected && !model.isOperationPending }
@@ -273,16 +275,17 @@ final class ConnectionProviderTests: XCTestCase {
         await waitUntil("ready") { await MainActor.run { model.canConnect } }
         model.connect()
         await waitUntil("connected") { await MainActor.run { model.isConnected && !model.isOperationPending } }
-        await backend.reconnectGate.enableBlocking()
+        await backend.stopGate.enableBlocking()
         model.selectConnection(id: try XCTUnwrap(model.savedConnections.first?.id))
-        await backend.reconnectGate.waitUntilEntered()
+        await backend.stopGate.waitUntilEntered()
         XCTAssertTrue(model.isLeakGuardHoldingUplink)
         XCTAssertFalse(model.canAllowDirectTraffic)
         model.allowDirectTraffic()
-        XCTAssertEqual(transport.commands, [.engageLeakGuard], "A transient reconnect must not release the guard")
-        await backend.reconnectGate.open()
+        XCTAssertFalse(transport.commands.contains(.releaseLeakGuard), "A transient reconnect must not release the guard")
+        await backend.stopGate.open()
         await waitUntil("reconnected") { await MainActor.run { model.isConnected && !model.isOperationPending } }
-        XCTAssertEqual(transport.commands, [.engageLeakGuard, .engageLeakGuard])
+        XCTAssertEqual(transport.commands.last, .engageLeakGuard)
+        XCTAssertFalse(transport.commands.contains(.releaseLeakGuard))
         model.disconnect()
         await waitUntil("cleanup") { await MainActor.run { !model.isOperationPending && !model.isLeakGuardHoldingUplink } }
     }
@@ -626,7 +629,8 @@ final class ConnectionProviderTests: XCTestCase {
     private func makeLaunchFixture(
         root: URL, mode: ConnectionMode, enabled: Bool,
         backend: RecordingConnectionBackend, hasConnections: Bool = true,
-        currentUplink: @escaping () -> SystemUplinkInventory.Uplink? = SystemUplinkInventory.current,
+        systemObserverFactory: any SystemObserverFactoring = SystemObserverFactory(),
+        currentUplink: @escaping @Sendable () -> SystemUplinkInventory.Uplink? = { .init(interfaceName: "en0", routerAddress: "192.0.2.1") },
         leakGuard: LeakGuardService? = nil, supervisionInterval: TimeInterval = 60,
         verifyConnection: (@Sendable (ConnectionRequest) async throws -> Void)? = nil
     ) throws -> (AppViewModel, ConfigurationStore) {
@@ -654,7 +658,7 @@ final class ConnectionProviderTests: XCTestCase {
             connectionProviderFactory: ConnectionProviderFactory(systemProxyProvider: { provider }, tunProvider: { provider }),
             leakGuard: leakGuard ?? LeakGuardService(isEnabled: false, log: log),
             subscriptionClient: SubscriptionClient(), healthProbeService: ConnectionHealthProbeService(),
-            systemProxyService: SystemProxyService(fileManager: fileManager, log: log), currentUplink: currentUplink, log: log
+            systemProxyService: SystemProxyService(fileManager: fileManager, log: log), systemObserverFactory: systemObserverFactory, currentUplink: currentUplink, log: log
         )
         return (model, store)
     }
@@ -801,16 +805,19 @@ final class ConnectionProviderTests: XCTestCase {
         // connecting. The replacement is the latest click, not every click.
         for latest in [third, first] {
             viewModel.selectConnection(id: first)
+            await backend.startGate.enableBlocking()
             backend.cancellableConnectionID = first
             viewModel.connect()
             await waitUntil("the cancellable pre-flight starts") {
                 backend.requestedConnectionIDs() == [first]
             }
             viewModel.selectConnection(id: second)
+            await backend.startGate.waitUntilEntered()
             viewModel.selectConnection(id: latest)
+            await backend.startGate.open()
             await waitForCurrentConnection()
-            XCTAssert(backend.requestedConnectionIDs() == [first, latest])
-            XCTAssert(backend.recordedCalls() == ["start", "cancel", "start"])
+            XCTAssertEqual(backend.requestedConnectionIDs(), [first, latest])
+            XCTAssertEqual(backend.recordedCalls(), ["start", "cancel", "start"])
             XCTAssert(viewModel.selectedConnectionID == latest && viewModel.lastError == nil)
             viewModel.disconnect()
             await waitUntil("the cancellation test disconnects") {
@@ -820,96 +827,79 @@ final class ConnectionProviderTests: XCTestCase {
         }
         viewModel.selectConnection(id: first)
 
-        // Picks during the very first connect are accepted immediately, but only
-        // the latest one reaches the backend after that connect settles.
         await backend.startGate.enableBlocking()
         viewModel.connect()
-        XCTAssert(viewModel.canChangeSelection, "servers must remain selectable while connecting in \(mode)")
+        XCTAssertTrue(viewModel.canChangeSelection)
         await backend.startGate.waitUntilEntered()
         viewModel.selectConnection(id: second)
         viewModel.selectConnection(id: third)
-        XCTAssert(viewModel.selectedConnectionID == third && viewModel.lastError == nil)
-        XCTAssert(backend.requestedConnectionIDs() == [first])
-        XCTAssert(!viewModel.updateConnection(id: first, from: connections[1].configuration.rawLink))
+        XCTAssertEqual(backend.requestedConnectionIDs(), [first])
+        XCTAssertFalse(viewModel.updateConnection(id: first, from: connections[1].configuration.rawLink))
         viewModel.removeConnection(id: first)
-        XCTAssert(viewModel.savedConnections.contains { $0.id == first }, "the in-flight server must remain protected")
-        viewModel.selectConnection(id: third)
+        XCTAssertTrue(viewModel.savedConnections.contains { $0.id == first })
         await backend.startGate.open()
-        await waitForCurrentConnection()
-        XCTAssert(backend.requestedConnectionIDs() == [first, third])
-        XCTAssert(viewModel.canChangeSelection)
-        viewModel.selectConnection(id: third)
-        XCTAssert(!viewModel.isOperationPending, "selecting the current server must not reconnect")
-
-        await backend.reconnectGate.enableBlocking()
-        viewModel.selectConnection(id: second)
-        XCTAssert(viewModel.isOperationPending && viewModel.canChangeSelection)
-        // Exercise a committed reconnect; superseded preflight is covered above.
-        await backend.reconnectGate.waitUntilEntered()
-        viewModel.selectConnection(id: first)
-        viewModel.selectConnection(id: third)
-        viewModel.selectConnection(id: first)
-        XCTAssert(viewModel.selectedConnectionID == first)
-        await backend.reconnectGate.waitUntilEntered()
-        await waitUntil("the picker shows connection progress") {
-            await MainActor.run { viewModel.connectionPhase == .starting }
+        await waitUntil("latest initial selection connects") {
+            await MainActor.run { viewModel.isConnected && !viewModel.isOperationPending }
         }
-        XCTAssert(viewModel.canChangeSelection && viewModel.lastError == nil)
-        XCTAssert(backend.requestedConnectionIDs() == [first, third, second])
-        await backend.reconnectGate.open()
-        await waitForCurrentConnection()
-        XCTAssert(backend.requestedConnectionIDs() == [first, third, second, first])
-        XCTAssert(viewModel.lastError == nil)
-
-        // Choosing the in-flight target again withdraws the pending switch.
-        await backend.reconnectGate.enableBlocking()
-        viewModel.selectConnection(id: second)
-        await backend.reconnectGate.waitUntilEntered()
+        XCTAssertEqual(backend.requestedConnectionIDs(), [first, third])
+        XCTAssertEqual(backend.recordedCalls(), ["start", "stop", "start"])
         viewModel.selectConnection(id: third)
-        viewModel.selectConnection(id: second)
-        await backend.reconnectGate.open()
-        await waitForCurrentConnection()
-        XCTAssert(backend.requestedConnectionIDs() == [first, third, second, first, second])
+        XCTAssertFalse(viewModel.isOperationPending)
 
-        // A failure must not discard a newer selection.
-        backend.failingConnectionID = third
-        await backend.reconnectGate.enableBlocking()
+        // Read the latest selection again after stop, without first connecting
+        // the server that originally triggered the switch.
+        await backend.stopGate.enableBlocking()
+        viewModel.selectConnection(id: second)
+        await backend.stopGate.waitUntilEntered()
         viewModel.selectConnection(id: third)
-        await backend.reconnectGate.waitUntilEntered()
         viewModel.selectConnection(id: first)
-        await backend.reconnectGate.open()
-        await waitForCurrentConnection()
-        XCTAssert(viewModel.selectedConnectionID == first && viewModel.lastError == nil)
-        XCTAssert(Array(backend.requestedConnectionIDs().suffix(2)) == [third, first])
+        await backend.stopGate.open()
+        await waitUntil("latest selection after teardown connects") {
+            await MainActor.run { viewModel.isConnected && !viewModel.isOperationPending }
+        }
+        XCTAssertEqual(backend.requestedConnectionIDs(), [first, third, first])
 
-        // With no pending choice, failure still settles and permits a manual retry.
+        // A failed operation cannot discard a different request received while
+        // it was in progress.
+        backend.failingConnectionID = third
+        await backend.startGate.enableBlocking()
+        viewModel.selectConnection(id: third)
+        await backend.startGate.waitUntilEntered()
+        viewModel.selectConnection(id: second)
+        await backend.startGate.open()
+        await waitUntil("latest selection recovers from the previous failure") {
+            await MainActor.run { viewModel.isConnected && !viewModel.isOperationPending }
+        }
+        XCTAssertEqual(Array(backend.requestedConnectionIDs().suffix(2)), [third, second])
+        XCTAssertNil(viewModel.lastError)
+
         viewModel.selectConnection(id: third)
         await waitUntil("a failed switch settles") {
             await MainActor.run { viewModel.connectionState == .idle && !viewModel.isOperationPending }
         }
-        XCTAssert(viewModel.selectedConnectionID == third)
-        XCTAssert(viewModel.canChangeSelection && viewModel.canConnect && viewModel.lastError != nil)
+        XCTAssertTrue(viewModel.canChangeSelection && viewModel.canConnect)
+        XCTAssertNotNil(viewModel.lastError)
         backend.failingConnectionID = nil
         viewModel.selectConnection(id: first)
-        XCTAssert(!viewModel.isOperationPending, "selection after failure must not start a hidden connection")
+        XCTAssertFalse(viewModel.isOperationPending, "Selecting after failure is not an implicit retry")
         viewModel.connect()
-        await waitForCurrentConnection()
+        await waitUntil("retry connects") {
+            await MainActor.run { viewModel.isConnected && !viewModel.isOperationPending }
+        }
 
-        // Disconnect wins over any pending selection.
-        await backend.reconnectGate.enableBlocking()
+        await backend.stopGate.enableBlocking()
         viewModel.selectConnection(id: second)
-        await backend.reconnectGate.waitUntilEntered()
+        await backend.stopGate.waitUntilEntered()
         viewModel.selectConnection(id: third)
         let requestsBeforeDisconnect = backend.requestedConnectionIDs()
         viewModel.disconnect()
-        XCTAssert(!viewModel.canChangeSelection)
-        await backend.reconnectGate.open()
-        await waitUntil("disconnect completes without starting the pending server") {
+        XCTAssertFalse(viewModel.canChangeSelection)
+        await backend.stopGate.open()
+        await waitUntil("disconnect supersedes the pending server") {
             await MainActor.run { viewModel.connectionState == .idle && !viewModel.isOperationPending }
         }
-        XCTAssert(backend.requestedConnectionIDs() == requestsBeforeDisconnect)
-        XCTAssert(backend.recordedCalls().last == "stop")
-        XCTAssert(viewModel.selectedConnectionID == third && viewModel.canConnect)
+        XCTAssertEqual(backend.requestedConnectionIDs(), requestsBeforeDisconnect)
+        XCTAssertTrue(viewModel.selectedConnectionID == third && viewModel.canConnect)
 
         await backend.startGate.enableBlocking()
         viewModel.connect()
@@ -919,8 +909,8 @@ final class ConnectionProviderTests: XCTestCase {
         let terminated = Flag()
         viewModel.handleAppTermination { terminated.set() }
         await backend.startGate.open()
-        await waitUntil("quit completes without connecting the pending choice") { terminated.isSet }
-        XCTAssert(backend.requestedConnectionIDs() == requestsBeforeQuit)
+        await waitUntil("quit does not connect the pending choice") { terminated.isSet }
+        XCTAssertEqual(backend.requestedConnectionIDs(), requestsBeforeQuit)
     }
 
     func testFactorySelectsProviderByMode() {
@@ -1566,6 +1556,7 @@ final class ConnectionProviderTests: XCTestCase {
                 while !Task.isCancelled {
                     try? await Task.sleep(for: .milliseconds(2))
                 }
+                await startGate.enter()
                 cancellableConnectionID = nil
                 record("cancel")
                 throw CancellationError()

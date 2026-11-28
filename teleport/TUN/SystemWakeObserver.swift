@@ -10,7 +10,12 @@ import Foundation
 /// observer sees nothing to act on, yet the session has been observed to stop
 /// carrying traffic until it is torn down and started again. Until the cause is
 /// known, wake is the signal to do that.
-nonisolated final class SystemWakeObserver: @unchecked Sendable {
+nonisolated protocol SystemWakeObserving: AnyObject, Sendable {
+    func start()
+    func stop()
+}
+
+nonisolated final class SystemWakeObserver: SystemWakeObserving, @unchecked Sendable {
     private let onSleep: @Sendable () -> Void
     private let onWake: @Sendable () -> Void
     private var tokens: [NSObjectProtocol] = []

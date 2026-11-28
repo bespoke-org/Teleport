@@ -443,3 +443,5 @@ nonisolated final class SystemProxyService: @unchecked Sendable {
         }
     }
 }
+
+extension SystemProxyService: DeferredProxyRestoring {}
