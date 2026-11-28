@@ -146,7 +146,7 @@ actor ConnectionIntentRuntime {
                     await self?.stopObserving()
                     return
                 }
-                do { _ = try await inputs.changed(after: observed) } catch { return }
+                guard await inputs.nextChange(after: observed) != nil else { return }
             }
         }
     }
@@ -162,12 +162,10 @@ actor ConnectionIntentRuntime {
             let task = Task {
                 var observed = output.snapshot()
                 continuation.yield(observed.value)
-                do {
-                    while !Task.isCancelled {
-                        observed = try await output.changed(after: observed.revision)
-                        continuation.yield(observed.value)
-                    }
-                } catch {}
+                while let next = await output.nextChange(after: observed.revision) {
+                    observed = next
+                    continuation.yield(next.value)
+                }
                 continuation.finish()
             }
             continuation.onTermination = { _ in task.cancel() }
@@ -421,8 +419,8 @@ actor ConnectionIntentRuntime {
                     let cancellation = Task {
                         var observed = inputs.snapshot()
                         while observed.value.desireGeneration == input.desireGeneration {
-                            do { observed = try await inputs.changed(after: observed.revision) }
-                            catch { return }
+                            guard let next = await inputs.nextChange(after: observed.revision) else { return }
+                            observed = next
                         }
                         operation.cancel()
                     }

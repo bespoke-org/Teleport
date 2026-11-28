@@ -12,7 +12,7 @@ nonisolated final class Watch<Value: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
     private var value: Value
     private var revision: UInt64 = 0
-    private var waiters: [UUID: CheckedContinuation<Void, Error>] = [:]
+    private var waiters: [UUID: CheckedContinuation<Void, Never>] = [:]
 
     init(_ value: Value) { self.value = value }
 
@@ -41,14 +41,16 @@ nonisolated final class Watch<Value: Sendable>: @unchecked Sendable {
     }
 
     func changed(after observedRevision: UInt64) async throws -> Snapshot {
+        guard let change = await nextChange(after: observedRevision) else { throw CancellationError() }
+        return change
+    }
+
+    func nextChange(after observedRevision: UInt64) async -> Snapshot? {
         let id = UUID()
-        try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
                 lock.lock()
-                if Task.isCancelled {
-                    lock.unlock()
-                    continuation.resume(throwing: CancellationError())
-                } else if revision != observedRevision {
+                if Task.isCancelled || revision != observedRevision {
                     lock.unlock()
                     continuation.resume()
                 } else {
@@ -58,9 +60,8 @@ nonisolated final class Watch<Value: Sendable>: @unchecked Sendable {
             }
         } onCancel: {
             let waiter = self.lock.withLock { self.waiters.removeValue(forKey: id) }
-            waiter?.resume(throwing: CancellationError())
+            waiter?.resume()
         }
-        try Task.checkCancellation()
-        return snapshot()
+        return Task.isCancelled ? nil : snapshot()
     }
 }
